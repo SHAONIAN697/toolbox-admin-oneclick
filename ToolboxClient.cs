@@ -1490,8 +1490,6 @@ namespace ToolboxClient
             if (IsDownloadAlreadyActive(url, fileName))
             {
                 status.Text = "文件正在下载中：" + fileName;
-                ShowDownloadRecordsPanel();
-                RenderActiveDownloads();
                 return;
             }
 
@@ -1501,9 +1499,6 @@ namespace ToolboxClient
                 string existingName = Path.GetFileName(existingPath);
                 string launchStatus = LaunchExistingFile(existingPath);
                 status.Text = launchStatus + "：" + existingName;
-                AddDownloadRecord(existingName, url, existingPath, launchStatus, "");
-                ShowDownloadRecordsPanel();
-                FillDownloadRecords();
                 return;
             }
 
