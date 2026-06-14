@@ -142,7 +142,17 @@ namespace ToolboxClient
             { "sys_cmd_prompt", "cmd.exe" },
             { "sys_security_policy", "secpol.msc" },
             { "sys_power_options", "powercfg.cpl" },
-            { "sys_system_clean", "cleanmgr.exe" }
+            { "sys_classic_context_menu", "reg add HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32 /f /ve & taskkill /f /im explorer.exe & start explorer.exe" },
+            { "add_hosts_block", "notepad.exe C:\\Windows\\System32\\drivers\\etc\\hosts" },
+            { "sys_system_clean", "cleanmgr.exe" },
+            { "disable_firewall", "netsh advfirewall set allprofiles state off" },
+            { "disable_update", "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v NoAutoUpdate /t REG_DWORD /d 1 /f & sc config wuauserv start= disabled & sc stop wuauserv" },
+            { "disable_uac", "reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v EnableLUA /t REG_DWORD /d 0 /f & reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f" },
+            { "activate_windows", "slmgr /ato" },
+            { "preset_new_machine", "cleanmgr.exe" },
+            { "preset_audio_workstation", "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c" },
+            { "preset_privacy_lockdown", "reg add HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo /v Enabled /t REG_DWORD /d 0 /f" },
+            { "preset_pure_activate", "slmgr /ato" }
         };
 
         public ToolboxForm(string url)
@@ -798,6 +808,19 @@ namespace ToolboxClient
             if (nav != null) nav.BackColor = SideBg;
             if (content != null) content.BackColor = Bg;
             ApplyThemeToControls(this);
+            if (recordsPanel != null)
+            {
+                recordsPanel.Dispose();
+                recordsPanel = null;
+                recordsList = null;
+                activeDownloadsList = null;
+                activeDownloadRows.Clear();
+            }
+            if (settingsPanel != null)
+            {
+                settingsPanel.Dispose();
+                settingsPanel = null;
+            }
         }
 
         private string CurrentTheme(Dictionary<string, object> app)
@@ -1103,6 +1126,7 @@ namespace ToolboxClient
         {
             string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
             string target = GetTarget(item, action);
+            string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
             string description = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
             Image icon = LoadButtonIcon(iconUrl);
@@ -1117,13 +1141,13 @@ namespace ToolboxClient
                 IconImage = icon,
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
             };
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
             card.Click += delegate
             {
                 ActionInfo info = card.ActionInfo;
-                RunAction(info.Action, info.Target);
+                RunAction(info.Action, info.Target, info.CustomScript, info.Name);
             };
             return card;
         }
@@ -1218,19 +1242,19 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target)
+        private void RunAction(string action, string target, string customScript, string name)
         {
             try
             {
-                if (String.IsNullOrWhiteSpace(target))
+                if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(customScript))
                 {
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
                 if (action == "download") DownloadFile(target);
-                else if (action == "cmd") RunCommand(target);
-                else if (action == "script") RunScript(target);
-                else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause");
+                else if (action == "cmd") RunCommand(target, false);
+                else if (action == "script") RunScript(target, customScript, name);
+                else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
                 else Open(target);
             }
             catch (Exception ex)
@@ -1245,20 +1269,206 @@ namespace ToolboxClient
             Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
         }
 
-        private void RunCommand(string command)
+        private void RunCommand(string command, bool hidden)
         {
             if (String.IsNullOrWhiteSpace(command)) return;
-            Process.Start(new ProcessStartInfo("cmd.exe", "/c " + command) { UseShellExecute = true });
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c " + command);
+            if (hidden)
+            {
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+            }
+            else
+            {
+                psi.UseShellExecute = true;
+            }
+            Process.Start(psi);
         }
 
-        private void RunScript(string id)
+        private void RunScript(string id, string customScript, string name)
         {
+            if (!String.IsNullOrWhiteSpace(customScript))
+            {
+                RunCustomScriptWithLog(String.IsNullOrWhiteSpace(name) ? "自定义内置功能" : name, customScript);
+                return;
+            }
+            if (!scripts.ContainsKey(id) && !String.IsNullOrWhiteSpace(id) && (id.IndexOf(" ") >= 0 || id.IndexOf(".exe", StringComparison.OrdinalIgnoreCase) >= 0 || id.IndexOf("/") >= 0 || id.IndexOf("\\") >= 0))
+            {
+                RunCustomScriptWithLog(String.IsNullOrWhiteSpace(name) ? "自定义内置功能" : name, id);
+                return;
+            }
             if (scripts.ContainsKey(id))
             {
-                RunCommand(scripts[id]);
+                string command = scripts[id];
+                if (ShouldShowScriptLog(id))
+                {
+                    RunScriptWithLog(id, command);
+                }
+                else if (NeedsElevation(id, command))
+                {
+                    RunCommandElevated(command);
+                }
+                else
+                {
+                    RunCommand(command, !id.Equals("sys_cmd_prompt", StringComparison.OrdinalIgnoreCase));
+                }
                 return;
             }
             MessageBox.Show("这个内置功能需要正式壳单独适配：" + Environment.NewLine + id, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void RunCustomScriptWithLog(string name, string command)
+        {
+            status.Text = "正在执行：" + name;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                CommandRunResult result = NeedsElevation("", command)
+                    ? ExecuteElevatedCommandWithLog(command)
+                    : ExecuteHiddenCommandWithLog(command);
+                result.Name = name;
+                BeginInvoke(new Action(delegate { ShowCommandLog(result); }));
+            });
+        }
+
+        private void RunScriptWithLog(string id, string command)
+        {
+            string name = ScriptDisplayName(id);
+            status.Text = "正在执行：" + name;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                CommandRunResult result = NeedsElevation(id, command)
+                    ? ExecuteElevatedCommandWithLog(command)
+                    : ExecuteHiddenCommandWithLog(command);
+                result.Name = name;
+                BeginInvoke(new Action(delegate { ShowCommandLog(result); }));
+            });
+        }
+
+        private static bool ShouldShowScriptLog(string id)
+        {
+            string key = (id ?? "").ToLowerInvariant();
+            return key == "sys_classic_context_menu" ||
+                   key == "disable_firewall" ||
+                   key == "disable_update" ||
+                   key == "disable_uac" ||
+                   key == "activate_windows" ||
+                   key == "preset_audio_workstation" ||
+                   key == "preset_privacy_lockdown" ||
+                   key == "preset_pure_activate";
+        }
+
+        private static string ScriptDisplayName(string id)
+        {
+            string key = (id ?? "").ToLowerInvariant();
+            if (key == "sys_classic_context_menu") return "Win传统右键";
+            if (key == "disable_firewall") return "关闭防火墙";
+            if (key == "disable_update") return "禁用系统更新";
+            if (key == "disable_uac") return "禁用 UAC";
+            if (key == "activate_windows") return "一键激活系统";
+            if (key == "preset_audio_workstation") return "音频工站优化";
+            if (key == "preset_privacy_lockdown") return "隐私加固";
+            if (key == "preset_pure_activate") return "纯净激活套装";
+            return String.IsNullOrWhiteSpace(id) ? "内置功能" : id;
+        }
+
+        private CommandRunResult ExecuteHiddenCommandWithLog(string command)
+        {
+            CommandRunResult result = new CommandRunResult { Command = command };
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c " + command);
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.Default;
+                psi.StandardErrorEncoding = Encoding.Default;
+                using (Process process = Process.Start(psi))
+                {
+                    result.Output = process.StandardOutput.ReadToEnd();
+                    result.Error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+                    result.ExitCode = process.ExitCode;
+                }
+            }
+            catch (Exception ex)
+            {
+                result.ExitCode = -1;
+                result.Error = ex.Message;
+            }
+            return result;
+        }
+
+        private CommandRunResult ExecuteElevatedCommandWithLog(string command)
+        {
+            CommandRunResult result = new CommandRunResult { Command = command };
+            string id = Guid.NewGuid().ToString("N");
+            string batPath = Path.Combine(Path.GetTempPath(), "toolbox-script-" + id + ".bat");
+            string logPath = Path.Combine(Path.GetTempPath(), "toolbox-script-" + id + ".log");
+            result.LogPath = logPath;
+            try
+            {
+                StringBuilder bat = new StringBuilder();
+                bat.AppendLine("@echo off");
+                bat.AppendLine("chcp 65001 > nul");
+                bat.AppendLine("echo 正在执行系统修改命令... > \"" + logPath + "\"");
+                bat.AppendLine("echo. >> \"" + logPath + "\"");
+                bat.AppendLine(command + " >> \"" + logPath + "\" 2>&1");
+                bat.AppendLine("set EXITCODE=%errorlevel%");
+                bat.AppendLine("echo. >> \"" + logPath + "\"");
+                bat.AppendLine("echo 退出码: %EXITCODE% >> \"" + logPath + "\"");
+                bat.AppendLine("exit /b %EXITCODE%");
+                File.WriteAllText(batPath, bat.ToString(), Encoding.UTF8);
+
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"" + batPath + "\"");
+                psi.UseShellExecute = true;
+                psi.Verb = "runas";
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                using (Process process = Process.Start(psi))
+                {
+                    if (process != null)
+                    {
+                        process.WaitForExit();
+                        result.ExitCode = process.ExitCode;
+                    }
+                }
+                if (File.Exists(logPath)) result.Output = File.ReadAllText(logPath, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                result.ExitCode = -1;
+                result.Error = ex.Message;
+            }
+            try { if (File.Exists(batPath)) File.Delete(batPath); } catch { }
+            return result;
+        }
+
+        private void ShowCommandLog(CommandRunResult result)
+        {
+            bool ok = result.ExitCode == 0;
+            status.Text = (ok ? "执行完成：" : "执行失败：") + result.Name;
+            string text = result.ToMessage();
+            MessageBox.Show(text, result.Name + (ok ? " - 运行完成" : " - 运行失败"),
+                MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
+        private static bool NeedsElevation(string id, string command)
+        {
+            string text = ((id ?? "") + " " + (command ?? "")).ToLowerInvariant();
+            return text.Contains("hklm") || text.Contains("netsh") || text.Contains("sc config") || text.Contains("slmgr") || text.Contains("system32\\drivers\\etc\\hosts");
+        }
+
+        private void RunCommandElevated(string command)
+        {
+            if (String.IsNullOrWhiteSpace(command)) return;
+            string args = "/c " + command;
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", args);
+            psi.UseShellExecute = true;
+            psi.Verb = "runas";
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            Process.Start(psi);
         }
 
         private void DownloadFile(string url)
@@ -1276,6 +1486,27 @@ namespace ToolboxClient
             string dir = GetDownloadDirectory();
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, fileName);
+
+            if (IsDownloadAlreadyActive(url, fileName))
+            {
+                status.Text = "文件正在下载中：" + fileName;
+                ShowDownloadRecordsPanel();
+                RenderActiveDownloads();
+                return;
+            }
+
+            string existingPath = FindExistingDownloadPath(url, fileName, path);
+            if (!String.IsNullOrWhiteSpace(existingPath))
+            {
+                string existingName = Path.GetFileName(existingPath);
+                string launchStatus = LaunchExistingFile(existingPath);
+                status.Text = launchStatus + "：" + existingName;
+                AddDownloadRecord(existingName, url, existingPath, launchStatus, "");
+                ShowDownloadRecordsPanel();
+                FillDownloadRecords();
+                return;
+            }
+
             path = UniqueDownloadPath(path);
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(url, fileName, path);
@@ -1289,6 +1520,47 @@ namespace ToolboxClient
             {
                 DownloadFileWorker(task);
             });
+        }
+
+        private bool IsDownloadAlreadyActive(string url, string fileName)
+        {
+            lock (activeDownloadsLock)
+            {
+                foreach (DownloadTask task in activeDownloads)
+                {
+                    if (task == null) continue;
+                    if (String.Equals(task.Url, url, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (String.Equals(task.FileName, fileName, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
+        }
+
+        private string FindExistingDownloadPath(string url, string fileName, string defaultPath)
+        {
+            if (IsUsableDownloadFile(defaultPath)) return defaultPath;
+
+            foreach (DownloadRecord record in LoadDownloadRecords())
+            {
+                if (record == null) continue;
+                bool sameUrl = !String.IsNullOrWhiteSpace(record.Url) && String.Equals(record.Url, url, StringComparison.OrdinalIgnoreCase);
+                bool sameName = !String.IsNullOrWhiteSpace(record.Name) && String.Equals(record.Name, fileName, StringComparison.OrdinalIgnoreCase);
+                if ((sameUrl || sameName) && IsUsableDownloadFile(record.SavedPath)) return record.SavedPath;
+            }
+
+            return "";
+        }
+
+        private bool IsUsableDownloadFile(string path)
+        {
+            try
+            {
+                return !String.IsNullOrWhiteSpace(path) && File.Exists(path) && new FileInfo(path).Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private string UniqueDownloadPath(string path)
@@ -1427,6 +1699,35 @@ namespace ToolboxClient
             }
         }
 
+        private string LaunchExistingFile(string path)
+        {
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            try
+            {
+                if (ext == ".exe")
+                {
+                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas" });
+                    return "文件已存在，已请求管理员启动";
+                }
+                if (ext == ".msi")
+                {
+                    Process.Start(new ProcessStartInfo("msiexec.exe", "/i \"" + path + "\"") { UseShellExecute = true, Verb = "runas" });
+                    return "文件已存在，已请求管理员安装";
+                }
+                Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
+                return "文件已存在，已定位";
+            }
+            catch (Win32Exception ex)
+            {
+                if (ex.NativeErrorCode == 1223) return "文件已存在，用户取消管理员启动";
+                return "文件已存在，管理员启动失败";
+            }
+            catch
+            {
+                return "文件已存在，管理员启动失败";
+            }
+        }
+
         private string DefaultDownloadDirectory()
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -1535,6 +1836,7 @@ namespace ToolboxClient
             recordsPanel.Visible = !recordsPanel.Visible;
             if (recordsPanel.Visible)
             {
+                if (settingsPanel != null) settingsPanel.Visible = false;
                 recordsPanel.BringToFront();
                 recordsList.Focus();
             }
@@ -1544,6 +1846,7 @@ namespace ToolboxClient
         {
             if (recordsPanel == null) BuildRecordsPanel();
             FillDownloadRecords();
+            if (settingsPanel != null) settingsPanel.Visible = false;
             recordsPanel.Visible = true;
             recordsPanel.BringToFront();
         }
@@ -1555,7 +1858,7 @@ namespace ToolboxClient
                 Width = 660,
                 Height = 470,
                 Visible = false,
-                BackColor = PanelBg,
+                BackColor = DialogBodyBack(),
                 Padding = new Padding(18),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
@@ -1568,7 +1871,7 @@ namespace ToolboxClient
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 5,
-                BackColor = Color.Transparent,
+                BackColor = DialogBodyBack(),
                 Margin = Padding.Empty,
                 Padding = new Padding(4, 2, 12, 10)
             };
@@ -1593,8 +1896,8 @@ namespace ToolboxClient
             activeDownloadsList = new RoundedFlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(24, 39, 58),
-                Padding = new Padding(10, 10, 10, 8),
+                BackColor = DialogCardBack(),
+                Padding = new Padding(10, 10, 10, 10),
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true
@@ -1608,6 +1911,7 @@ namespace ToolboxClient
                 Dock = DockStyle.Fill,
                 Text = "下载记录",
                 ForeColor = TextColor,
+                BackColor = DialogBodyBack(),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = new Font(Font.FontFamily, 12F, FontStyle.Bold),
                 Padding = new Padding(4, 0, 0, 0)
@@ -1621,7 +1925,7 @@ namespace ToolboxClient
                 FullRowSelect = true,
                 MultiSelect = true,
                 HideSelection = false,
-                BackColor = Color.FromArgb(18, 31, 47),
+                BackColor = DialogFieldBack(),
                 ForeColor = TextColor,
                 BorderStyle = BorderStyle.None,
                 HeaderStyle = ColumnHeaderStyle.Nonclickable,
@@ -1640,7 +1944,7 @@ namespace ToolboxClient
             RoundedPanel tableHost = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(18, 31, 47),
+                BackColor = DialogFieldBack(),
                 BorderColor = Color.FromArgb(82, Line),
                 Radius = 12,
                 Padding = new Padding(1)
@@ -1648,7 +1952,7 @@ namespace ToolboxClient
             tableHost.Controls.Add(recordsList);
             layout.Controls.Add(tableHost, 0, 2);
 
-            Panel separator = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+            Panel separator = new Panel { Dock = DockStyle.Fill, BackColor = DialogBodyBack() };
             layout.Controls.Add(separator, 0, 3);
 
             FlowLayoutPanel actions = new FlowLayoutPanel
@@ -1657,7 +1961,7 @@ namespace ToolboxClient
                 FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false,
                 Padding = new Padding(0, 10, 4, 0),
-                BackColor = Color.Transparent
+                BackColor = DialogBodyBack()
             };
             Button clear = MakeDialogButton("清空记录");
             Button deleteSelected = MakeDialogButton("删除选中");
@@ -1744,39 +2048,45 @@ namespace ToolboxClient
             Panel row = new RoundedPanel
             {
                 Width = Math.Max(540, activeDownloadsList.ClientSize.Width - 24),
-                Height = 76,
+                Height = 84,
                 Margin = new Padding(0, 0, 0, 8),
-                BackColor = Color.FromArgb(30, 47, 68),
+                BackColor = DialogCardBack(),
                 Padding = Padding.Empty
             };
+            int buttonWidth = 72;
+            int buttonGap = 8;
+            int buttonTop = 25;
+            int reservedRight = (buttonWidth * 3) + (buttonGap * 2) + 26;
             Label label = new Label
             {
                 Name = "taskFileLabel",
-                Left = 8,
-                Top = 8,
-                Width = Math.Max(220, row.Width - 242),
+                Left = 16,
+                Top = 12,
+                Width = Math.Max(220, row.Width - reservedRight - 18),
                 Height = 22,
                 ForeColor = TextColor,
+                BackColor = Color.Transparent,
                 AutoEllipsis = true
             };
             Label meta = new Label
             {
                 Name = "taskMetaLabel",
-                Left = 8,
-                Top = 30,
-                Width = Math.Max(220, row.Width - 242),
+                Left = 16,
+                Top = 34,
+                Width = Math.Max(220, row.Width - reservedRight - 18),
                 Height = 20,
                 ForeColor = Muted,
+                BackColor = Color.Transparent,
                 AutoEllipsis = true
             };
             SmoothProgressBar bar = new SmoothProgressBar
             {
                 Name = "taskBar",
-                Left = 8,
-                Top = 58,
-                Width = Math.Max(220, row.Width - 242),
+                Left = 16,
+                Top = 64,
+                Width = Math.Max(220, row.Width - reservedRight - 18),
                 Height = 10,
-                BackColor = Color.FromArgb(20, 33, 50),
+                BackColor = DialogFieldBack(),
                 FillColor = Accent
             };
             Button cancel = MakeDialogButton("取消");
@@ -1785,13 +2095,23 @@ namespace ToolboxClient
             cancel.Name = "taskCancel";
             resume.Name = "taskResume";
             pause.Name = "taskPause";
-            cancel.Left = row.Width - 72;
-            resume.Left = row.Width - 146;
-            pause.Left = row.Width - 220;
-            cancel.Top = resume.Top = pause.Top = 23;
+            cancel.Width = resume.Width = pause.Width = buttonWidth;
+            cancel.Height = resume.Height = pause.Height = 34;
+            cancel.Left = row.Width - buttonWidth - 16;
+            resume.Left = cancel.Left - buttonWidth - buttonGap;
+            pause.Left = resume.Left - buttonWidth - buttonGap;
+            cancel.Top = resume.Top = pause.Top = buttonTop;
             pause.Click += delegate { task.PauseEvent.Reset(); task.StateText = "已暂停"; UpdateDownloadTaskRow(task, row); };
             resume.Click += delegate { task.PauseEvent.Set(); task.StateText = "下载中"; UpdateDownloadTaskRow(task, row); };
             cancel.Click += delegate { task.Cancel(); task.StateText = "正在取消"; UpdateDownloadTaskRow(task, row); };
+            row.Resize += delegate
+            {
+                int rightSpace = (buttonWidth * 3) + (buttonGap * 2) + 26;
+                label.Width = meta.Width = bar.Width = Math.Max(220, row.Width - rightSpace - 18);
+                cancel.Left = row.Width - buttonWidth - 16;
+                resume.Left = cancel.Left - buttonWidth - buttonGap;
+                pause.Left = resume.Left - buttonWidth - buttonGap;
+            };
             row.Controls.Add(label);
             row.Controls.Add(meta);
             row.Controls.Add(bar);
@@ -1868,9 +2188,41 @@ namespace ToolboxClient
             recordsList.Columns[3].Width = Math.Max(170, width - recordsList.Columns[0].Width - recordsList.Columns[1].Width - recordsList.Columns[2].Width - 6);
         }
 
+        private static Color DialogBodyBack()
+        {
+            return LightTheme ? Color.FromArgb(255, 248, 252) : Color.FromArgb(18, 31, 47);
+        }
+
+        private static Color DialogCardBack()
+        {
+            return LightTheme ? Color.FromArgb(255, 244, 250) : Color.FromArgb(25, 41, 61);
+        }
+
+        private static Color DialogFieldBack()
+        {
+            return LightTheme ? Color.FromArgb(255, 252, 254) : Color.FromArgb(18, 31, 47);
+        }
+
+        private static Color DialogHeaderBack()
+        {
+            return LightTheme ? Color.FromArgb(247, 225, 237) : Color.FromArgb(27, 43, 63);
+        }
+
+        private static Color DialogRowBack(int index, bool selected)
+        {
+            if (selected) return LightTheme ? Color.FromArgb(232, 132, 180) : Color.FromArgb(37, 82, 112);
+            if (LightTheme) return index % 2 == 0 ? Color.FromArgb(255, 250, 253) : Color.FromArgb(252, 239, 247);
+            return index % 2 == 0 ? Color.FromArgb(18, 31, 47) : Color.FromArgb(21, 35, 52);
+        }
+
+        private static Color DialogSubText()
+        {
+            return LightTheme ? Color.FromArgb(116, 76, 96) : Color.FromArgb(190, 206, 222);
+        }
+
         private void DrawDownloadRecordHeader(object sender, DrawListViewColumnHeaderEventArgs e)
         {
-            using (SolidBrush bg = new SolidBrush(Color.FromArgb(27, 43, 63)))
+            using (SolidBrush bg = new SolidBrush(DialogHeaderBack()))
             using (Pen border = new Pen(Color.FromArgb(78, Line)))
             {
                 e.Graphics.FillRectangle(bg, e.Bounds);
@@ -1878,7 +2230,7 @@ namespace ToolboxClient
                 if (e.ColumnIndex > 0) e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Top + 6, e.Bounds.Left, e.Bounds.Bottom - 6);
             }
             Rectangle textRect = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 18, e.Bounds.Height);
-            TextRenderer.DrawText(e.Graphics, e.Header.Text, new Font(Font.FontFamily, 9F, FontStyle.Bold), textRect, Color.FromArgb(197, 212, 226), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(e.Graphics, e.Header.Text, new Font(Font.FontFamily, 9F, FontStyle.Bold), textRect, TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
         private void DrawDownloadRecordItem(object sender, DrawListViewItemEventArgs e)
@@ -1888,7 +2240,7 @@ namespace ToolboxClient
         private void DrawDownloadRecordSubItem(object sender, DrawListViewSubItemEventArgs e)
         {
             bool selected = e.Item.Selected;
-            Color rowBack = selected ? Color.FromArgb(37, 82, 112) : (e.ItemIndex % 2 == 0 ? Color.FromArgb(18, 31, 47) : Color.FromArgb(21, 35, 52));
+            Color rowBack = DialogRowBack(e.ItemIndex, selected);
             using (SolidBrush bg = new SolidBrush(rowBack))
             {
                 e.Graphics.FillRectangle(bg, e.Bounds);
@@ -1897,7 +2249,7 @@ namespace ToolboxClient
             {
                 e.Graphics.DrawLine(line, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
             }
-            Color text = selected ? Color.White : (e.ColumnIndex == 1 ? Color.FromArgb(140, 218, 237) : TextColor);
+            Color text = selected ? Color.White : (e.ColumnIndex == 1 ? Accent : TextColor);
             Rectangle textRect = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top + 1, e.Bounds.Width - 16, e.Bounds.Height - 2);
             TextRenderer.DrawText(e.Graphics, e.SubItem.Text, Font, textRect, text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
@@ -1907,13 +2259,13 @@ namespace ToolboxClient
             ComboBox combo = sender as ComboBox;
             if (combo == null || e.Index < 0) return;
             bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-            Color back = selected ? Color.FromArgb(39, 84, 112) : Color.FromArgb(18, 31, 47);
+            Color back = selected ? (LightTheme ? Color.FromArgb(232, 132, 180) : Color.FromArgb(39, 84, 112)) : DialogFieldBack();
             using (SolidBrush bg = new SolidBrush(back))
             {
                 e.Graphics.FillRectangle(bg, e.Bounds);
             }
             string text = Convert.ToString(combo.Items[e.Index]);
-            TextRenderer.DrawText(e.Graphics, text, combo.Font, new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 12, e.Bounds.Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(e.Graphics, text, combo.Font, new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 12, e.Bounds.Height), selected ? Color.White : TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
         private void OpenSelectedRecordFile()
@@ -1997,7 +2349,11 @@ namespace ToolboxClient
             if (settingsPanel == null) BuildSettingsPanel();
             FillSettingsPanel();
             settingsPanel.Visible = !settingsPanel.Visible;
-            if (settingsPanel.Visible) settingsPanel.BringToFront();
+            if (settingsPanel.Visible)
+            {
+                if (recordsPanel != null) recordsPanel.Visible = false;
+                settingsPanel.BringToFront();
+            }
         }
 
         private void BuildSettingsPanel()
@@ -2005,7 +2361,7 @@ namespace ToolboxClient
             settingsPanel = new PopupPanel
             {
                 Width = 650,
-                Height = 380,
+                Height = 430,
                 Visible = false,
                 BackColor = PanelBg,
                 Padding = new Padding(18),
@@ -2035,7 +2391,7 @@ namespace ToolboxClient
             ClientSettings currentSettings = LoadClientSettings();
             bool allowTheme = BoolValue(app, "allow_client_theme", true);
             settingsPanel.Controls.Clear();
-            settingsPanel.BackColor = PanelBg;
+            settingsPanel.BackColor = DialogBodyBack();
 
             Button close = MakeCloseButton();
             close.Text = "×";
@@ -2046,17 +2402,21 @@ namespace ToolboxClient
 
             Label caption = new Label { Left = 24, Top = 20, Width = 560, Height = 28, Text = "工具箱设置", ForeColor = TextColor, Font = new Font(Font.FontFamily, 12F, FontStyle.Bold), BackColor = Color.Transparent };
 
+            Color cardBack = DialogCardBack();
+            Color fieldBack = DialogFieldBack();
+            Color labelColor = DialogSubText();
+
             RoundedPanel pathCard = new RoundedPanel
             {
                 Left = 22,
                 Top = 62,
                 Width = 590,
-                Height = 100,
+                Height = 96,
                 Radius = 14,
-                BackColor = Color.FromArgb(25, 41, 61),
+                BackColor = cardBack,
                 BorderColor = Color.FromArgb(70, Line)
             };
-            Label label = new Label { Left = 16, Top = 12, Width = 540, Height = 22, Text = "软件下载保存路径", ForeColor = Color.FromArgb(190, 206, 222), BackColor = Color.Transparent };
+            Label label = new Label { Left = 16, Top = 12, Width = 540, Height = 22, Text = "软件下载保存路径", ForeColor = labelColor, BackColor = Color.Transparent };
             TextBox pathBox = new TextBox
             {
                 Left = 18,
@@ -2064,7 +2424,7 @@ namespace ToolboxClient
                 Width = 454,
                 Height = 28,
                 Text = GetDownloadDirectory(),
-                BackColor = Color.FromArgb(18, 31, 47),
+                BackColor = fieldBack,
                 ForeColor = TextColor,
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -2076,14 +2436,14 @@ namespace ToolboxClient
             RoundedPanel themeCard = new RoundedPanel
             {
                 Left = 22,
-                Top = 176,
+                Top = 172,
                 Width = 590,
                 Height = 84,
                 Radius = 14,
-                BackColor = Color.FromArgb(25, 41, 61),
+                BackColor = cardBack,
                 BorderColor = Color.FromArgb(70, Line)
             };
-            Label themeLabel = new Label { Left = 16, Top = 12, Width = 540, Height = 22, Text = "界面主题", ForeColor = Color.FromArgb(190, 206, 222), BackColor = Color.Transparent };
+            Label themeLabel = new Label { Left = 16, Top = 12, Width = 540, Height = 22, Text = "界面主题", ForeColor = labelColor, BackColor = Color.Transparent };
             ComboBox themeBox = new ComboBox
             {
                 Left = 16,
@@ -2091,7 +2451,7 @@ namespace ToolboxClient
                 Width = 558,
                 Height = 30,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                BackColor = Color.FromArgb(18, 31, 47),
+                BackColor = fieldBack,
                 ForeColor = TextColor,
                 Enabled = allowTheme,
                 FlatStyle = FlatStyle.Flat,
@@ -2116,40 +2476,50 @@ namespace ToolboxClient
             RoundedPanel optionCard = new RoundedPanel
             {
                 Left = 22,
-                Top = 274,
+                Top = 270,
                 Width = 590,
-                Height = 48,
+                Height = 78,
                 Radius = 14,
-                BackColor = Color.FromArgb(25, 41, 61),
+                BackColor = cardBack,
                 BorderColor = Color.FromArgb(70, Line)
+            };
+            Label optionLabel = new Label
+            {
+                Left = 16,
+                Top = 12,
+                Width = 540,
+                Height = 22,
+                Text = "启动与清理",
+                ForeColor = labelColor,
+                BackColor = Color.Transparent
             };
             CheckBox autoStart = new FlatCheckBox
             {
                 Left = 16,
-                Top = 12,
+                Top = 42,
                 Width = 250,
-                Height = 24,
+                Height = 26,
                 Text = "开机自动启动工具箱",
                 ForeColor = TextColor,
-                BackColor = Color.Transparent,
+                BackColor = optionCard.BackColor,
                 Checked = currentSettings.AutoStart || IsAutoStartEnabled()
             };
             CheckBox cleanOnExit = new FlatCheckBox
             {
                 Left = 292,
-                Top = 12,
+                Top = 42,
                 Width = 280,
-                Height = 24,
+                Height = 26,
                 Text = "关闭时自动删除已下载文件",
                 ForeColor = TextColor,
-                BackColor = Color.Transparent,
+                BackColor = optionCard.BackColor,
                 Checked = currentSettings.DeleteDownloadsOnExit
             };
 
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
                 Left = 22,
-                Top = 332,
+                Top = 362,
                 Width = 590,
                 Height = 42,
                 FlowDirection = FlowDirection.RightToLeft,
@@ -2231,6 +2601,7 @@ namespace ToolboxClient
             pathCard.Controls.Add(browse);
             themeCard.Controls.Add(themeLabel);
             themeCard.Controls.Add(themeBox);
+            optionCard.Controls.Add(optionLabel);
             optionCard.Controls.Add(autoStart);
             optionCard.Controls.Add(cleanOnExit);
             settingsPanel.Controls.Add(caption);
@@ -2313,12 +2684,12 @@ namespace ToolboxClient
             RoundButton button = new RoundButton();
             button.Width = 34;
             button.Height = 30;
-            button.Radius = 9;
+            button.Radius = 12;
             button.Text = "×";
-            button.BackColor = Color.FromArgb(30, 47, 68);
+            button.BackColor = LightTheme ? DialogFieldBack() : Color.FromArgb(30, 47, 68);
             button.ForeColor = TextColor;
-            button.BorderColor = Color.FromArgb(90, Line);
-            button.HoverBackColor = Color.FromArgb(47, 75, 101);
+            button.BorderColor = Color.FromArgb(LightTheme ? 85 : 90, Line);
+            button.HoverBackColor = LightTheme ? Color.FromArgb(235, 247, 254) : Color.FromArgb(47, 75, 101);
             button.FlatStyle = FlatStyle.Flat;
             button.FlatAppearance.BorderSize = 0;
             button.UseVisualStyleBackColor = false;
@@ -2343,12 +2714,24 @@ namespace ToolboxClient
                 BackColor = buttonBack,
                 ForeColor = buttonText,
                 UseVisualStyleBackColor = false,
-                BorderColor = Color.FromArgb(95, border),
-                HoverBackColor = Color.FromArgb(44, 84, 112),
-                Radius = 9
+                BorderColor = Color.FromArgb(LightTheme ? 105 : 95, border),
+                HoverBackColor = LightTheme ? Color.FromArgb(235, 247, 254) : Color.FromArgb(44, 84, 112),
+                Radius = 13
             };
             button.FlatAppearance.BorderSize = 0;
             return button;
+        }
+
+        private static Color EffectiveBackColor(Control control)
+        {
+            Control current = control;
+            while (current != null)
+            {
+                Color color = current.BackColor;
+                if (color != Color.Transparent && color.A > 0) return color;
+                current = current.Parent;
+            }
+            return SystemColors.Control;
         }
 
         private static GraphicsPath UiRoundRect(Rectangle rect, int radius)
@@ -2361,6 +2744,22 @@ namespace ToolboxClient
             path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
             path.CloseFigure();
             return path;
+        }
+
+        private static void EnsureRoundedRegion(Control control, int radius, ref Size regionSize, ref int regionRadius)
+        {
+            if (control.Width <= 0 || control.Height <= 0) return;
+            Size size = control.ClientSize;
+            if (control.Region != null && regionSize == size && regionRadius == radius) return;
+            Rectangle rect = new Rectangle(0, 0, control.Width - 1, control.Height - 1);
+            using (GraphicsPath path = UiRoundRect(rect, radius))
+            {
+                Region old = control.Region;
+                control.Region = new Region(path);
+                if (old != null) old.Dispose();
+            }
+            regionSize = size;
+            regionRadius = radius;
         }
 
         private static DownloadRecord SelectedDownloadRecord(ListView list)
@@ -2541,7 +2940,7 @@ namespace ToolboxClient
 
         private static string GetTarget(Dictionary<string, object> item, string action)
         {
-            if (action == "script") return GetText(item, "script", GetText(item, "target", ""));
+            if (action == "script") return GetText(item, "script", GetText(item, "custom_script", GetText(item, "target", "")));
             if (action == "cmd") return GetText(item, "command", GetText(item, "target", ""));
             if (action == "winget") return GetText(item, "winget", GetText(item, "package", GetText(item, "command", GetText(item, "target", ""))));
             if (action == "download") return GetText(item, "download_url", GetText(item, "url", GetText(item, "target", "")));
@@ -2670,8 +3069,7 @@ namespace ToolboxClient
                 timer.Tick += delegate
                 {
                     glow += (targetGlow - glow) * 0.25;
-                    pulse += 0.18;
-                    if (Math.Abs(targetGlow - glow) < 0.01 && !active && !hovered)
+                    if (Math.Abs(targetGlow - glow) < 0.01)
                     {
                         glow = targetGlow;
                         timer.Stop();
@@ -2712,7 +3110,7 @@ namespace ToolboxClient
                         e.Graphics.FillPath(bg, path);
                     }
 
-                    int beamAlpha = Math.Min(255, (int)(90 + 110 * glow + 35 * Math.Sin(pulse)));
+                    int beamAlpha = Math.Min(255, (int)(90 + 110 * glow));
                     using (GraphicsPath beam = RoundRect(new Rectangle(0, 7, 5, Height - 15), 3))
                     using (SolidBrush beamBrush = new SolidBrush(Color.FromArgb(beamAlpha, 56, 207, 255)))
                     {
@@ -2832,12 +3230,16 @@ namespace ToolboxClient
         {
             public string Action;
             public string Target;
+            public string CustomScript;
+            public string Name;
         }
 
         private sealed class RoundedPanel : Panel
         {
             public int Radius = 12;
             public Color BorderColor = Color.FromArgb(70, Line);
+            private Size regionSize;
+            private int regionRadius = -1;
 
             public RoundedPanel()
             {
@@ -2852,11 +3254,17 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
                 Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
                 using (GraphicsPath path = UiRoundRect(rect, Radius))
                 using (SolidBrush bg = new SolidBrush(BackColor))
                 using (Pen border = new Pen(BorderColor, 1F))
                 {
+                    EnsureRoundedRegion(this, Radius, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, path);
                     e.Graphics.DrawPath(border, path);
                 }
@@ -2867,6 +3275,8 @@ namespace ToolboxClient
         private sealed class RoundedFlowLayoutPanel : FlowLayoutPanel
         {
             public int Radius = 12;
+            private Size regionSize;
+            private int regionRadius = -1;
 
             public RoundedFlowLayoutPanel()
             {
@@ -2881,11 +3291,17 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
                 Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
                 using (GraphicsPath path = UiRoundRect(rect, Radius))
                 using (SolidBrush bg = new SolidBrush(BackColor))
                 using (Pen border = new Pen(Color.FromArgb(76, Line), 1F))
                 {
+                    EnsureRoundedRegion(this, Radius, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, path);
                     e.Graphics.DrawPath(border, path);
                 }
@@ -2907,9 +3323,14 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
                 Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
                 using (GraphicsPath path = UiRoundRect(rect, 12))
-                using (SolidBrush bg = new SolidBrush(Color.FromArgb(24, 39, 58)))
+                using (SolidBrush bg = new SolidBrush(DialogCardBack()))
                 using (Pen border = new Pen(Color.FromArgb(65, Line)))
                 {
                     e.Graphics.FillPath(bg, path);
@@ -2934,6 +3355,8 @@ namespace ToolboxClient
         private sealed class RoundButton : Button
         {
             private bool hovered;
+            private Size regionSize;
+            private int regionRadius = -1;
             public int Radius = 9;
             public Color BorderColor = Line;
             public Color HoverBackColor = PanelBg2;
@@ -2962,12 +3385,18 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
                 Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
                 Color fill = hovered ? HoverBackColor : BackColor;
                 using (GraphicsPath path = UiRoundRect(rect, Radius))
                 using (LinearGradientBrush bg = new LinearGradientBrush(rect, Color.FromArgb(Math.Min(255, fill.R + 5), Math.Min(255, fill.G + 5), Math.Min(255, fill.B + 5)), fill, LinearGradientMode.Vertical))
                 using (Pen border = new Pen(hovered ? Color.FromArgb(150, Accent) : BorderColor, 1F))
                 {
+                    EnsureRoundedRegion(this, Radius, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, path);
                     e.Graphics.DrawPath(border, path);
                 }
@@ -2987,9 +3416,14 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color clear = BackColor == Color.Transparent ? EffectiveBackColor(Parent) : BackColor;
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
                 Rectangle box = new Rectangle(0, (Height - 18) / 2, 18, 18);
                 using (GraphicsPath path = UiRoundRect(box, 5))
-                using (SolidBrush bg = new SolidBrush(Checked ? Accent : Color.FromArgb(18, 31, 47)))
+                using (SolidBrush bg = new SolidBrush(Checked ? Accent : DialogFieldBack()))
                 using (Pen border = new Pen(Checked ? Accent : Color.FromArgb(100, Line), 1.2F))
                 {
                     e.Graphics.FillPath(bg, path);
@@ -3008,6 +3442,9 @@ namespace ToolboxClient
 
         private sealed class PopupPanel : Panel
         {
+            private Size regionSize;
+            private int regionRadius = -1;
+
             public PopupPanel()
             {
                 DoubleBuffered = true;
@@ -3021,18 +3458,25 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                Rectangle shadowRect = new Rectangle(8, 10, Width - 18, Height - 20);
-                using (GraphicsPath shadowPath = RoundRect(shadowRect, 18))
-                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(LightTheme ? 36 : 92, 0, 0, 0)))
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush clearBrush = new SolidBrush(clear))
+                {
+                    e.Graphics.FillRectangle(clearBrush, ClientRectangle);
+                }
+
+                Rectangle shadowRect = new Rectangle(4, 5, Width - 10, Height - 11);
+                using (GraphicsPath shadowPath = RoundRect(shadowRect, 20))
+                using (SolidBrush shadow = new SolidBrush(Color.FromArgb(LightTheme ? 0 : 42, 0, 0, 0)))
                 {
                     e.Graphics.FillPath(shadow, shadowPath);
                 }
 
-                Rectangle bodyRect = new Rectangle(1, 1, Width - 10, Height - 10);
-                using (GraphicsPath bodyPath = RoundRect(bodyRect, 18))
-                using (LinearGradientBrush bg = new LinearGradientBrush(bodyRect, Color.FromArgb(27, 43, 63), Color.FromArgb(18, 31, 47), LinearGradientMode.Vertical))
-                using (Pen border = new Pen(Color.FromArgb(96, Line), 1F))
+                Rectangle bodyRect = new Rectangle(0, 0, Width - 1, Height - 1);
+                using (GraphicsPath bodyPath = RoundRect(bodyRect, 20))
+                using (LinearGradientBrush bg = new LinearGradientBrush(bodyRect, LightTheme ? DialogCardBack() : Color.FromArgb(27, 43, 63), LightTheme ? DialogBodyBack() : Color.FromArgb(18, 31, 47), LinearGradientMode.Vertical))
+                using (Pen border = new Pen(Color.FromArgb(LightTheme ? 70 : 92, Line), 1F))
                 {
+                    EnsureRoundedRegion(this, 20, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, bodyPath);
                     e.Graphics.DrawPath(border, bodyPath);
                 }
@@ -3084,6 +3528,53 @@ namespace ToolboxClient
             public string SavedPath { get; set; }
             public string Result { get; set; }
             public string Message { get; set; }
+        }
+
+        private sealed class CommandRunResult
+        {
+            public string Name = "内置功能";
+            public string Command = "";
+            public string Output = "";
+            public string Error = "";
+            public string LogPath = "";
+            public int ExitCode = -1;
+
+            public string ToMessage()
+            {
+                StringBuilder builder = new StringBuilder();
+                builder.AppendLine(ExitCode == 0 ? "运行完成。" : "运行失败。");
+                builder.AppendLine("功能：" + Name);
+                builder.AppendLine("退出码：" + ExitCode);
+                builder.AppendLine();
+                builder.AppendLine("执行命令：");
+                builder.AppendLine(Command);
+                if (!String.IsNullOrWhiteSpace(LogPath))
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("日志文件：" + LogPath);
+                }
+                if (!String.IsNullOrWhiteSpace(Output))
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("输出日志：");
+                    builder.AppendLine(TrimLog(Output));
+                }
+                if (!String.IsNullOrWhiteSpace(Error))
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("错误日志：");
+                    builder.AppendLine(TrimLog(Error));
+                }
+                return builder.ToString().Trim();
+            }
+
+            private static string TrimLog(string text)
+            {
+                if (String.IsNullOrEmpty(text)) return "";
+                const int max = 6000;
+                if (text.Length <= max) return text.Trim();
+                return text.Substring(0, max).Trim() + Environment.NewLine + "...日志过长，已截断";
+            }
         }
 
         private sealed class DownloadTask
