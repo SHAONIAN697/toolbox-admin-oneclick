@@ -3905,9 +3905,15 @@ namespace ToolboxClient
                 int textX = 18;
                 if (IconImage != null)
                 {
-                    int iconY = (Height - IconImage.Height) / 2;
-                    e.Graphics.DrawImage(IconImage, textX, iconY, IconImage.Width, IconImage.Height);
-                    textX += IconImage.Width + 10;
+                    const int iconBox = 24;
+                    double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)iconBox / Math.Max(1, IconImage.Height));
+                    scale = Math.Min(1D, scale);
+                    int drawW = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
+                    int drawH = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
+                    int iconY = (Height - drawH) / 2;
+                    int iconX = textX + (iconBox - drawW) / 2;
+                    e.Graphics.DrawImage(IconImage, iconX, iconY, drawW, drawH);
+                    textX += iconBox + 10;
                 }
 
                 Rectangle titleRect = new Rectangle(textX, 0, Width - textX - (ListMode ? 92 : 12), Height);
