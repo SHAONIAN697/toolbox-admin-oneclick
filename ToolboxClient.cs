@@ -29,8 +29,10 @@ namespace ToolboxClient
     internal static class Program
     {
         private const string ConfigUrl = "__CONFIG_URL__";
+        internal const string BuildId = "__BUILD_ID__";
         internal const string BuildStamp = "__BUILD_STAMP__";
-        private const string IntegritySeed = "__INTEGRITY_SEED__";
+        internal const string IntegritySeed = "__INTEGRITY_SEED__";
+        internal const string BuildSignature = "__BUILD_SIGNATURE__";
 
         [STAThread]
         private static void Main()
@@ -58,7 +60,8 @@ namespace ToolboxClient
         private static bool VerifyClientIntegrity()
         {
             if (String.IsNullOrWhiteSpace(ConfigUrl) || ConfigUrl.IndexOf("/api/toolbox/config?key=", StringComparison.OrdinalIgnoreCase) < 0) return false;
-            if (String.IsNullOrWhiteSpace(BuildStamp) || String.IsNullOrWhiteSpace(IntegritySeed)) return false;
+            if (String.IsNullOrWhiteSpace(BuildId) || String.IsNullOrWhiteSpace(BuildStamp) || String.IsNullOrWhiteSpace(IntegritySeed)) return false;
+            if (BuildId.StartsWith("__", StringComparison.Ordinal) || BuildStamp.StartsWith("__", StringComparison.Ordinal) || IntegritySeed.StartsWith("__", StringComparison.Ordinal) || BuildSignature.StartsWith("__", StringComparison.Ordinal)) return false;
             if (Debugger.IsAttached) return false;
             return true;
         }
@@ -82,6 +85,7 @@ namespace ToolboxClient
         private ProgressBar downloadProgress;
         private Panel recordsPanel;
         private Panel settingsPanel;
+        private Panel contactPopupOverlay;
         private ListView recordsList;
         private Label recordsProgressLabel;
         private FlowLayoutPanel activeDownloadsList;
@@ -103,11 +107,22 @@ namespace ToolboxClient
         private string lastConfigJson = "";
         private string lastSyncText = "";
         private string lastPasswordHash = "";
+        private string runtimeIntegrityToken = "";
+        private bool runtimeIntegrityChecked = false;
+        private string runtimeIntegrityError = "";
+        private DateTime runtimeIntegrityExpiresAt = DateTime.MinValue;
+        private string runtimeExecutableSha256 = "";
         private bool initialSizeApplied = false;
         private readonly Dictionary<string, NavItemControl> navButtons = new Dictionary<string, NavItemControl>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private Icon runtimeIcon;
+        private ContactPopupConfig popupConfig;
+        private DateTime popupCacheLoadedAt = DateTime.MinValue;
+        private int brandClickCount = 0;
+        private DateTime brandClickWindowStart = DateTime.MinValue;
+        private int activeContactPopupTab = 0;
+        private const int PopupDefaultCacheMinutes = 60;
 
         private static Color Bg = Color.FromArgb(18, 30, 43);
         private static Color SideBg = Color.FromArgb(10, 18, 29);
@@ -157,7 +172,7 @@ namespace ToolboxClient
 
         public ToolboxForm(string url)
         {
-            configUrl = url;
+            configUrl = NormalizeConfigUrl(url);
             Text = "工具箱";
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
@@ -171,8 +186,31 @@ namespace ToolboxClient
             BuildShell();
             refreshTimer = new System.Windows.Forms.Timer();
             refreshTimer.Interval = 5000;
-            refreshTimer.Tick += delegate { LoadConfigAsync(false); };
+            refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
             Shown += delegate { LoadConfigAsync(true); refreshTimer.Start(); };
+        }
+
+        private static string NormalizeConfigUrl(string url)
+        {
+            try
+            {
+                Uri uri = new Uri(url);
+                bool isLocal = uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                               uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                               uri.Host.Equals("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+                               uri.Host.Equals("::1", StringComparison.OrdinalIgnoreCase);
+                if (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) && !isLocal)
+                {
+                    UriBuilder builder = new UriBuilder(uri);
+                    builder.Scheme = "https";
+                    builder.Port = -1;
+                    return builder.Uri.ToString();
+                }
+            }
+            catch
+            {
+            }
+            return url;
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -250,6 +288,8 @@ namespace ToolboxClient
             brandPanel.SetRowSpan(brandIcon, 2);
             brandPanel.Controls.Add(brandTitle, 1, 0);
             brandPanel.Controls.Add(brandSubtitle, 1, 1);
+            brandPanel.Cursor = Cursors.Hand;
+            AttachBrandPopupEntry(brandPanel);
 
             nav = new BufferedFlowLayoutPanel
             {
@@ -377,15 +417,52 @@ namespace ToolboxClient
             AttachRecordDismissHandlers(this);
         }
 
+        private void AttachBrandPopupEntry(Control root)
+        {
+            root.Cursor = Cursors.Hand;
+            root.MouseClick += HandleBrandPopupClick;
+            foreach (Control child in root.Controls)
+            {
+                child.Cursor = Cursors.Hand;
+                child.MouseClick += HandleBrandPopupClick;
+            }
+        }
+
+        private void HandleBrandPopupClick(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            ContactPopupConfig cfg = popupConfig;
+            if (cfg == null || !cfg.Enabled)
+            {
+                LoadPopupConfigAsync(false);
+                return;
+            }
+            DateTime now = DateTime.Now;
+            if ((now - brandClickWindowStart).TotalMilliseconds > 1200)
+            {
+                brandClickWindowStart = now;
+                brandClickCount = 0;
+            }
+            brandClickCount++;
+            int required = Math.Max(1, cfg.ClickCount);
+            if (brandClickCount >= required)
+            {
+                brandClickCount = 0;
+                ShowContactPopup(cfg);
+            }
+        }
+
         private void AttachRecordDismissHandlers(Control root)
         {
             if (root == recordsPanel) return;
             if (root == settingsPanel) return;
+            if (root == contactPopupOverlay) return;
             root.MouseDown += HideRecordsPanelWhenClickOutside;
             foreach (Control child in root.Controls)
             {
                 if (child == recordsPanel) continue;
                 if (child == settingsPanel) continue;
+                if (child == contactPopupOverlay) continue;
                 AttachRecordDismissHandlers(child);
             }
         }
@@ -546,7 +623,8 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                json = DownloadText(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N"));
+                EnsureRuntimeIntegrity();
+                json = DownloadText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N")));
                 EnsureConfigResponse(json);
                 SaveCache(json);
                 if (json == lastConfigJson)
@@ -569,7 +647,25 @@ namespace ToolboxClient
             }
             catch (Exception ex)
             {
-                json = StripPasswordFromCachedConfig(ReadCache());
+                if (IsIntegrityFailure(ex))
+                {
+                    errorMessage = ex.Message;
+                    BeginInvoke(new Action(delegate
+                    {
+                        status.Text = "工具箱校验失败。";
+                        title.Text = "工具箱无法加载";
+                        if (showMessage) MessageBox.Show(errorMessage, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }));
+                    return;
+                }
+                if (!runtimeIntegrityChecked)
+                {
+                    json = null;
+                }
+                else
+                {
+                    json = StripPasswordFromCachedConfig(ReadCache());
+                }
                 if (String.IsNullOrWhiteSpace(json))
                 {
                     errorMessage = "连接后台失败：" + ex.Message;
@@ -604,6 +700,7 @@ namespace ToolboxClient
                     lastConfigJson = json;
                     if (!String.IsNullOrWhiteSpace(statusMessage)) status.Text = statusMessage;
                     ApplyConfig();
+                    LoadPopupConfigAsync(false);
                 }));
             }
             catch (Exception ex)
@@ -808,6 +905,7 @@ namespace ToolboxClient
             if (nav != null) nav.BackColor = SideBg;
             if (content != null) content.BackColor = Bg;
             ApplyThemeToControls(this);
+            RefreshContactPopupTheme();
             if (recordsPanel != null)
             {
                 recordsPanel.Dispose();
@@ -912,6 +1010,10 @@ namespace ToolboxClient
                 if (child == side || child == nav)
                 {
                     child.BackColor = SideBg;
+                }
+                else if (child == contactPopupOverlay)
+                {
+                    continue;
                 }
                 else if (child is Panel || child is TableLayoutPanel || child is FlowLayoutPanel)
                 {
@@ -1486,22 +1588,6 @@ namespace ToolboxClient
             string dir = GetDownloadDirectory();
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, fileName);
-
-            if (IsDownloadAlreadyActive(url, fileName))
-            {
-                status.Text = "文件正在下载中：" + fileName;
-                return;
-            }
-
-            string existingPath = FindExistingDownloadPath(url, fileName, path);
-            if (!String.IsNullOrWhiteSpace(existingPath))
-            {
-                string existingName = Path.GetFileName(existingPath);
-                string launchStatus = LaunchExistingFile(existingPath);
-                status.Text = launchStatus + "：" + existingName;
-                return;
-            }
-
             path = UniqueDownloadPath(path);
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(url, fileName, path);
@@ -1515,47 +1601,6 @@ namespace ToolboxClient
             {
                 DownloadFileWorker(task);
             });
-        }
-
-        private bool IsDownloadAlreadyActive(string url, string fileName)
-        {
-            lock (activeDownloadsLock)
-            {
-                foreach (DownloadTask task in activeDownloads)
-                {
-                    if (task == null) continue;
-                    if (String.Equals(task.Url, url, StringComparison.OrdinalIgnoreCase)) return true;
-                    if (String.Equals(task.FileName, fileName, StringComparison.OrdinalIgnoreCase)) return true;
-                }
-            }
-            return false;
-        }
-
-        private string FindExistingDownloadPath(string url, string fileName, string defaultPath)
-        {
-            if (IsUsableDownloadFile(defaultPath)) return defaultPath;
-
-            foreach (DownloadRecord record in LoadDownloadRecords())
-            {
-                if (record == null) continue;
-                bool sameUrl = !String.IsNullOrWhiteSpace(record.Url) && String.Equals(record.Url, url, StringComparison.OrdinalIgnoreCase);
-                bool sameName = !String.IsNullOrWhiteSpace(record.Name) && String.Equals(record.Name, fileName, StringComparison.OrdinalIgnoreCase);
-                if ((sameUrl || sameName) && IsUsableDownloadFile(record.SavedPath)) return record.SavedPath;
-            }
-
-            return "";
-        }
-
-        private bool IsUsableDownloadFile(string path)
-        {
-            try
-            {
-                return !String.IsNullOrWhiteSpace(path) && File.Exists(path) && new FileInfo(path).Length > 0;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         private string UniqueDownloadPath(string path)
@@ -1694,35 +1739,6 @@ namespace ToolboxClient
             }
         }
 
-        private string LaunchExistingFile(string path)
-        {
-            string ext = Path.GetExtension(path).ToLowerInvariant();
-            try
-            {
-                if (ext == ".exe")
-                {
-                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas" });
-                    return "文件已存在，已请求管理员启动";
-                }
-                if (ext == ".msi")
-                {
-                    Process.Start(new ProcessStartInfo("msiexec.exe", "/i \"" + path + "\"") { UseShellExecute = true, Verb = "runas" });
-                    return "文件已存在，已请求管理员安装";
-                }
-                Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
-                return "文件已存在，已定位";
-            }
-            catch (Win32Exception ex)
-            {
-                if (ex.NativeErrorCode == 1223) return "文件已存在，用户取消管理员启动";
-                return "文件已存在，管理员启动失败";
-            }
-            catch
-            {
-                return "文件已存在，管理员启动失败";
-            }
-        }
-
         private string DefaultDownloadDirectory()
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -1844,6 +1860,388 @@ namespace ToolboxClient
             if (settingsPanel != null) settingsPanel.Visible = false;
             recordsPanel.Visible = true;
             recordsPanel.BringToFront();
+        }
+
+        private void ShowContactPopup(ContactPopupConfig cfg)
+        {
+            if (cfg == null || !cfg.Enabled) return;
+            if (recordsPanel != null) recordsPanel.Visible = false;
+            if (settingsPanel != null) settingsPanel.Visible = false;
+            if (contactPopupOverlay != null)
+            {
+                Controls.Remove(contactPopupOverlay);
+                contactPopupOverlay.Dispose();
+                contactPopupOverlay = null;
+            }
+
+            Panel overlay = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(LightTheme ? 70 : 115, Color.Black)
+            };
+            contactPopupOverlay = overlay;
+            Controls.Add(overlay);
+            overlay.BringToFront();
+
+            PopupPanel dialog = new PopupPanel
+            {
+                BackColor = DialogBodyBack(),
+                Padding = new Padding(22, 18, 22, 18)
+            };
+            overlay.Controls.Add(dialog);
+
+            Action position = delegate
+            {
+                int width = Math.Min(760, Math.Max(520, (int)(ClientSize.Width * 0.86)));
+                int height = Math.Min(720, Math.Max(420, (int)(ClientSize.Height * 0.82)));
+                if (ClientSize.Width < 720) width = Math.Max(320, ClientSize.Width - 28);
+                if (ClientSize.Height < 560) height = Math.Max(360, ClientSize.Height - 28);
+                dialog.Size = new Size(width, height);
+                dialog.Left = Math.Max(8, (overlay.ClientSize.Width - dialog.Width) / 2);
+                dialog.Top = Math.Max(8, (overlay.ClientSize.Height - dialog.Height) / 2);
+            };
+            position();
+            overlay.Resize += delegate { position(); LayoutContactPopup(dialog); SelectContactPopupTab(dialog, cfg, activeContactPopupTab); };
+
+            BuildContactPopupContent(dialog, cfg);
+            LayoutContactPopup(dialog);
+        }
+
+        private void CloseContactPopup()
+        {
+            if (contactPopupOverlay == null) return;
+            Controls.Remove(contactPopupOverlay);
+            contactPopupOverlay.Dispose();
+            contactPopupOverlay = null;
+        }
+
+        private void BuildContactPopupContent(PopupPanel dialog, ContactPopupConfig cfg)
+        {
+            dialog.Controls.Clear();
+            Label caption = new Label
+            {
+                Left = 24,
+                Top = 18,
+                Width = dialog.Width - 92,
+                Height = 34,
+                Text = String.IsNullOrWhiteSpace(cfg.Title) ? "联系我们 / 支持作者" : cfg.Title,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 14F, FontStyle.Bold),
+                AutoEllipsis = true
+            };
+            Button close = MakeCloseButton();
+            close.Left = dialog.Width - 58;
+            close.Top = 18;
+            close.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            close.Click += delegate { CloseContactPopup(); };
+
+            FlowLayoutPanel tabs = new FlowLayoutPanel
+            {
+                Left = 24,
+                Top = 62,
+                Width = dialog.Width - 48,
+                Height = 42,
+                BackColor = DialogCardBack(),
+                Padding = new Padding(4),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+            Panel contentHost = new Panel
+            {
+                Left = 24,
+                Top = 116,
+                Width = dialog.Width - 48,
+                Height = dialog.Height - 142,
+                BackColor = DialogBodyBack(),
+                AutoScroll = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            };
+            dialog.Controls.Add(caption);
+            dialog.Controls.Add(close);
+            dialog.Controls.Add(tabs);
+            dialog.Controls.Add(contentHost);
+
+            string[] tabNames = new string[] { "联系我", "支持作者", "相关链接" };
+            for (int i = 0; i < tabNames.Length; i++)
+            {
+                int tabIndex = i;
+                Button tab = MakeDialogButton(tabNames[i]);
+                tab.Width = 108;
+                tab.Height = 32;
+                tab.Margin = new Padding(0, 0, 8, 0);
+                tab.Tag = tabIndex;
+                tab.Click += delegate { SelectContactPopupTab(dialog, cfg, tabIndex); };
+                tabs.Controls.Add(tab);
+            }
+            SelectContactPopupTab(dialog, cfg, 0);
+        }
+
+        private void SelectContactPopupTab(PopupPanel dialog, ContactPopupConfig cfg, int index)
+        {
+            activeContactPopupTab = index;
+            FlowLayoutPanel tabs = dialog.Controls.Count > 2 ? dialog.Controls[2] as FlowLayoutPanel : null;
+            Panel contentHost = dialog.Controls.Count > 3 ? dialog.Controls[3] as Panel : null;
+            if (tabs == null || contentHost == null) return;
+            dialog.BackColor = DialogBodyBack();
+            tabs.BackColor = DialogCardBack();
+            contentHost.BackColor = DialogBodyBack();
+            foreach (Control child in tabs.Controls)
+            {
+                Button tab = child as Button;
+                if (tab == null) continue;
+                bool active = Convert.ToInt32(tab.Tag) == index;
+                tab.BackColor = active ? Accent : (LightTheme ? PanelBg2 : Color.FromArgb(35, 53, 74));
+                tab.ForeColor = active && !LightTheme ? Color.White : TextColor;
+            }
+            contentHost.Controls.Clear();
+            if (index == 0) FillPopupQrGrid(contentHost, cfg.Contacts, "后台暂未配置联系方式。");
+            else if (index == 1) FillPopupPaymentGrid(contentHost, cfg);
+            else FillPopupLinks(contentHost, cfg.Links);
+        }
+
+        private void FillPopupPaymentGrid(Panel host, ContactPopupConfig cfg)
+        {
+            FillPopupQrGrid(host, cfg.Payments, "后台暂未配置收款码。");
+            if (!String.IsNullOrWhiteSpace(cfg.ThanksText))
+            {
+                Label thanks = new Label
+                {
+                    Left = 2,
+                    Top = host.Controls.Count > 0 ? host.Controls[host.Controls.Count - 1].Bottom + 12 : 0,
+                    Width = Math.Max(200, host.ClientSize.Width - 24),
+                    Height = 48,
+                    Text = cfg.ThanksText,
+                    ForeColor = DialogSubText(),
+                    BackColor = Color.Transparent,
+                    AutoEllipsis = false
+                };
+                host.Controls.Add(thanks);
+            }
+        }
+
+        private void FillPopupQrGrid(Panel host, List<ContactPopupItem> rows, string emptyText)
+        {
+            host.SuspendLayout();
+            host.Controls.Clear();
+            int contentWidth = Math.Max(260, host.ClientSize.Width - 22);
+            if (rows == null || rows.Count == 0)
+            {
+                EmptyStateLabel empty = new EmptyStateLabel
+                {
+                    Left = 2,
+                    Top = 2,
+                    Width = contentWidth,
+                    Height = 92,
+                    Text = emptyText
+                };
+                host.Controls.Add(empty);
+                host.ResumeLayout();
+                return;
+            }
+            int gap = 14;
+            int columns = contentWidth >= 620 ? 2 : 1;
+            int cardWidth = columns == 2 ? (contentWidth - gap) / 2 : contentWidth;
+            int x = 0;
+            int y = 0;
+            int rowHeight = 0;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                RoundedPanel card = CreatePopupQrCard(rows[i], cardWidth);
+                card.Left = x;
+                card.Top = y;
+                host.Controls.Add(card);
+                rowHeight = Math.Max(rowHeight, card.Height);
+                if (columns == 1 || x > 0)
+                {
+                    x = 0;
+                    y += rowHeight + gap;
+                    rowHeight = 0;
+                }
+                else
+                {
+                    x += cardWidth + gap;
+                }
+            }
+            host.ResumeLayout();
+        }
+
+        private RoundedPanel CreatePopupQrCard(ContactPopupItem item, int width)
+        {
+            RoundedPanel card = new RoundedPanel
+            {
+                Width = width,
+                Height = 310,
+                Radius = 12,
+                BackColor = DialogCardBack(),
+                BorderColor = Color.FromArgb(78, Line)
+            };
+            Label titleLabel = new Label
+            {
+                Left = 14,
+                Top = 12,
+                Width = width - 28,
+                Height = 24,
+                Text = String.IsNullOrWhiteSpace(item.Title) ? "未命名" : item.Title,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
+                AutoEllipsis = true
+            };
+            Label desc = new Label
+            {
+                Left = 14,
+                Top = 38,
+                Width = width - 28,
+                Height = 42,
+                Text = item.Description,
+                ForeColor = DialogSubText(),
+                BackColor = Color.Transparent
+            };
+            Panel qrHost = new Panel
+            {
+                Left = Math.Max(14, (width - 184) / 2),
+                Top = 88,
+                Width = 184,
+                Height = 184,
+                BackColor = Color.White
+            };
+            PictureBox qr = new PictureBox
+            {
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.White,
+                Padding = new Padding(8)
+            };
+            Image image = LoadRemoteImage(item.Image, 168, 168);
+            if (image == null)
+            {
+                Label failed = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Text = "二维码加载失败",
+                    ForeColor = Color.FromArgb(100, 116, 139),
+                    BackColor = Color.White,
+                    TextAlign = ContentAlignment.MiddleCenter
+                };
+                qrHost.Controls.Add(failed);
+            }
+            else
+            {
+                qr.Image = image;
+                qrHost.Controls.Add(qr);
+            }
+            card.Controls.Add(titleLabel);
+            card.Controls.Add(desc);
+            card.Controls.Add(qrHost);
+            if (!String.IsNullOrWhiteSpace(item.ButtonText) && IsHttpUrl(item.ButtonUrl))
+            {
+                FlowLayoutPanel actionWrap = new FlowLayoutPanel
+                {
+                    Left = 14,
+                    Top = 278,
+                    Width = width - 28,
+                    Height = 34,
+                    BackColor = Color.Transparent,
+                    FlowDirection = FlowDirection.LeftToRight,
+                    WrapContents = true
+                };
+                Button open = MakeDialogButton(item.ButtonText);
+                open.Width = Math.Min(width - 28, Math.Max(96, item.ButtonText.Length * 16));
+                open.Margin = new Padding(0);
+                open.Click += delegate { Open(item.ButtonUrl); };
+                actionWrap.Controls.Add(open);
+                card.Controls.Add(actionWrap);
+            }
+            return card;
+        }
+
+        private void FillPopupLinks(Panel host, List<ContactPopupLink> rows)
+        {
+            host.SuspendLayout();
+            host.Controls.Clear();
+            int contentWidth = Math.Max(260, host.ClientSize.Width - 22);
+            if (rows == null || rows.Count == 0)
+            {
+                EmptyStateLabel empty = new EmptyStateLabel { Left = 2, Top = 2, Width = contentWidth, Height = 92, Text = "后台暂未配置相关链接。" };
+                host.Controls.Add(empty);
+                host.ResumeLayout();
+                return;
+            }
+            int y = 0;
+            foreach (ContactPopupLink item in rows)
+            {
+                RoundedPanel row = new RoundedPanel
+                {
+                    Left = 0,
+                    Top = y,
+                    Width = contentWidth,
+                    Height = 86,
+                    Radius = 12,
+                    BackColor = DialogCardBack(),
+                    BorderColor = Color.FromArgb(78, Line)
+                };
+                Label titleLabel = new Label
+                {
+                    Left = 14,
+                    Top = 12,
+                    Width = Math.Max(120, contentWidth - 148),
+                    Height = 22,
+                    Text = String.IsNullOrWhiteSpace(item.Title) ? item.Url : item.Title,
+                    ForeColor = TextColor,
+                    BackColor = Color.Transparent,
+                    Font = new Font(Font.FontFamily, 10F, FontStyle.Bold),
+                    AutoEllipsis = true
+                };
+                Label desc = new Label
+                {
+                    Left = 14,
+                    Top = 38,
+                    Width = Math.Max(120, contentWidth - 148),
+                    Height = 34,
+                    Text = String.IsNullOrWhiteSpace(item.Description) ? item.Url : item.Description,
+                    ForeColor = DialogSubText(),
+                    BackColor = Color.Transparent,
+                    AutoEllipsis = true
+                };
+                Button open = MakeDialogButton(String.IsNullOrWhiteSpace(item.ButtonText) ? "打开链接" : item.ButtonText);
+                open.Left = contentWidth - 124;
+                open.Top = 24;
+                open.Width = 110;
+                open.Click += delegate { Open(item.Url); };
+                row.Controls.Add(titleLabel);
+                row.Controls.Add(desc);
+                row.Controls.Add(open);
+                host.Controls.Add(row);
+                y += row.Height + 12;
+            }
+            host.ResumeLayout();
+        }
+
+        private void LayoutContactPopup(PopupPanel dialog)
+        {
+            if (dialog == null || dialog.Controls.Count < 4) return;
+            Control caption = dialog.Controls[0];
+            Control close = dialog.Controls[1];
+            Control tabs = dialog.Controls[2];
+            Control host = dialog.Controls[3];
+            caption.Width = dialog.Width - 92;
+            close.Left = dialog.Width - 58;
+            tabs.Width = dialog.Width - 48;
+            host.Width = dialog.Width - 48;
+            host.Height = dialog.Height - 142;
+        }
+
+        private void RefreshContactPopupTheme()
+        {
+            if (contactPopupOverlay == null) return;
+            contactPopupOverlay.BackColor = Color.FromArgb(LightTheme ? 70 : 115, Color.Black);
+            PopupPanel dialog = contactPopupOverlay.Controls.Count > 0 ? contactPopupOverlay.Controls[0] as PopupPanel : null;
+            if (dialog == null || popupConfig == null || !popupConfig.Enabled) return;
+            dialog.BackColor = DialogBodyBack();
+            LayoutContactPopup(dialog);
+            SelectContactPopupTab(dialog, popupConfig, activeContactPopupTab);
         }
 
         private void BuildRecordsPanel()
@@ -2308,7 +2706,8 @@ namespace ToolboxClient
                 MessageBox.Show("请先选择要删除的下载记录。", "下载记录", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            bool deleteFiles = MessageBox.Show("是否同时删除这些已下载文件？", "下载记录", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            if (MessageBox.Show("确定删除选中的下载记录并同时删除已下载文件吗？点“否”将取消操作。", "下载记录", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            bool deleteFiles = true;
             HashSet<string> selected = new HashSet<string>();
             foreach (ListViewItem item in recordsList.SelectedItems)
             {
@@ -2823,12 +3222,331 @@ namespace ToolboxClient
             request.Headers[HttpRequestHeader.CacheControl] = "no-cache, no-store, must-revalidate";
             request.Headers[HttpRequestHeader.Pragma] = "no-cache";
             request.Headers[HttpRequestHeader.Expires] = "0";
+            ApplyIntegrityHeaders(request);
             using (WebResponse response = request.GetResponse())
             using (Stream stream = response.GetResponseStream())
             using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
             {
                 return reader.ReadToEnd();
             }
+        }
+
+        private string RuntimeExecutableSha256()
+        {
+            if (String.IsNullOrWhiteSpace(runtimeExecutableSha256))
+            {
+                runtimeExecutableSha256 = CurrentExecutableSha256();
+            }
+            return runtimeExecutableSha256;
+        }
+
+        private void ApplyIntegrityHeaders(HttpWebRequest request)
+        {
+            try
+            {
+                request.Headers["X-Client-Api-Key"] = ApiKeyFromConfigUrl();
+                if (!String.IsNullOrWhiteSpace(runtimeIntegrityToken)) request.Headers["X-Client-Integrity"] = runtimeIntegrityToken;
+                request.Headers["X-Client-Build-Id"] = Program.BuildId;
+                request.Headers["X-Client-Build-Stamp"] = Program.BuildStamp;
+                request.Headers["X-Client-Integrity-Seed"] = Program.IntegritySeed;
+                request.Headers["X-Client-Build-Signature"] = Program.BuildSignature;
+                request.Headers["X-Client-Exe-Sha256"] = RuntimeExecutableSha256();
+            }
+            catch
+            {
+            }
+        }
+        private void EnsureRuntimeIntegrity()
+        {
+            if (runtimeIntegrityChecked && !String.IsNullOrWhiteSpace(runtimeIntegrityToken) && runtimeIntegrityExpiresAt > DateTime.UtcNow) return;
+            lock (this)
+            {
+                if (runtimeIntegrityChecked && !String.IsNullOrWhiteSpace(runtimeIntegrityToken) && runtimeIntegrityExpiresAt > DateTime.UtcNow) return;
+                if (runtimeIntegrityChecked && runtimeIntegrityExpiresAt <= DateTime.UtcNow)
+                {
+                    runtimeIntegrityChecked = false;
+                    runtimeIntegrityToken = "";
+                    runtimeIntegrityExpiresAt = DateTime.MinValue;
+                }
+                if (String.IsNullOrWhiteSpace(Program.BuildId) || Program.BuildId.StartsWith("__", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("工具箱编译信息缺失，请从后台重新下载最新版。");
+                }
+                string apiKey = ApiKeyFromConfigUrl();
+                string exeHash = RuntimeExecutableSha256();
+                string json = serializer.Serialize(new Dictionary<string, object>
+                {
+                    { "apiKey", apiKey },
+                    { "buildId", Program.BuildId },
+                    { "buildStamp", Program.BuildStamp },
+                    { "integritySeed", Program.IntegritySeed },
+                    { "buildSignature", Program.BuildSignature },
+                    { "exeSha256", exeHash }
+                });
+                string response = PostJson(VerifyBuildUrl(), json);
+                Dictionary<string, object> dict = AsDict(serializer.DeserializeObject(response));
+                if (dict.ContainsKey("error"))
+                {
+                    runtimeIntegrityError = GetText(dict, "error", "工具箱编译校验失败，请从后台重新下载最新版。");
+                    throw new InvalidOperationException(runtimeIntegrityError);
+                }
+                string token = GetText(dict, "runtimeToken", "");
+                if (String.IsNullOrWhiteSpace(token))
+                {
+                    runtimeIntegrityError = "工具箱编译校验未返回有效凭证，请重新下载。";
+                    throw new InvalidOperationException(runtimeIntegrityError);
+                }
+                runtimeIntegrityToken = token;
+                runtimeIntegrityExpiresAt = DateTime.UtcNow.AddSeconds(Math.Max(60, IntValue(dict, "expiresIn", 86400)));
+                runtimeIntegrityChecked = true;
+                runtimeIntegrityError = "";
+            }
+        }
+
+        private bool IsIntegrityFailure(Exception ex)
+        {
+            string message = (ex == null ? "" : ex.Message) ?? "";
+            return message.IndexOf("编译校验", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("对接密钥无效", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("文件已被修改", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("校验失败", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("重新下载", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("已被管理员停用", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private string VerifyBuildUrl()
+        {
+            Uri uri = new Uri(configUrl);
+            return uri.GetLeftPart(UriPartial.Authority) + "/api/toolbox/verify-build";
+        }
+
+        private string ApiKeyFromConfigUrl()
+        {
+            Uri uri = new Uri(configUrl);
+            string query = uri.Query;
+            if (query.StartsWith("?")) query = query.Substring(1);
+            foreach (string part in query.Split(new char[] { '&' }))
+            {
+                if (String.IsNullOrWhiteSpace(part)) continue;
+                string[] kv = part.Split(new char[] { '=' }, 2);
+                string key = Uri.UnescapeDataString(kv[0] ?? "");
+                if (key.Equals("key", StringComparison.OrdinalIgnoreCase))
+                {
+                    return kv.Length > 1 ? Uri.UnescapeDataString(kv[1] ?? "") : "";
+                }
+            }
+            return "";
+        }
+
+        private string WithRuntimeToken(string url)
+        {
+            if (String.IsNullOrWhiteSpace(runtimeIntegrityToken)) return url;
+            return url + (url.IndexOf("?") >= 0 ? "&" : "?") + "runtimeToken=" + Uri.EscapeDataString(runtimeIntegrityToken);
+        }
+        private string PostJson(string url, string json)
+        {
+            byte[] payload = Encoding.UTF8.GetBytes(json ?? "{}");
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.Method = "POST";
+            request.Timeout = 10000;
+            request.ReadWriteTimeout = 10000;
+            request.UserAgent = "ToolboxClient";
+            request.ContentType = "application/json; charset=utf-8";
+            request.ContentLength = payload.Length;
+            request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+            ApplyIntegrityHeaders(request);
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(payload, 0, payload.Length);
+            }
+            try
+            {
+                using (WebResponse response = request.GetResponse())
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+            catch (WebException ex)
+            {
+                if (ex.Response != null)
+                {
+                    using (WebResponse response = ex.Response)
+                    using (Stream stream = response.GetResponseStream())
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        string errorJson = reader.ReadToEnd();
+                        if (!String.IsNullOrWhiteSpace(errorJson)) return errorJson;
+                    }
+                }
+                throw;
+            }
+        }
+
+        private static string CurrentExecutableSha256()
+        {
+            string path = Assembly.GetExecutingAssembly().Location;
+            using (FileStream stream = File.OpenRead(path))
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] bytes = sha.ComputeHash(stream);
+                StringBuilder sb = new StringBuilder(bytes.Length * 2);
+                foreach (byte b in bytes) sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        private string PopupConfigUrl()
+        {
+            try
+            {
+                Uri uri = new Uri(configUrl);
+                return uri.GetLeftPart(UriPartial.Authority) + "/api/toolbox/popup-config";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private string PopupCachePath()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ToolboxClient");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, Sha256Hex(PopupConfigUrl()) + ".popup.json");
+        }
+
+        private void LoadPopupConfigAsync(bool force)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    ContactPopupConfig cached = ReadPopupConfigCache();
+                    if (cached != null && !force)
+                    {
+                        TimeSpan age = DateTime.Now - popupCacheLoadedAt;
+                        int cacheMinutes = cached.CacheMinutes > 0 ? cached.CacheMinutes : PopupDefaultCacheMinutes;
+                        BeginInvoke(new Action(delegate { popupConfig = cached; }));
+                        if (age.TotalMinutes < cacheMinutes) return;
+                    }
+                    string url = PopupConfigUrl();
+                    if (String.IsNullOrWhiteSpace(url)) return;
+                    if (!runtimeIntegrityChecked) EnsureRuntimeIntegrity();
+                    string json = DownloadText(WithRuntimeToken(url + "?t=" + DateTime.UtcNow.Ticks));
+                    ContactPopupConfig parsed = ParsePopupConfig(json);
+                    SavePopupConfigCache(json);
+                    BeginInvoke(new Action(delegate { popupConfig = parsed; }));
+                }
+                catch
+                {
+                    ContactPopupConfig cached = ReadPopupConfigCache();
+                    if (cached != null)
+                    {
+                        try { BeginInvoke(new Action(delegate { popupConfig = cached; })); } catch { }
+                    }
+                }
+            });
+        }
+
+        private ContactPopupConfig ReadPopupConfigCache()
+        {
+            try
+            {
+                string path = PopupCachePath();
+                if (!File.Exists(path)) return null;
+                popupCacheLoadedAt = File.GetLastWriteTime(path);
+                return ParsePopupConfig(File.ReadAllText(path, Encoding.UTF8));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void SavePopupConfigCache(string json)
+        {
+            try
+            {
+                File.WriteAllText(PopupCachePath(), json, Encoding.UTF8);
+                popupCacheLoadedAt = DateTime.Now;
+            }
+            catch
+            {
+            }
+        }
+
+        private ContactPopupConfig ParsePopupConfig(string json)
+        {
+            object parsed = serializer.DeserializeObject(json);
+            Dictionary<string, object> dict = AsDict(parsed);
+            ContactPopupConfig cfg = new ContactPopupConfig();
+            cfg.Enabled = BoolValue(dict, "enabled", false);
+            cfg.ClickCount = Math.Max(1, IntValue(dict, "clickCount", 3));
+            cfg.Title = GetText(dict, "title", "联系我们 / 支持作者");
+            cfg.ThanksText = GetText(dict, "thanksText", "");
+            cfg.CacheMinutes = Math.Max(0, IntValue(dict, "cacheMinutes", PopupDefaultCacheMinutes));
+            cfg.Contacts = ParsePopupQrItems(Get(dict, "contacts"));
+            cfg.Payments = ParsePopupQrItems(Get(dict, "payments"));
+            cfg.Links = ParsePopupLinks(Get(dict, "links"));
+            return cfg;
+        }
+
+        private List<ContactPopupItem> ParsePopupQrItems(object value)
+        {
+            List<ContactPopupItem> rows = new List<ContactPopupItem>();
+            foreach (object itemObj in AsList(value))
+            {
+                Dictionary<string, object> item = AsDict(itemObj);
+                if (!BoolValue(item, "enabled", true)) continue;
+                ContactPopupItem row = new ContactPopupItem();
+                row.Title = GetText(item, "title", "");
+                row.Description = GetText(item, "description", "");
+                row.Image = GetText(item, "image", "");
+                row.ButtonText = GetText(item, "buttonText", "");
+                row.ButtonUrl = GetText(item, "buttonUrl", "");
+                row.Sort = IntValue(item, "sort", rows.Count + 1);
+                rows.Add(row);
+            }
+            rows.Sort(delegate(ContactPopupItem a, ContactPopupItem b)
+            {
+                int result = a.Sort.CompareTo(b.Sort);
+                return result != 0 ? result : String.Compare(a.Title, b.Title, StringComparison.CurrentCultureIgnoreCase);
+            });
+            return rows;
+        }
+
+        private List<ContactPopupLink> ParsePopupLinks(object value)
+        {
+            List<ContactPopupLink> rows = new List<ContactPopupLink>();
+            foreach (object itemObj in AsList(value))
+            {
+                Dictionary<string, object> item = AsDict(itemObj);
+                if (!BoolValue(item, "enabled", true)) continue;
+                string url = GetText(item, "url", "");
+                if (!IsHttpUrl(url)) continue;
+                ContactPopupLink row = new ContactPopupLink();
+                row.Title = GetText(item, "title", "");
+                row.Description = GetText(item, "description", "");
+                row.Url = url;
+                row.ButtonText = GetText(item, "buttonText", "打开链接");
+                row.Sort = IntValue(item, "sort", rows.Count + 1);
+                rows.Add(row);
+            }
+            rows.Sort(delegate(ContactPopupLink a, ContactPopupLink b)
+            {
+                int result = a.Sort.CompareTo(b.Sort);
+                return result != 0 ? result : String.Compare(a.Title, b.Title, StringComparison.CurrentCultureIgnoreCase);
+            });
+            return rows;
+        }
+
+        private static bool IsHttpUrl(string value)
+        {
+            return !String.IsNullOrWhiteSpace(value) &&
+                   (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                    value.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
         }
 
         private void EnsureConfigResponse(string json)
@@ -3513,6 +4231,37 @@ namespace ToolboxClient
             public string Theme { get; set; }
             public bool AutoStart { get; set; }
             public bool DeleteDownloadsOnExit { get; set; }
+        }
+
+        internal sealed class ContactPopupConfig
+        {
+            public bool Enabled;
+            public int ClickCount = 3;
+            public string Title = "联系我们 / 支持作者";
+            public string ThanksText = "";
+            public int CacheMinutes = 60;
+            public List<ContactPopupItem> Contacts = new List<ContactPopupItem>();
+            public List<ContactPopupItem> Payments = new List<ContactPopupItem>();
+            public List<ContactPopupLink> Links = new List<ContactPopupLink>();
+        }
+
+        internal sealed class ContactPopupItem
+        {
+            public string Title = "";
+            public string Description = "";
+            public string Image = "";
+            public string ButtonText = "";
+            public string ButtonUrl = "";
+            public int Sort;
+        }
+
+        internal sealed class ContactPopupLink
+        {
+            public string Title = "";
+            public string Description = "";
+            public string Url = "";
+            public string ButtonText = "打开链接";
+            public int Sort;
         }
 
         internal sealed class DownloadRecord
