@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工具箱后台</title>
+  <link rel="stylesheet" href="/styles.css?v=2026061612">
+</head>
+<body>
+  <section class="login-screen" id="loginScreen">
+    <div class="login-panel">
+      <h1 id="loginTitle">工具箱后台登录</h1>
+      <p id="loginHint" hidden></p>
+      <div class="login-tabs">
+        <button id="showLoginBtn" class="active" type="button">登录</button>
+        <button id="showRegisterBtn" type="button">注册</button>
+        <button id="showForgotBtn" type="button">找回密码</button>
+      </div>
+      <div id="loginForm">
+        <label>用户名<input id="loginUsername" autocomplete="username"></label>
+        <label>密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入登录密码"></label>
+        <button id="loginBtn" type="button">登录</button>
+      </div>
+      <div id="registerForm" hidden>
+        <label>用户名<input id="registerUsername" autocomplete="username" placeholder="设置登录账号"></label>
+        <label>邮箱<input id="registerEmail" type="email" autocomplete="email" placeholder="用于找回密码"></label>
+        <label>显示名称<input id="registerDisplayName" placeholder="例如：张三"></label>
+        <label>密码<input id="registerPassword" type="password" autocomplete="new-password" placeholder="至少 6 位"></label>
+        <label>邀请码<input id="registerInviteCode" placeholder="向管理员索取邀请码"></label>
+        <button id="registerBtn" type="button">注册并登录</button>
+      </div>
+      <div id="forgotForm" hidden>
+        <label>邮箱<input id="forgotEmail" type="email" placeholder="输入注册邮箱"></label>
+        <button id="sendResetCodeBtn" type="button">发送验证码</button>
+        <label>验证码<input id="resetCode" placeholder="6 位验证码"></label>
+        <label>新密码<input id="resetPassword" type="password" placeholder="至少 6 位"></label>
+        <button id="resetPasswordBtn" type="button">重置密码</button>
+      </div>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </section>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">Y</div>
+      <div>
+        <strong>工具箱后台</strong>
+        <span>配置中心</span>
+      </div>
+    </div>
+    <nav>
+      <button class="nav active" data-view="overview" type="button">总览</button>
+      <button class="nav" data-view="account" type="button">账号</button>
+      <button class="nav" data-view="buttons" type="button">按钮</button>
+      <button class="nav manager-only" data-view="users" type="button">用户</button>
+      <button class="nav super-only" data-view="system" type="button">系统管理</button>
+      <button class="nav" data-view="json" type="button">JSON</button>
+      <button class="nav" data-view="exchange" type="button">配置交换</button>
+      <button class="nav" data-view="dock" type="button">对接</button>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <header class="topbar">
+      <div>
+        <h1 id="pageTitle">后台管理</h1>
+        <p id="pageSubtitle">编辑标题、网址、下载按钮和系统工具配置。</p>
+      </div>
+      <div class="target-user super-only" id="targetUserWrap">
+        <span>正在管理</span>
+        <select id="targetUserSelect"></select>
+      </div>
+      <div class="notice-tools">
+        <button id="noticeBellBtn" class="icon-button" type="button" title="通知" aria-label="通知">
+          <svg class="bell-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16l-2-2Z"></path>
+            <path d="M9.5 20a2.5 2.5 0 0 0 5 0"></path>
+          </svg>
+          <span id="noticeUnreadBadge" hidden>0</span>
+        </button>
+        <button id="openNoticeComposerBtn" class="super-only" type="button">发通知</button>
+        <div id="noticeDropdown" class="notice-dropdown" hidden>
+          <div class="notice-head">
+            <strong id="noticeAreaTitle">全部未读</strong>
+            <div class="notice-head-actions">
+              <button id="markAllNoticeReadBtn" type="button">全部已读</button>
+              <button id="deleteAllNoticesBtn" class="danger super-only" type="button">删除全部</button>
+            </div>
+          </div>
+          <div id="noticeList" class="notice-list"></div>
+        </div>
+      </div>
+      <div class="user-chip" id="currentUserLabel"></div>
+      <button id="logoutBtn" type="button">退出</button>
+    </header>
+
+    <div id="status"></div>
+
+    <section class="view show" id="view-overview">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>应用设置</h2>
+          <button id="saveAppBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid">
+          <label>应用标题<input id="appTitle"></label>
+          <label>副标题<input id="appSubtitle"></label>
+          <label>版本号<input id="appVersion"></label>
+          <label>主题色<input id="appTheme" type="color"></label>
+          <label>Logo 链接<input id="appLogo"></label>
+          <label>图标链接<input id="appIcon"></label>
+          <label>登录页提示<input id="loginHintInput"></label>
+          <label>窗口宽度<input id="appWidth" type="number"></label>
+          <label>窗口高度<input id="appHeight" type="number"></label>
+          <label class="toggle-line">启用工具箱密码<span><input id="appPasswordEnabled" type="checkbox"> 启用</span></label>
+          <label>工具箱密码<input id="appPassword" type="password"></label>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong id="statPages">0</strong><span>页面</span></div>
+        <div class="stat"><strong id="statTabs">0</strong><span>分组</span></div>
+        <div class="stat"><strong id="statButtons">0</strong><span>按钮</span></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-account">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>账号资料</h2>
+          <button id="saveAccountBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid">
+          <label>用户名<input id="accountUsername"></label>
+          <label>邮箱<input id="accountEmail" type="email"></label>
+          <label>显示名称<input id="accountDisplayName"></label>
+          <label>当前密码<input id="accountCurrentPassword" type="password"></label>
+          <label>新密码<input id="accountNewPassword" type="password"></label>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-buttons">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>页面与分组</h2>
+          <button id="addScopeBtn" type="button">新增页面</button>
+        </div>
+        <div class="form-grid compact">
+          <label>页面类型<select id="newScopeType"><option value="page">页面</option><option value="toolbox">工具箱标签</option></select></label>
+          <label>页面名称<input id="newScopeName"></label>
+          <label>管理页面<select id="manageScope"></select></label>
+          <label>页面新名称<input id="manageScopeName"></label>
+          <label>页面位置<input id="manageScopeOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
+          <button id="renameScopeBtn" type="button">重命名页面</button>
+          <button id="moveScopeBtn" type="button">保存位置</button>
+          <button id="deleteScopeBtn" type="button">删除页面</button>
+          <label>管理分组<select id="manageSection"></select></label>
+          <label>分组新名称<input id="manageSectionName"></label>
+          <label>新增分组<input id="newSectionName"></label>
+          <button id="renameSectionBtn" type="button">重命名分组</button>
+          <button id="addSectionBtn" type="button">新增分组</button>
+          <button id="deleteSectionBtn" type="button">删除分组</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>新增按钮</h2>
+          <button id="addButtonBtn" type="button">添加</button>
+        </div>
+        <div class="form-grid">
+          <label>页面<select id="addScope"></select></label>
+          <label>分组<select id="addSection"></select></label>
+          <label>按钮名称<input id="addName"></label>
+          <label>图标<input id="addIcon"></label>
+          <label>说明<input id="addDescription"></label>
+          <label>动作<select id="addAction"><option value="link">打开网页</option><option value="download">下载文件</option><option value="cmd">运行命令</option><option value="script">内置功能</option><option value="winget">安装软件</option></select></label>
+          <label>网址 / 内容<input id="addTarget"></label>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>按钮列表</h2>
+          <input id="buttonSearch" placeholder="搜索按钮">
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>位置</th><th>名称</th><th>图标</th><th>说明</th><th>动作</th><th>目标</th><th></th></tr></thead><tbody id="buttonRows"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-users">
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>新增用户</h2>
+          <button id="addUserBtn" type="button">新增</button>
+        </div>
+        <div class="form-grid compact">
+          <label>用户名<input id="newUsername"></label>
+          <label>邮箱<input id="newUserEmail" type="email"></label>
+          <label>显示名称<input id="newDisplayName"></label>
+          <label>密码<input id="newUserPassword" type="password"></label>
+          <label>角色<select id="newUserRole"><option value="user">普通用户</option><option value="agent">代理</option><option value="super">总管理员</option></select></label>
+          <label>代理余额<input id="newUserBalance" type="number" min="0" step="0.01" value="0"></label>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>用户列表</h2>
+          <button id="refreshUsersBtn" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>账号</th><th>邮箱</th><th>显示名称</th><th>角色</th><th>新密码</th><th>工具箱对接地址</th><th></th></tr></thead><tbody id="userRows"></tbody></table>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>邀请码</h2>
+          <button id="createInviteBtn" type="button">生成邀请码</button>
+        </div>
+        <div class="form-grid compact invite-create">
+          <label>自定义邀请码<input id="newInviteCode" placeholder="留空自动生成"></label>
+          <label>可用次数<input id="newInviteMaxUses" type="number" min="1" value="1"></label>
+        </div>
+        <div class="table-wrap invite-table">
+          <table><thead><tr><th>邀请码</th><th>生成时间</th><th>状态</th><th>是否使用</th><th>使用次数</th><th>使用记录</th><th></th></tr></thead><tbody id="inviteRows"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-json">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>原始 JSON</h2>
+          <button id="saveJsonBtn" type="button">保存</button>
+        </div>
+        <textarea id="jsonEditor" rows="22" spellcheck="false"></textarea>
+      </div>
+    </section>
+
+    <section class="view" id="view-exchange">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>配置交换</h2>
+        </div>
+        <div class="exchange-grid">
+          <section class="exchange-block">
+            <h3>本地文件</h3>
+            <div class="exchange-actions">
+              <button id="exportConfigBtn" type="button">导出配置文件</button>
+              <label class="file-pick">选择配置文件<input id="importConfigFile" type="file" accept=".json,application/json"></label>
+              <button id="importConfigFileBtn" type="button">导入并保存</button>
+            </div>
+          </section>
+          <section class="exchange-block">
+            <h3>云端链接</h3>
+            <div class="exchange-actions">
+              <button id="generateShareLinkBtn" type="button">生成云端链接</button>
+              <button id="copyShareLinkBtn" type="button">复制链接</button>
+            </div>
+            <input id="configShareUrl" class="mono-input" readonly placeholder="生成后显示链接">
+            <p id="configShareMeta" class="note"></p>
+            <div class="exchange-import-row">
+              <input id="importCloudUrl" placeholder="粘贴云端配置链接">
+              <button id="importCloudUrlBtn" type="button">导入云端配置</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-dock">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>专属工具箱下载</h2>
+        </div>
+        <p class="note">选择需要分发的工具箱 UI 版本。下载得到的是当前用户专属 EXE，双击即可启动，EXE 里已经写入当前用户的对接地址。</p>
+        <div id="clientVariantGrid" class="client-variant-grid"></div>
+      </div>
+      <div class="panel">
+        <h2>工具箱对接地址</h2>
+        <div class="endpoint" id="publicEndpoint"></div>
+        <p class="note">客户工具箱启动时请求这个地址，拿到的就是完整配置 JSON。上面的 EXE 已经默认接好这个地址。</p>
+      </div>
+      <div class="panel">
+        <h2>推荐启动逻辑</h2>
+        <pre>成功：用远程 JSON 覆盖本地配置
+失败：继续使用 exe 内嵌或本地缓存配置</pre>
+      </div>
+    </section>
+
+    <section class="view" id="view-system">
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>邮箱设置</h2>
+          <button id="saveMailBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid compact">
+          <label>SMTP 主机<input id="mailHost"></label>
+          <label>端口<input id="mailPort" type="number"></label>
+          <label>账号<input id="mailUser"></label>
+          <label>发件人<input id="mailFrom"></label>
+          <label>密码<input id="mailPassword" type="password"></label>
+          <label class="toggle-line">SSL/TLS<span><input id="mailSecure" type="checkbox"> 启用</span></label>
+          <label>测试收件人<input id="mailTestTo" type="email"></label>
+        </div>
+        <div class="button-pair">
+          <button id="testMailBtn" type="button">发送测试</button>
+          <span id="mailStatusText"></span>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>前台位置自定义</h2>
+          <button id="saveLocationSettingsBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid compact">
+          <label>通知区域标题<input id="systemNoticeTitle" placeholder="全部未读"></label>
+          <label>系统管理菜单名称<input id="systemMenuName" placeholder="系统管理"></label>
+          <label class="toggle-line">前台选中高亮<span><input id="systemFrontendGlow" type="checkbox"> 启用</span></label>
+          <label class="toggle-line">前台分组数量<span><input id="systemFrontendGroupCount" type="checkbox"> 显示</span></label>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>隐藏入口弹窗</h2>
+          <button id="savePopupSettingsBtn" type="button">保存</button>
+        </div>
+        <div class="popup-settings">
+          <div class="form-grid compact">
+            <label class="toggle-line">启用隐藏入口<span><input id="popupEnabled" type="checkbox"> 启用</span></label>
+            <label>Logo 连续点击次数<input id="popupClickCount" type="number" min="1" max="20" step="1"></label>
+            <label>数据缓存分钟<input id="popupCacheMinutes" type="number" min="0" max="1440" step="1"></label>
+            <label>弹窗标题<input id="popupTitle" placeholder="联系我们 / 支持作者"></label>
+            <label class="wide">感谢文案<textarea id="popupThanksText" rows="3" placeholder="感谢你的支持，我们会持续维护和更新工具箱。"></textarea></label>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>联系方式二维码</h3>
+              <button id="addPopupContactBtn" type="button">新增联系方式</button>
+            </div>
+            <div id="popupContactRows" class="popup-config-list"></div>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>收款码</h3>
+              <button id="addPopupPaymentBtn" type="button">新增收款码</button>
+            </div>
+            <div id="popupPaymentRows" class="popup-config-list"></div>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>相关链接</h3>
+              <button id="addPopupLinkBtn" type="button">新增链接</button>
+            </div>
+            <div id="popupLinkRows" class="popup-config-list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>编译校验</h2>
+          <button id="saveIntegritySettingsBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid compact">
+          <label class="toggle-line">启用客户端校验<span><input id="integrityEnabled" type="checkbox"> 启用</span></label>
+          <label>运行凭证有效分钟<input id="integrityTokenTtl" type="number" min="5" max="43200" step="1"></label>
+          <label class="toggle-line">重置校验密钥<span><input id="integrityRotateSecret" type="checkbox"> 本次保存重置</span></label>
+          <label class="wide">说明<textarea rows="3" readonly>每个用户后台编译下载的工具箱都会登记独立校验记录。客户端启动后必须通过后台校验才能读取配置；账号停用、重置对接密钥或 EXE 被修改时会提示重新下载。</textarea></label>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>代理与邀请码扣费</h2>
+          <button id="saveAgentSettingsBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid compact">
+          <label>每个邀请码扣费<input id="agentInvitePrice" type="number" min="0" step="0.01"></label>
+          <label>币种<input id="agentCurrency" value="CNY"></label>
+          <label>订单冷却分钟<input id="agentOrderCooldown" type="number" min="0" step="1"></label>
+          <label class="toggle-line">允许负余额<span><input id="agentAllowNegative" type="checkbox"> 允许</span></label>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>支付通道</h2>
+          <button id="savePaySettingsBtn" type="button">保存</button>
+        </div>
+        <div class="pay-route-grid">
+          <label>微信收款接口<select id="payWechatChannel"><option value="disabled">无 / 不启用</option><option value="wechatOfficial">微信官方</option><option value="easypay">易支付一 - 微信支付</option><option value="easypay2">易支付二 - 微信支付</option></select></label>
+          <label>支付宝收款接口<select id="payAlipayChannel"><option value="disabled">无 / 不启用</option><option value="alipayOfficial">支付宝官方</option><option value="easypay">易支付一 - 支付宝</option><option value="easypay2">易支付二 - 支付宝</option></select></label>
+          <label>微信显示顺序<input id="payWechatOrder" type="number"></label>
+          <label>支付宝显示顺序<input id="payAlipayOrder" type="number"></label>
+        </div>
+        <div id="payGatewayCards" class="gateway-cards"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>新用户配置模板</h2>
+        </div>
+        <div class="template-actions">
+          <span id="templateStatus" class="template-status">当前编辑用户配置</span>
+          <button id="editTemplateBtn" type="button">进入模板编辑</button>
+          <button id="copyCurrentToTemplateBtn" type="button">用当前配置覆盖模板</button>
+          <button id="resetTemplateBtn" class="danger" type="button">恢复默认模板</button>
+        </div>
+      </div>
+      <div class="panel collapsible-panel" data-collapsible-panel>
+        <div class="panel-head">
+          <h2>代理订单</h2>
+          <button id="refreshOrdersBtn" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>订单号</th><th>代理</th><th>金额</th><th>状态</th><th>内容</th><th></th></tr></thead>
+            <tbody id="orderRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="noticeComposer" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <div class="panel-head">
+        <h2>发送通知</h2>
+        <button id="closeNoticeComposerBtn" type="button">关闭</button>
+      </div>
+      <div class="form-grid notice-composer-grid">
+        <label>标题<input id="noticeTitleInput" placeholder="例如：今晚维护通知"></label>
+        <label>级别<select id="noticeLevelInput"><option value="info">普通</option><option value="warn">提醒</option><option value="error">重要</option></select></label>
+        <label class="toggle-line notice-email-toggle">邮箱推送<span><input id="noticeMailPushInput" type="checkbox"> 启用</span></label>
+        <label class="wide">内容<textarea id="noticeContentInput" rows="5" placeholder="输入要发给用户看的通知"></textarea></label>
+      </div>
+      <div class="button-pair">
+        <button id="sendNoticeBtn" type="button">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin.js?v=2026061612"></script>
+</body>
+</html>

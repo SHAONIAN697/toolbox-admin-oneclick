@@ -1,0 +1,39 @@
+set -e
+SERVICE="toolbox-admin"
+APP="/www/wwwroot/gjx.vst76.cn"
+BRANCH="private-local-tested-preserve-data-20260620"
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260620.tar.gz"
+SHA="1a77f590ee9e3bff34d4f12038667088dcd0988a98d3fb714c5a36dc4aa325a5"
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"
+TMP="/tmp/toolbox-github-local-tested-$TS"
+BACKUP="/www/backup/gjx-toolbox-$TS"
+
+mkdir -p "$TMP" "$BACKUP"
+[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
+curl -L --retry 3 -o "$PKG" "$URL"
+echo "$SHA  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$TMP"
+python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"
+
+cd "$APP"
+cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true
+rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs
+\cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"
+if [ -d "$BACKUP/wwwroot/uploads" ]; then
+  mkdir -p "$APP/wwwroot"
+  rm -rf "$APP/wwwroot/uploads"
+  \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"
+fi
+
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
+grep -q "withTargetUser" wwwroot/admin.js
+grep -q "Resolve8UidDownloadRequest" client-template/ToolboxClient.cs
+echo "OK: updated from GitHub branch, data preserved. Refresh admin with Ctrl+F5 and download the three EXE versions again. Backup: $BACKUP"

@@ -1,0 +1,318 @@
+<!doctype html>
+<html>
+<head>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta charset="utf-8">
+  <title>工具箱</title>
+  <hta:application
+    id="toolboxApp"
+    applicationname="ToolboxClient"
+    border="thin"
+    caption="yes"
+    maximizebutton="yes"
+    minimizebutton="yes"
+    scroll="no"
+    singleinstance="yes"
+    sysmenu="yes"
+    windowstate="normal" />
+  <style>
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; }
+    body { font-family:"Microsoft YaHei UI","Segoe UI",sans-serif; background:#101417; color:#edf2f4; }
+    button, input { font-family:inherit; }
+    #app { display:flex; height:100%; }
+    #side { width:220px; background:#171c20; border-right:1px solid #303840; padding:18px 14px; box-sizing:border-box; overflow:auto; }
+    #brand { margin-bottom:18px; }
+    #brand h1 { font-size:20px; margin:0 0 6px; }
+    #brand p { font-size:12px; color:#9ca8ae; margin:0; word-break:break-all; }
+    .nav { display:block; width:100%; text-align:left; color:#d8e2e5; background:transparent; border:1px solid transparent; padding:10px 12px; margin-bottom:6px; border-radius:6px; cursor:pointer; }
+    .nav.active { background:#22292f; border-color:#37424a; color:#fff; }
+    #main { flex:1; padding:22px 24px; overflow:auto; box-sizing:border-box; }
+    #pageTitle { font-size:26px; margin:0 0 6px; }
+    #status { color:#f2c14e; min-height:24px; margin-bottom:12px; }
+    .section { margin:18px 0 24px; }
+    .section h2 { font-size:18px; margin:0 0 12px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; }
+    .btn { min-height:44px; border:1px solid #34404a; background:#1d242a; color:#fff; border-radius:8px; padding:10px 12px; cursor:pointer; text-align:left; }
+    .btn:hover { border-color:#4fb7a8; background:#243039; }
+    .badge { display:block; margin-top:4px; font-size:11px; color:#9ca8ae; }
+    #lock { position:fixed; inset:0; display:none; place-items:center; background:#101417; z-index:5; }
+    #lockBox { width:330px; border:1px solid #303840; border-radius:8px; background:#181e23; padding:18px; }
+    #lockBox h2 { margin:0 0 12px; font-size:20px; }
+    #lockBox input { width:100%; box-sizing:border-box; background:#0d1012; color:#fff; border:1px solid #303840; border-radius:6px; padding:10px; margin-bottom:10px; }
+    #lockBox button { width:100%; min-height:38px; border:0; border-radius:6px; background:#4fb7a8; font-weight:bold; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="lock">
+    <div id="lockBox">
+      <h2>请输入工具箱密码</h2>
+      <input id="pwd" type="password" />
+      <button onclick="unlock()">进入</button>
+      <div id="pwdMsg" style="color:#e45d5d;margin-top:8px;"></div>
+    </div>
+  </div>
+  <div id="app">
+    <aside id="side">
+      <div id="brand"><h1>工具箱</h1><p></p></div>
+      <div id="nav"></div>
+    </aside>
+    <main id="main">
+      <h1 id="pageTitle">正在加载...</h1>
+      <div id="status">正在连接后台...</div>
+      <div id="content"></div>
+    </main>
+  </div>
+
+  <script>
+    var CONFIG_URL = "__CONFIG_URL__";
+    var config = null;
+    var currentPage = "";
+    var scripts = {
+      sys_control_panel: "control.exe",
+      sys_sound_settings: "mmsys.cpl",
+      open_network_connections: "ncpa.cpl",
+      sys_apps_features: "appwiz.cpl",
+      sys_device_manager: "devmgmt.msc",
+      sys_disk_manager: "diskmgmt.msc",
+      sys_computer_manager: "compmgmt.msc",
+      sys_services: "services.msc",
+      sys_task_manager: "taskmgr.exe",
+      sys_system_info: "msinfo32.exe",
+      sys_env_vars: "SystemPropertiesAdvanced.exe",
+      sys_event_viewer: "eventvwr.msc",
+      sys_registry: "regedit.exe",
+      sys_group_policy: "gpedit.msc",
+      sys_cmd_prompt: "cmd.exe",
+      sys_security_policy: "secpol.msc",
+      sys_power_options: "powercfg.cpl",
+      sys_classic_context_menu: "reg add \"HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32\" /f /ve && taskkill /f /im explorer.exe && start explorer.exe"
+    };
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s || "").replace(/[&<>"']/g, function(c) { return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]; }); }
+    function shell() { return new ActiveXObject("WScript.Shell"); }
+
+    function httpGet(url) {
+      var xhr = new ActiveXObject("MSXML2.XMLHTTP");
+      xhr.open("GET", url, false);
+      xhr.send();
+      if (xhr.status < 200 || xhr.status >= 300) throw new Error("HTTP " + xhr.status);
+      return xhr.responseText;
+    }
+
+    function load() {
+      try {
+        var text = httpGet(CONFIG_URL + (CONFIG_URL.indexOf("?") >= 0 ? "&" : "?") + "t=" + new Date().getTime());
+        config = JSON.parse(text);
+        $("status").innerHTML = "已连接后台。";
+        applyConfig();
+      } catch (e) {
+        $("status").innerHTML = "连接后台失败：" + esc(e.message);
+      }
+    }
+
+    function applyConfig() {
+      var app = config.app || {};
+      document.title = app.title || "工具箱";
+      $("brand").getElementsByTagName("h1")[0].innerHTML = esc(app.title || "工具箱");
+      $("brand").getElementsByTagName("p")[0].innerHTML = esc(app.subtitle || "");
+      if (app.password) {
+        $("lock").style.display = "grid";
+      }
+      renderNav();
+    }
+
+    function unlock() {
+      var stored = (config.app || {}).password || "";
+      var pwd = $("pwd").value;
+      if (!stored || verifyPassword(pwd, stored)) {
+        $("lock").style.display = "none";
+        $("pwd").value = "";
+      } else {
+        $("pwdMsg").innerHTML = "密码不正确。";
+      }
+    }
+
+    function verifyPassword(password, stored) {
+      if (stored.indexOf("sha256$") !== 0) return password === stored;
+      var parts = stored.split("$");
+      return sha256(parts[1] + password) === parts[2];
+    }
+
+    function renderNav() {
+      var html = "";
+      var items = config.sidebar || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].id === "settings") continue;
+        html += '<button class="nav" id="nav_' + esc(items[i].id) + '" onclick="showPage(\\'' + esc(items[i].id) + '\\')">' + esc(items[i].name || items[i].id) + '</button>';
+      }
+      if (config.toolbox_tabs && config.toolbox_tabs.length) {
+        html += '<button class="nav" id="nav_toolbox" onclick="showPage(\\'toolbox\\')">系统工具</button>';
+      }
+      $("nav").innerHTML = html;
+      var first = (items[0] && items[0].id !== "settings") ? items[0].id : (config.toolbox_tabs && config.toolbox_tabs.length ? "toolbox" : "");
+      if (first) showPage(first);
+    }
+
+    function showPage(id) {
+      currentPage = id;
+      var btns = document.getElementsByClassName("nav");
+      for (var i = 0; i < btns.length; i++) btns[i].className = "nav";
+      var nav = $("nav_" + id);
+      if (nav) nav.className = "nav active";
+      if (id === "toolbox") renderToolbox();
+      else renderPage(id);
+    }
+
+    function renderPage(id) {
+      var page = (config.pages || {})[id] || { title: id, sections: [] };
+      $("pageTitle").innerHTML = esc(page.title || id);
+      $("content").innerHTML = renderSections(page.sections || []);
+    }
+
+    function renderToolbox() {
+      $("pageTitle").innerHTML = "系统工具";
+      var sections = [];
+      var tabs = config.toolbox_tabs || [];
+      for (var i = 0; i < tabs.length; i++) {
+        sections.push({ title: tabs[i].name || "", buttons: collectButtons(tabs[i].sections || []) });
+      }
+      $("content").innerHTML = renderSections(sections);
+    }
+
+    function collectButtons(sections) {
+      var out = [];
+      for (var i = 0; i < sections.length; i++) {
+        var bs = sections[i].buttons || [];
+        for (var j = 0; j < bs.length; j++) out.push(bs[j]);
+      }
+      return out;
+    }
+
+    function renderSections(sections) {
+      var html = "";
+      for (var i = 0; i < sections.length; i++) {
+        var sec = sections[i];
+        var buttons = sec.buttons || [];
+        html += '<section class="section"><h2>' + esc(sec.title || "默认分组") + '</h2><div class="grid">';
+        for (var j = 0; j < buttons.length; j++) html += renderButton(buttons[j]);
+        html += '</div></section>';
+      }
+      return html || "<p>暂无内容。</p>";
+    }
+
+    function renderButton(btn) {
+      var action = btn.action || (btn.url ? "link" : "cmd");
+      var label = action === "download" ? "下载文件" : action === "script" ? "内置功能" : action === "cmd" ? "运行命令" : "打开网页";
+      var target = btn.url || btn.command || btn.script || btn.winget || "";
+      return '<button class="btn" onclick="runAction(\\'' + esc(action) + '\\',\\'' + esc(target).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + '\\')">' + esc(btn.name || "未命名") + '<span class="badge">' + label + '</span></button>';
+    }
+
+    function runAction(action, target) {
+      try {
+        if (action === "link") openUrl(target);
+        else if (action === "download") downloadUrl(target);
+        else if (action === "cmd") runCommand(target);
+        else if (action === "script") runScript(target);
+        else if (action === "winget") runCommand("cmd.exe /c winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause");
+        else openUrl(target);
+      } catch (e) {
+        alert("执行失败：" + e.message);
+      }
+    }
+
+    function openUrl(url) {
+      if (!url) return;
+      shell().Run('"' + url + '"', 1, false);
+    }
+
+    function runCommand(cmd) {
+      if (!cmd) return;
+      if (!confirm("将运行命令：\\n" + cmd + "\\n\\n继续吗？")) return;
+      shell().Run(cmd, 1, false);
+    }
+
+    function runScript(id) {
+      if (scripts[id]) {
+        runCommand(scripts[id]);
+      } else {
+        alert("这个内置功能需要正式版壳支持：\\n" + id);
+      }
+    }
+
+    function downloadUrl(url) {
+      if (!url) return;
+      var fileName = url.split("?")[0].split("/").pop() || "download.bin";
+      fileName = decodeURIComponent(fileName).replace(/[\\\\/:*?"<>|]/g, "_");
+      var path = shell().ExpandEnvironmentStrings("%USERPROFILE%") + "\\\\Downloads\\\\" + fileName;
+      $("status").innerHTML = "正在下载：" + esc(fileName);
+      var xhr = new ActiveXObject("MSXML2.XMLHTTP");
+      xhr.open("GET", url, false);
+      xhr.send();
+      if (xhr.status < 200 || xhr.status >= 300) throw new Error("HTTP " + xhr.status);
+      var stream = new ActiveXObject("ADODB.Stream");
+      stream.Type = 1;
+      stream.Open();
+      stream.Write(xhr.responseBody);
+      stream.SaveToFile(path, 2);
+      stream.Close();
+      $("status").innerHTML = "已下载到：" + esc(path);
+      shell().Run('explorer.exe /select,"' + path + '"', 1, false);
+    }
+
+    function sha256(ascii) {
+      function rightRotate(value, amount) { return (value>>>amount) | (value<<(32 - amount)); }
+      var mathPow = Math.pow, maxWord = mathPow(2, 32), lengthProperty = 'length';
+      var i, j, result = '', words = [], asciiBitLength = ascii[lengthProperty]*8;
+      var hash = sha256.h = sha256.h || [], k = sha256.k = sha256.k || [], primeCounter = k[lengthProperty];
+      var isComposite = {};
+      for (var candidate = 2; primeCounter < 64; candidate++) {
+        if (!isComposite[candidate]) {
+          for (i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+          hash[primeCounter] = (mathPow(candidate, .5)*maxWord)|0;
+          k[primeCounter++] = (mathPow(candidate, 1/3)*maxWord)|0;
+        }
+      }
+      ascii += '\x80';
+      while (ascii[lengthProperty]%64 - 56) ascii += '\x00';
+      for (i = 0; i < ascii[lengthProperty]; i++) {
+        j = ascii.charCodeAt(i);
+        words[i>>2] |= j << ((3 - i)%4)*8;
+      }
+      words[words[lengthProperty]] = ((asciiBitLength/maxWord)|0);
+      words[words[lengthProperty]] = (asciiBitLength);
+      for (j = 0; j < words[lengthProperty];) {
+        var w = words.slice(j, j += 16), oldHash = hash;
+        hash = hash.slice(0, 8);
+        for (i = 0; i < 64; i++) {
+          var w15 = w[i - 15], w2 = w[i - 2];
+          var a = hash[0], e = hash[4];
+          var temp1 = hash[7]
+            + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25))
+            + ((e&hash[5])^((~e)&hash[6]))
+            + k[i]
+            + (w[i] = (i < 16) ? w[i] : (
+              w[i - 16]
+              + (rightRotate(w15, 7)^rightRotate(w15, 18)^(w15>>>3))
+              + w[i - 7]
+              + (rightRotate(w2, 17)^rightRotate(w2, 19)^(w2>>>10))
+            )|0);
+          var temp2 = (rightRotate(a, 2)^rightRotate(a, 13)^rightRotate(a, 22)) + ((a&hash[1])^(a&hash[2])^(hash[1]&hash[2]));
+          hash = [(temp1 + temp2)|0].concat(hash);
+          hash[4] = (hash[4] + temp1)|0;
+        }
+        for (i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i])|0;
+      }
+      for (i = 0; i < 8; i++) {
+        for (j = 3; j + 1; j--) {
+          var b = (hash[i]>>(j*8))&255;
+          result += ((b < 16) ? 0 : '') + b.toString(16);
+        }
+      }
+      return result;
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+set -e
+SERVICE="toolbox-admin"
+APP="/www/wwwroot/gjx.vst76.cn"
+URL="https://temp.sh/mzprJ/toolbox-gjx-target-user-header-hotfix-preserve-data.tar.gz"
+SHA="5a1c9982a693178ca65910c27e3b00a96ef6cdc31ca293c491d8bb3355312690"
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-gjx-target-user-hotfix-$TS.tar.gz"
+TMP="/tmp/toolbox-gjx-target-user-hotfix-$TS"
+BACKUP="/www/backup/gjx-toolbox-$TS"
+
+mkdir -p "$TMP" "$BACKUP"
+[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
+curl -L -X POST --retry 3 -o "$PKG" "$URL"
+echo "$SHA  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$TMP"
+python3 -m py_compile "$TMP/app.py"
+
+cd "$APP"
+cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true
+rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs
+\cp -a "$TMP"/. "$APP"/
+if [ -d "$BACKUP/wwwroot/uploads" ]; then
+  mkdir -p "$APP/wwwroot"
+  rm -rf "$APP/wwwroot/uploads"
+  \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"
+fi
+
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
+grep -q "withTargetUser" wwwroot/admin.js
+! grep -q "X-Target-User" wwwroot/admin.js
+echo "OK: updated, data preserved. Refresh admin page with Ctrl+F5. Backup: $BACKUP"

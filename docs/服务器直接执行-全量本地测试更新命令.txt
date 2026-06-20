@@ -1,0 +1,67 @@
+set -e
+
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+if [ -z "$APP" ] || [ "$APP" = "/" ]; then
+  APP="/www/wwwroot/gjx.vst76.cn"
+fi
+
+PKG=""
+for p in \
+  "$APP/toolbox-baota-full-local-tested-update.tar.gz" \
+  "/www/wwwroot/toolbox-baota-full-local-tested-update.tar.gz" \
+  "/tmp/toolbox-baota-full-local-tested-update.tar.gz"
+do
+  if [ -f "$p" ]; then
+    PKG="$p"
+    break
+  fi
+done
+
+if [ ! -d "$APP" ]; then
+  echo "站点目录不存在：$APP"
+  exit 1
+fi
+
+if [ -z "$PKG" ]; then
+  echo "找不到更新包，请先上传 toolbox-baota-full-local-tested-update.tar.gz 到："
+  echo "1. $APP/"
+  echo "2. /www/wwwroot/"
+  echo "3. /tmp/"
+  exit 1
+fi
+
+cd "$APP"
+TS="$(date +%Y%m%d-%H%M%S)"
+TMP="/tmp/toolbox-baota-full-local-tested-update-$TS"
+BACKUP="$APP/backup-full-local-tested-update-$TS"
+
+rm -rf "$TMP"
+mkdir -p "$TMP" "$BACKUP"
+tar -xzf "$PKG" -C "$TMP"
+
+python3 -m py_compile "$TMP/app.py"
+if command -v node >/dev/null 2>&1; then
+  node --check "$TMP/wwwroot/admin.js"
+fi
+
+for item in app.py assets client-template deploy wwwroot DOCKING.md README.md 宝塔部署教程.md 使用教程-录屏版.md; do
+  if [ -e "$item" ]; then
+    cp -a "$item" "$BACKUP/"
+  fi
+done
+
+cp -a "$TMP"/. "$APP"/
+rm -rf data/client-cache data/client-jobs
+
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+curl -fsS http://127.0.0.1:5088/api/public/brand >/dev/null
+
+grep -q "/api/admin/config/share" app.py
+grep -q "view-exchange" wwwroot/index.html
+
+echo "全量同步完成"
+echo "备份目录：$BACKUP"
+echo "现在刷新后台页面，进入 配置交换 / 对接 测试即可。"

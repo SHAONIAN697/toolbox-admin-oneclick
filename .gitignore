@@ -1,0 +1,12 @@
+**/data/
+**/__pycache__/
+**/dist/
+**/client-cache/
+**/client-jobs/
+**/*.pyc
+**/*.log
+**/server.err.log
+**/server.out.log
+**/deploy-toolbox.tar.gz
+**/ToolboxClient.cs.gz
+_tmp/
