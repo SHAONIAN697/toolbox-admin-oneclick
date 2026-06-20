@@ -36,4 +36,4 @@ systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "withTargetUser" wwwroot/admin.js
 grep -q "Resolve8UidDownloadRequest" client-template/ToolboxClient.cs
-echo "OK: updated from GitHub branch, data preserved. Refresh admin with Ctrl+F5 and download the three EXE versions again. Backup: $BACKUP"
+echo "OK: updated from GitHub branch, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
