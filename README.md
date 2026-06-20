@@ -33,9 +33,30 @@
 - 支持后台导出配置文件、导入配置文件、生成云端配置链接并从链接导入。
 - 更新后后台需要重新生成并下载三个客户端 EXE：默认版、工作台版、门户版。
 
-## 已部署服务器更新方式
+## 首次部署
 
-已部署过的宝塔服务器不要重新跑首次安装命令。使用 `docs/gjx服务器直接替换更新命令.txt` 中的命令，它会：
+新服务器第一次安装时使用这条命令。它会下载本分支的一键部署包、安装依赖、创建 `systemd` 服务，并初始化后台数据。
+
+```bash
+cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/private-local-tested-preserve-data-20260620/toolbox-admin-baota-oneclick.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && ls -lh toolbox-admin-oneclick.tar.gz && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+```
+
+执行后按提示填写：
+
+- 绑定域名：填写客户自己的域名。
+- 安装目录：首次部署可直接回车。
+- 服务端口：默认 `5088`。
+- 管理员密码：首次部署可填写或回车自动生成。
+
+## 已部署服务器更新
+
+已经部署过的宝塔服务器不要重新跑首次部署命令。更新时直接使用下面这条命令，它只覆盖程序文件，保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
+
+```bash
+set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260620.tar.gz"; SHA="1a77f590ee9e3bff34d4f12038667088dcd0988a98d3fb714c5a36dc4aa325a5"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "withTargetUser" wwwroot/admin.js; grep -q "Resolve8UidDownloadRequest" client-template/ToolboxClient.cs; echo "OK: updated from GitHub branch, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+```
+
+这条更新命令会：
 
 - 备份当前 `app.py`、`wwwroot`、`client-template`、`assets`、`deploy` 到 `/www/backup/`。
 - 覆盖程序文件和前端文件。
