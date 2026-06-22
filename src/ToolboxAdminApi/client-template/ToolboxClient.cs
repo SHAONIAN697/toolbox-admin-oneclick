@@ -131,6 +131,9 @@ namespace ToolboxClient
         private readonly object activeDownloadsLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
         private const int DefaultMaxParallelDownloads = 5;
+        private const int MaxVisibleDownloadTaskRows = 5;
+        private const int DownloadTaskRowHeight = 84;
+        private const int DownloadTaskRowGap = 8;
         private string lastConfigJson = "";
         private string lastSyncText = "";
         private string lastPasswordHash = "";
@@ -2556,10 +2559,13 @@ namespace ToolboxClient
 
         private Panel CreateStudioDownloadRecordsPanel(int width)
         {
+            int activeHeight = DownloadTaskListHeight(Padding.Empty);
+            int recordsTop = 54 + activeHeight + 18;
+            int minPanelHeight = recordsTop + 140 + 72;
             RoundedPanel panel = new RoundedPanel
             {
                 Width = width,
-                Height = Math.Max(360, Math.Min(520, content.ClientSize.Height - 300)),
+                Height = Math.Max(minPanelHeight, Math.Min(minPanelHeight + 220, content.ClientSize.Height - 300)),
                 Margin = new Padding(0, 0, 0, 18),
                 BackColor = PanelBg,
                 BorderColor = Color.FromArgb(LightTheme ? 0 : 45, Line),
@@ -2582,7 +2588,7 @@ namespace ToolboxClient
                 Left = 18,
                 Top = 54,
                 Width = width - 36,
-                Height = 94,
+                Height = activeHeight,
                 BackColor = PanelBg,
                 UseCustomBorderColor = true,
                 BorderColor = Color.Transparent,
@@ -2597,9 +2603,9 @@ namespace ToolboxClient
             recordsProgressLabel = CreateDownloadEmptyState(Math.Max(520, activeDownloadsList.Width), activeDownloadsList.Height, "当前没有下载任务", true);
             activeDownloadsList.Controls.Add(recordsProgressLabel);
 
-            recordsList = CreateStudioDownloadList(width - 36, Math.Max(140, panel.Height - 246));
+            recordsList = CreateStudioDownloadList(width - 36, Math.Max(140, panel.Height - recordsTop - 72));
             recordsList.Left = 18;
-            recordsList.Top = 166;
+            recordsList.Top = recordsTop;
 
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
@@ -2945,10 +2951,14 @@ namespace ToolboxClient
 
         private void BuildPortalDownloadTable(int width)
         {
+            Padding activePadding = new Padding(10);
+            int activeHeight = DownloadTaskListHeight(activePadding);
+            int listTop = 48 + activeHeight + 12;
+            int minPanelHeight = listTop + 190 + 18;
             RoundedPanel panel = new RoundedPanel
             {
                 Width = width,
-                Height = Math.Max(360, content.ClientSize.Height - 180),
+                Height = Math.Max(minPanelHeight, content.ClientSize.Height - 180),
                 Margin = new Padding(0, 0, 0, 14),
                 BackColor = PanelBg,
                 BorderColor = Color.FromArgb(LightTheme ? 110 : 88, Line),
@@ -2980,11 +2990,11 @@ namespace ToolboxClient
                 Left = 12,
                 Top = 48,
                 Width = width - 24,
-                Height = 108,
+                Height = activeHeight,
                 BackColor = PortalRecordSurfaceBack(),
                 BorderColor = Color.FromArgb(LightTheme ? 100 : 82, Line),
                 UseCustomBorderColor = true,
-                Padding = new Padding(10),
+                Padding = activePadding,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
@@ -2993,7 +3003,7 @@ namespace ToolboxClient
             recordsProgressLabel = new EmptyStateLabel
             {
                 Width = Math.Max(520, activeDownloadsList.Width - 20),
-                Height = 82,
+                Height = Math.Max(82, activeDownloadsList.Height - activePadding.Top - activePadding.Bottom),
                 Text = PortalText("当前没有下载任务", "No active downloads"),
                 UseCustomColors = true,
                 FillColor = PanelBg,
@@ -3005,7 +3015,7 @@ namespace ToolboxClient
             panel.Controls.Add(activeDownloadsList);
 
             ListView list = CreatePortalDownloadList(width - 24);
-            list.Top = 168;
+            list.Top = listTop;
             list.Left = 12;
             list.Height = Math.Max(190, panel.Height - list.Top - 18);
             panel.Controls.Add(list);
@@ -5333,20 +5343,73 @@ namespace ToolboxClient
 
         private void DownloadFile(string url)
         {
-            if (String.IsNullOrWhiteSpace(url)) return;
-            DownloadRequest download = ResolveDownloadRequest(url);
+            string originalUrl = (url ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(originalUrl)) return;
+            status.Text = PortalText("正在解析下载地址...", "Preparing download...");
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl); });
+        }
+
+        private void PrepareDownloadRequestWorker(string originalUrl)
+        {
+            DownloadPrepareResult result = new DownloadPrepareResult();
+            result.OriginalUrl = originalUrl;
+            try
+            {
+                result.Download = ResolveDownloadRequest(originalUrl);
+                if (result.Download != null && !result.Download.BrowserOnly)
+                {
+                    result.FileName = SafeDownloadFileName(result.Download.FileName);
+                    string dir = GetDownloadDirectory();
+                    Directory.CreateDirectory(dir);
+                    result.Path = Path.Combine(dir, result.FileName);
+                    result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
+                }
+            }
+            catch (Exception ex)
+            {
+                result.Error = ex;
+            }
+
+            try
+            {
+                BeginInvoke(new Action(delegate { FinishDownloadRequest(result); }));
+            }
+            catch
+            {
+            }
+        }
+
+        private void FinishDownloadRequest(DownloadPrepareResult result)
+        {
+            if (result == null) return;
+            if (result.Error != null)
+            {
+                status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
+                return;
+            }
+            DownloadRequest download = result.Download;
+            if (download == null)
+            {
+                status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
+                return;
+            }
             if (download.BrowserOnly)
             {
-                Open(String.IsNullOrWhiteSpace(download.BrowserUrl) ? url : download.BrowserUrl);
+                Open(String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl);
                 status.Text = String.IsNullOrWhiteSpace(download.Message) ? "该链接需要在浏览器中完成下载。" : download.Message;
                 return;
             }
-            string fileName = SafeDownloadFileName(download.FileName);
 
-            string dir = GetDownloadDirectory();
-            Directory.CreateDirectory(dir);
-            string path = Path.Combine(dir, fileName);
-            DownloadRecord existingRecord = FindExistingDownloadRecord(url, path);
+            string fileName = SafeDownloadFileName(String.IsNullOrWhiteSpace(result.FileName) ? download.FileName : result.FileName);
+            string path = result.Path;
+            if (String.IsNullOrWhiteSpace(path))
+            {
+                string dir = GetDownloadDirectory();
+                Directory.CreateDirectory(dir);
+                path = Path.Combine(dir, fileName);
+            }
+
+            DownloadRecord existingRecord = result.ExistingRecord;
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
                 string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
@@ -5354,7 +5417,7 @@ namespace ToolboxClient
                 FillDownloadRecords();
                 return;
             }
-            if (HasActiveDownload(url, path))
+            if (HasActiveDownload(result.OriginalUrl, path) || HasActiveDownload(download.Url, path))
             {
                 status.Text = "该文件正在下载中。";
                 UpdateDownloadBadges();
@@ -5362,7 +5425,7 @@ namespace ToolboxClient
                 return;
             }
             fileName = Path.GetFileName(path);
-            DownloadTask task = new DownloadTask(download.Url, fileName, path, url);
+            DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
             lock (activeDownloadsLock) activeDownloads.Add(task);
@@ -5859,7 +5922,7 @@ namespace ToolboxClient
                                 if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
                                 {
                                     lastUi = DateTime.Now;
-                                    BeginInvoke(new Action(delegate { RenderActiveDownloads(); }));
+                                    QueueDownloadTaskRowUpdate(task);
                                 }
                             }
                         }
@@ -5875,7 +5938,7 @@ namespace ToolboxClient
                     if (attempt < 3)
                     {
                         task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
-                        BeginInvoke(new Action(delegate { RenderActiveDownloads(); }));
+                        QueueDownloadTaskRowUpdate(task);
                         Thread.Sleep(900 * attempt);
                     }
                 }
@@ -5908,7 +5971,7 @@ namespace ToolboxClient
             {
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
-                RenderActiveDownloads();
+                UpdateActiveDownloadTask(task);
                 string launchStatus = LaunchDownloadedFile(task.Path);
                 status.Text = launchStatus + "：" + task.FileName;
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
@@ -6832,6 +6895,35 @@ namespace ToolboxClient
             if (recordsPanel == null) return;
             recordsPanel.Left = Math.Max(12, ClientSize.Width - recordsPanel.Width - 22);
             recordsPanel.Top = 74;
+        }
+
+        private static int DownloadTaskListHeight(Padding padding)
+        {
+            return padding.Top + padding.Bottom + MaxVisibleDownloadTaskRows * DownloadTaskRowHeight + Math.Max(0, MaxVisibleDownloadTaskRows - 1) * DownloadTaskRowGap;
+        }
+
+        private void QueueDownloadTaskRowUpdate(DownloadTask task)
+        {
+            if (task == null || IsDisposed) return;
+            try
+            {
+                BeginInvoke(new Action(delegate { UpdateActiveDownloadTask(task); }));
+            }
+            catch
+            {
+            }
+        }
+
+        private void UpdateActiveDownloadTask(DownloadTask task)
+        {
+            if (activeDownloadsList == null || task == null) return;
+            Panel row;
+            if (activeDownloadRows.TryGetValue(task.Id, out row) && row != null && !row.IsDisposed && row.Parent == activeDownloadsList)
+            {
+                UpdateDownloadTaskRow(task, row);
+                return;
+            }
+            RenderActiveDownloads();
         }
 
         private void RenderActiveDownloads()
@@ -9612,6 +9704,16 @@ namespace ToolboxClient
             public string BrowserUrl = "";
             public bool BrowserOnly;
             public string Message = "";
+        }
+
+        private sealed class DownloadPrepareResult
+        {
+            public string OriginalUrl = "";
+            public DownloadRequest Download;
+            public string FileName = "";
+            public string Path = "";
+            public DownloadRecord ExistingRecord;
+            public Exception Error;
         }
 
         private sealed class CommandRunResult
