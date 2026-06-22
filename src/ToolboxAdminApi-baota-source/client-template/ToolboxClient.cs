@@ -127,6 +127,7 @@ namespace ToolboxClient
         private bool passwordUnlocked = false;
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
+        private bool configApplied = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
@@ -231,6 +232,7 @@ namespace ToolboxClient
             DoubleBuffered = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
             BuildShell();
+            if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
             refreshTimer.Interval = 5000;
             refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
@@ -1283,6 +1285,12 @@ namespace ToolboxClient
                     }));
                     return;
                 }
+                if (!String.IsNullOrWhiteSpace(lastConfigJson))
+                {
+                    string keepMessage = "后台连接失败，保留当前配置：" + ex.Message;
+                    BeginInvoke(new Action(delegate { status.Text = keepMessage; }));
+                    return;
+                }
                 if (!runtimeIntegrityChecked)
                 {
                     json = null;
@@ -1291,13 +1299,18 @@ namespace ToolboxClient
                 {
                     json = StripPasswordFromCachedConfig(ReadCache());
                 }
+                if (portalVariant && IsPortalDemoPlaceholderConfig(json))
+                {
+                    json = null;
+                }
                 if (String.IsNullOrWhiteSpace(json))
                 {
                     errorMessage = "连接后台失败：" + ex.Message;
                     BeginInvoke(new Action(delegate
                     {
-                        status.Text = "连接后台失败。";
-                        title.Text = "工具箱无法加载";
+                        status.Text = portalVariant ? "连接后台失败，等待下次同步。" : "连接后台失败。";
+                        title.Text = portalVariant ? PortalText("配置同步失败", "Sync Failed") : "工具箱无法加载";
+                        if (portalVariant) RenderPortalLoadingState("连接后台失败，等待下次同步");
                         if (showMessage) MessageBox.Show(errorMessage, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }));
                     return;
@@ -1409,7 +1422,11 @@ namespace ToolboxClient
                 allowNav = false;
             }
 
-            if (allowNav) BuildNav();
+            if (allowNav)
+            {
+                configApplied = true;
+                BuildNav();
+            }
 
             content.ResumeLayout();
             nav.ResumeLayout();
@@ -2208,6 +2225,11 @@ namespace ToolboxClient
             }
             if (portalVariant)
             {
+                if (!configApplied)
+                {
+                    RenderPortalLoadingState("正在同步配置...");
+                    return;
+                }
                 RenderPortalSections();
                 return;
             }
@@ -2718,7 +2740,7 @@ namespace ToolboxClient
                 Width = available,
                 Height = Math.Max(190, Math.Min(238, content.ClientSize.Height / 3)),
                 Margin = new Padding(0, 0, 0, 20),
-                TitleText = PortalLabel(GetText(app, "title", "143"), "app.title"),
+                TitleText = PortalLabel(GetText(app, "title", "工具箱"), "app.title"),
                 SubtitleText = PortalLabel(GetText(app, "subtitle", ""), "app.subtitle"),
                 AccentColor = Color.FromArgb(30, 102, 165)
             });
@@ -2729,7 +2751,7 @@ namespace ToolboxClient
                 Width = available,
                 Height = 30,
                 Margin = new Padding(0, 0, 0, 0),
-                Text = String.IsNullOrWhiteSpace(pageTitle) ? PortalText("远程调试工具12", "Remote Debug Tools") : pageTitle,
+                Text = String.IsNullOrWhiteSpace(pageTitle) ? PortalText("首页", "Home") : pageTitle,
                 ForeColor = TextColor,
                 BackColor = Bg,
                 Font = new Font(Font.FontFamily, 14F, FontStyle.Bold),
@@ -2742,7 +2764,7 @@ namespace ToolboxClient
                 Width = available,
                 Height = 24,
                 Margin = new Padding(0, 0, 0, 8),
-                Text = PortalText("首页推荐资源来自远程配置。", "Recommended resources are loaded from remote configuration."),
+                Text = "",
                 ForeColor = Muted,
                 BackColor = Bg,
                 Font = new Font(Font.FontFamily, 9F, FontStyle.Regular),
@@ -2780,6 +2802,30 @@ namespace ToolboxClient
 
             content.ResumeLayout();
             ApplyPortalThemeToShell();
+        }
+
+        private void RenderPortalLoadingState(string message)
+        {
+            if (!portalVariant || content == null) return;
+            content.SuspendLayout();
+            content.Controls.Clear();
+            content.FlowDirection = FlowDirection.TopDown;
+            content.WrapContents = false;
+            content.BackColor = Bg;
+            int available = Math.Max(520, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            Label loading = new Label
+            {
+                Width = available,
+                Height = 96,
+                Margin = new Padding(0, 32, 0, 0),
+                Text = String.IsNullOrWhiteSpace(message) ? "正在同步配置..." : message,
+                ForeColor = Muted,
+                BackColor = Bg,
+                Font = new Font(Font.FontFamily, 10F, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            content.Controls.Add(loading);
+            content.ResumeLayout();
         }
 
         private void AddPortalSectionGroups(int available)
@@ -3402,7 +3448,7 @@ namespace ToolboxClient
             if (String.IsNullOrWhiteSpace(value)) return value;
             if (value.IndexOf("www.", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".cn", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".com", StringComparison.OrdinalIgnoreCase) >= 0) return value;
             string key = value.ToLowerInvariant();
-            if (key == "143") return "Audio Resource Hub";
+            if (key == "143") return "Toolbox";
             if (value == "工具箱") return "Toolbox";
             if (value == "首页") return "Home";
             if (value == "暂无内容") return "No Content";
@@ -3418,8 +3464,8 @@ namespace ToolboxClient
             if (value == "打包设置") return "Package Settings";
             if (value == "下载管理") return "Download Manager";
             if (value == "全局设置") return "Global Settings";
-            if (value == "远程调试工具12") return "Remote Debug Tools";
-            if (value == "首页推荐资源来自远程配置。") return "Recommended resources are loaded from remote configuration.";
+            if (value == "远程调试工具12") return "Home";
+            if (value == "首页推荐资源来自远程配置。") return "";
             if (value == "这里还没有按钮。") return "No items yet.";
             if (value == "未命名") return "Untitled";
             if (value == "下载") return "Download";
@@ -4925,8 +4971,8 @@ namespace ToolboxClient
 
         private string CurrentTemplatePageTitle()
         {
-            if (String.IsNullOrWhiteSpace(currentPage)) return portalVariant ? PortalText("远程调试工具12", "Remote Debug Tools") : "系统优化";
-            if (currentPage.Equals("toolbox", StringComparison.OrdinalIgnoreCase)) return studioVariant ? "系统优化" : (portalVariant ? PortalLabel("系统工具", "toolbox") : "远程调试工具12");
+            if (String.IsNullOrWhiteSpace(currentPage)) return portalVariant ? PortalText("首页", "Home") : "系统优化";
+            if (currentPage.Equals("toolbox", StringComparison.OrdinalIgnoreCase)) return studioVariant ? "系统优化" : (portalVariant ? PortalLabel("系统工具", "toolbox") : "系统工具");
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             if (pages.ContainsKey(currentPage))
             {
@@ -8488,6 +8534,29 @@ namespace ToolboxClient
             {
                 return json;
             }
+        }
+
+        private bool IsPortalDemoPlaceholderConfig(string json)
+        {
+            if (String.IsNullOrWhiteSpace(json)) return false;
+            try
+            {
+                object parsed = serializer.DeserializeObject(json);
+                Dictionary<string, object> dict = AsDict(parsed);
+                Dictionary<string, object> app = AsDict(Get(dict, "app"));
+                if (GetText(app, "title", "").Trim() == "143") return true;
+                Dictionary<string, object> pages = AsDict(Get(dict, "pages"));
+                foreach (object pageObj in pages.Values)
+                {
+                    Dictionary<string, object> page = AsDict(pageObj);
+                    string label = (GetText(page, "title", "") + " " + GetText(page, "name", "")).Trim();
+                    if (label.IndexOf("远程调试工具12", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                }
+            }
+            catch
+            {
+            }
+            return false;
         }
 
         private static object Get(Dictionary<string, object> dict, string key)
