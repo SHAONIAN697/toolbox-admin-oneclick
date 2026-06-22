@@ -3193,6 +3193,13 @@ class Handler(BaseHTTPRequestHandler):
             if auth["user"].get("role") == "super" and should_sync_default_config(auth["user"], user_id):
                 sync_public_brand_config(patch)
             return self.send_json(cfg)
+        if path == "/api/admin/popup" and method == "PATCH":
+            cfg = read_config(user_id)
+            merged = dict(cfg.get("popup") or {})
+            merged.update(self.read_body())
+            cfg["popup"] = normalize_popup_settings(merged)
+            write_config_for_actor(cfg, user_id, auth["user"])
+            return self.send_json(cfg)
         if path == "/api/admin/buttons":
             cfg = read_config(user_id)
             if method == "GET":

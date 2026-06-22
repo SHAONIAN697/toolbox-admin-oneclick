@@ -3,7 +3,7 @@ SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="private-local-tested-preserve-data-20260620"
 URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
-SHA="901808ba7eda781c111001afcda3bec0ebd014af98377aef9fa646d101e09367"
+SHA="34fc07469d746ea4c7752e64196b9cb60de5d6811aea42af2eccdd3fa326e36e"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-local-tested-$TS"
@@ -36,6 +36,8 @@ systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "software_catalog_enabled" app.py
 grep -q "ensureButtonsPagePanels" wwwroot/admin.js
+grep -q "/api/admin/popup" app.py
+grep -q "savePopupAllBtn" wwwroot/admin.js
 grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs
 grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs
 echo "OK: updated to 20260622 local-tested build, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"

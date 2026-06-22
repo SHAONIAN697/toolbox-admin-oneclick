@@ -1044,12 +1044,12 @@ function createPopupOverviewPanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>联系方式</h2>
+      <button id="savePopupAllBtn" type="button">保存联系方式</button>
     </div>
     <div class="popup-settings">
       <div class="popup-admin-block">
         <div class="popup-admin-head">
           <h3>基础设置</h3>
-          <button id="savePopupBasicBtn" type="button">保存</button>
         </div>
         <div class="form-grid compact">
           <label class="toggle-line">启用隐藏入口<span><input id="popupEnabled" type="checkbox"> 启用</span></label>
@@ -1064,7 +1064,6 @@ function createPopupOverviewPanel() {
           <h3>联系方式二维码</h3>
           <div class="popup-head-actions">
             <button id="addPopupContactBtn" type="button">新增联系方式</button>
-            <button id="savePopupContactBtn" type="button">保存</button>
           </div>
         </div>
         <div id="popupContactRows" class="popup-config-list"></div>
@@ -1074,7 +1073,6 @@ function createPopupOverviewPanel() {
           <h3>收款码</h3>
           <div class="popup-head-actions">
             <button id="addPopupPaymentBtn" type="button">新增收款码</button>
-            <button id="savePopupPaymentBtn" type="button">保存</button>
           </div>
         </div>
         <div id="popupPaymentRows" class="popup-config-list"></div>
@@ -1084,7 +1082,6 @@ function createPopupOverviewPanel() {
           <h3>相关链接</h3>
           <div class="popup-head-actions">
             <button id="addPopupLinkBtn" type="button">新增链接</button>
-            <button id="savePopupLinkBtn" type="button">保存</button>
           </div>
         </div>
         <div id="popupLinkRows" class="popup-config-list"></div>
@@ -1095,10 +1092,7 @@ function createPopupOverviewPanel() {
 }
 
 function bindPopupSettingsActions() {
-  if ($('savePopupBasicBtn')) $('savePopupBasicBtn').onclick = () => savePopupSettings('基础设置').catch((error) => setStatus(error.message, true));
-  if ($('savePopupContactBtn')) $('savePopupContactBtn').onclick = () => savePopupSettings('联系方式二维码').catch((error) => setStatus(error.message, true));
-  if ($('savePopupPaymentBtn')) $('savePopupPaymentBtn').onclick = () => savePopupSettings('收款码').catch((error) => setStatus(error.message, true));
-  if ($('savePopupLinkBtn')) $('savePopupLinkBtn').onclick = () => savePopupSettings('相关链接').catch((error) => setStatus(error.message, true));
+  if ($('savePopupAllBtn')) $('savePopupAllBtn').onclick = () => savePopupSettings('联系方式').catch((error) => setStatus(error.message, true));
   if ($('addPopupContactBtn')) $('addPopupContactBtn').onclick = () => addPopupItem('contact');
   if ($('addPopupPaymentBtn')) $('addPopupPaymentBtn').onclick = () => addPopupItem('payment');
   if ($('addPopupLinkBtn')) $('addPopupLinkBtn').onclick = () => addPopupItem('link');
