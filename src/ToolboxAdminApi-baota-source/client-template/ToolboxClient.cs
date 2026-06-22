@@ -11,6 +11,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -53,6 +54,8 @@ namespace ToolboxClient
         private static void ConfigureNetworkSecurity()
         {
             ServicePointManager.Expect100Continue = false;
+            ServicePointManager.DefaultConnectionLimit = 24;
+            ServicePointManager.UseNagleAlgorithm = false;
             ServicePointManager.SecurityProtocol =
                 (SecurityProtocolType)3072 |
                 (SecurityProtocolType)768 |
@@ -105,12 +108,29 @@ namespace ToolboxClient
         private System.Windows.Forms.Timer refreshTimer;
         private string currentPage = "";
         private IList<object> currentSections = new List<object>();
+        private const string SoftwareCatalogPageId = "software_catalog";
+        private TextBox softwareSearchBox;
+        private ComboBox softwareCategoryBox;
+        private FlowLayoutPanel softwareResultsPanel;
+        private Label softwareCatalogStatus;
+        private System.Windows.Forms.Timer softwareSearchTimer;
+        private string softwareCatalogQuery = "";
+        private string softwareCatalogCategory = "全部";
+        private bool softwareCatalogLayoutUpdating = false;
+        private List<SoftwareCatalogEntry> softwareCatalogCache;
+        private List<SoftwareCatalogEntry> wingetCatalogResults = new List<SoftwareCatalogEntry>();
+        private string wingetCatalogQuery = "";
+        private string wingetCatalogPendingQuery = "";
+        private bool wingetCatalogSearching = false;
+        private int wingetCatalogSearchVersion = 0;
         private bool listMode = false;
         private bool passwordUnlocked = false;
+        private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
+        private const int DefaultMaxParallelDownloads = 5;
         private string lastConfigJson = "";
         private string lastSyncText = "";
         private string lastPasswordHash = "";
@@ -231,6 +251,12 @@ namespace ToolboxClient
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (runtimeIcon != null) runtimeIcon.Dispose();
+            if (softwareSearchTimer != null)
+            {
+                softwareSearchTimer.Stop();
+                softwareSearchTimer.Dispose();
+                softwareSearchTimer = null;
+            }
             if (contactPopupWindow != null && !contactPopupWindow.IsDisposed) contactPopupWindow.Dispose();
             base.OnFormClosed(e);
         }
@@ -444,7 +470,14 @@ namespace ToolboxClient
                 BackColor = Bg,
                 Padding = new Padding(0, 28, 0, 0)
             };
-            content.Resize += delegate { RenderCurrentSections(); };
+            content.Resize += delegate
+            {
+                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
+                }
+                else RenderCurrentSections();
+            };
             mainLayout.Controls.Add(content, 0, 2);
             BuildRecordsPanel();
             AttachRecordDismissHandlers(this);
@@ -617,6 +650,10 @@ namespace ToolboxClient
             content.Resize += delegate
             {
                 if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase)) RenderStudioSettingsPage();
+                else if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
+                }
                 else RenderCurrentSections();
             };
             main.Controls.Add(content);
@@ -799,7 +836,11 @@ namespace ToolboxClient
                 BackColor = portalShellBack,
                 Padding = new Padding(0, 16, 0, 20)
             };
-            content.Resize += delegate { RenderCurrentPortalView(); };
+            content.Resize += delegate
+            {
+                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && softwareCatalogLayoutUpdating) return;
+                RenderCurrentPortalView();
+            };
             mainLayout.Controls.Add(content, 0, 1);
 
             titleBar = main;
@@ -1328,8 +1369,7 @@ namespace ToolboxClient
                 initialSizeApplied = true;
             }
 
-            BuildNav();
-
+            bool allowNav = true;
             string password = GetText(app, "password", "");
             if (String.IsNullOrWhiteSpace(password))
             {
@@ -1340,23 +1380,27 @@ namespace ToolboxClient
             {
                 passwordUnlocked = false;
                 lastPasswordHash = password;
-                if (PromptPassword(password))
+                if (PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
                 {
                     passwordUnlocked = true;
                 }
                 else
                 {
                     Close();
+                    allowNav = false;
                 }
             }
-            else if (!passwordUnlocked && PromptPassword(password))
+            else if (!passwordUnlocked && PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
             {
                 passwordUnlocked = true;
             }
             else if (!passwordUnlocked)
             {
                 Close();
+                allowNav = false;
             }
+
+            if (allowNav) BuildNav();
 
             content.ResumeLayout();
             nav.ResumeLayout();
@@ -1757,7 +1801,7 @@ namespace ToolboxClient
         {
             string serverTheme = GetText(app, "theme", "午夜靛蓝");
             if (serverTheme.Equals("glacier", StringComparison.OrdinalIgnoreCase)) serverTheme = "午夜靛蓝";
-            IList<ThemeOption> options = VisibleThemeOptions(app);
+            IList<ThemeOption> options = (!studioVariant && !portalVariant) ? AllThemeOptions() : VisibleThemeOptions(app);
             bool serverThemeVisible = false;
             foreach (ThemeOption option in options)
             {
@@ -1798,12 +1842,23 @@ namespace ToolboxClient
         {
             return new List<ThemeOption>
             {
-                new ThemeOption("星夜墨蓝", "星夜墨蓝"),
+                new ThemeOption("午夜靛蓝", "午夜靛蓝"),
                 new ThemeOption("海雾蓝湖", "海雾蓝湖"),
+                new ThemeOption("冰川浅蓝", "冰川浅蓝"),
                 new ThemeOption("钻蓝冷辉", "钻蓝冷辉"),
                 new ThemeOption("晴空蓝白", "晴空蓝白"),
+                new ThemeOption("森境青绿", "森境青绿"),
+                new ThemeOption("翡翠冷绿", "翡翠冷绿"),
+                new ThemeOption("极光青碧", "极光青碧"),
+                new ThemeOption("落日绯红", "落日绯红"),
                 new ThemeOption("玫瑰粉雾", "玫瑰粉雾"),
                 new ThemeOption("樱雾浅粉", "樱雾浅粉"),
+                new ThemeOption("蓝雾淡紫", "蓝雾淡紫"),
+                new ThemeOption("星云紫幕", "星云紫幕"),
+                new ThemeOption("霓虹电缎", "霓虹电缎"),
+                new ThemeOption("墨金深空", "墨金深空"),
+                new ThemeOption("暖棕咖啡", "暖棕咖啡"),
+                new ThemeOption("余烬橙焰", "余烬橙焰"),
                 new ThemeOption("沙丘金黄", "沙丘金黄"),
                 new ThemeOption("银光素白", "银光素白")
             };
@@ -1873,6 +1928,56 @@ namespace ToolboxClient
             }
         }
 
+        private bool SoftwareCatalogEnabled()
+        {
+            Dictionary<string, object> features = AsDict(Get(config, "features"));
+            return BoolValue(features, "software_catalog_enabled", true);
+        }
+
+        private Dictionary<string, object> PageLockConfig(string id)
+        {
+            Dictionary<string, object> locks = AsDict(Get(config, "page_locks"));
+            return AsDict(Get(locks, id));
+        }
+
+        private bool EnsurePageUnlocked(string id)
+        {
+            if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) return true;
+            Dictionary<string, object> lockConfig = PageLockConfig(id);
+            if (!BoolValue(lockConfig, "enabled", false)) return true;
+            string stored = GetText(lockConfig, "password", "");
+            if (String.IsNullOrWhiteSpace(stored))
+            {
+                status.Text = "页面锁已启用，但后台未设置密码。";
+                return false;
+            }
+            string unlockedHash;
+            if (unlockedPagePasswords.TryGetValue(id, out unlockedHash) && unlockedHash.Equals(stored, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            status.Text = "页面已上锁，请输入密码。";
+            if (PromptPassword(stored, "页面访问密码", "请输入该页面的访问密码"))
+            {
+                unlockedPagePasswords[id] = stored;
+                status.Text = "页面已解锁。";
+                return true;
+            }
+            status.Text = "页面已锁定。";
+            return false;
+        }
+
+        private void DeactivateNavButtons()
+        {
+            foreach (KeyValuePair<string, Control> pair in navButtons)
+            {
+                NavItemControl navItem = pair.Value as NavItemControl;
+                TemplateNavButton templateItem = pair.Value as TemplateNavButton;
+                if (navItem != null) navItem.Active = false;
+                if (templateItem != null) templateItem.Active = false;
+            }
+        }
+
         private void BuildNav()
         {
             nav.Controls.Clear();
@@ -1905,6 +2010,12 @@ namespace ToolboxClient
             {
                 AddNavButton("toolbox", "系统工具");
                 added.Add("toolbox");
+            }
+
+            if (SoftwareCatalogEnabled() && !added.Contains(SoftwareCatalogPageId))
+            {
+                AddNavButton(SoftwareCatalogPageId, "软件大全");
+                added.Add(SoftwareCatalogPageId);
             }
 
             if (navButtons.Count == 0)
@@ -1980,6 +2091,23 @@ namespace ToolboxClient
 
         private void ShowPage(string id)
         {
+            if (String.IsNullOrWhiteSpace(id)) return;
+            if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled())
+            {
+                status.Text = "软件大全已在后台关闭。";
+                return;
+            }
+            if (!EnsurePageUnlocked(id))
+            {
+                if (String.IsNullOrWhiteSpace(currentPage) || currentPage.Equals(id, StringComparison.OrdinalIgnoreCase))
+                {
+                    currentPage = "";
+                    DeactivateNavButtons();
+                    title.Text = portalVariant ? PortalText("页面已锁定", "Locked") : "页面已锁定";
+                    content.Controls.Clear();
+                }
+                return;
+            }
             currentPage = id;
             foreach (KeyValuePair<string, Control> pair in navButtons)
             {
@@ -1993,6 +2121,11 @@ namespace ToolboxClient
             if (id.Equals("toolbox", StringComparison.OrdinalIgnoreCase))
             {
                 RenderToolbox();
+                return;
+            }
+            if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                RenderSoftwareCatalogPage();
                 return;
             }
 
@@ -2249,7 +2382,7 @@ namespace ToolboxClient
             RoundedPanel panel = new RoundedPanel
             {
                 Width = width,
-                Height = 238,
+                Height = 282,
                 Margin = new Padding(0, 0, 0, 18),
                 BackColor = PanelBg,
                 BorderColor = Color.Transparent,
@@ -2338,13 +2471,37 @@ namespace ToolboxClient
                 Checked = currentSettings.DeleteDownloadsOnExit
             };
 
+            Label parallelLabel = new Label
+            {
+                Left = 18,
+                Top = 164,
+                Width = 180,
+                Height = 22,
+                Text = "同时最多下载",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Bold)
+            };
+            ComboBox parallelBox = new ComboBox
+            {
+                Left = 18,
+                Top = 190,
+                Width = 126,
+                Height = 28,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = PanelBg2,
+                ForeColor = TextColor,
+                FlatStyle = FlatStyle.Flat
+            };
+            FillMaxParallelDownloadBox(parallelBox, currentSettings.MaxParallelDownloads);
+
             Button openFolder = MakeStudioSmallButton("打开目录");
             openFolder.Left = 18;
-            openFolder.Top = 180;
+            openFolder.Top = 226;
             openFolder.Width = 104;
             Button reset = MakeStudioSmallButton("恢复默认");
             reset.Left = 134;
-            reset.Top = 180;
+            reset.Top = 226;
             reset.Width = 104;
             openFolder.Click += delegate
             {
@@ -2377,12 +2534,21 @@ namespace ToolboxClient
                 SaveClientSettings(currentSettings);
                 status.Text = cleanOnExit.Checked ? "关闭时将自动删除已下载文件" : "已关闭退出自动清理";
             };
+            parallelBox.SelectedIndexChanged += delegate
+            {
+                currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
+                SaveClientSettings(currentSettings);
+                status.Text = "同时下载数量已设置为：" + currentSettings.MaxParallelDownloads;
+                StartQueuedDownloads();
+            };
 
             panel.Controls.Add(pathLabel);
             panel.Controls.Add(pathBox);
             panel.Controls.Add(browse);
             panel.Controls.Add(autoStart);
             panel.Controls.Add(cleanOnExit);
+            panel.Controls.Add(parallelLabel);
+            panel.Controls.Add(parallelBox);
             panel.Controls.Add(openFolder);
             panel.Controls.Add(reset);
             return panel;
@@ -2946,10 +3112,25 @@ namespace ToolboxClient
             if (selectedThemeIndex >= 0) themeBox.SelectedIndex = selectedThemeIndex;
             else if (themeBox.Items.Count > 0) themeBox.SelectedIndex = 0;
 
+            Label parallelLabel = new Label { Left = 16, Top = 188, Width = 160, Height = 20, Text = PortalText("同时最多下载", "Max Downloads"), ForeColor = TextColor, BackColor = Color.Transparent };
+            ComboBox parallelBox = new ComboBox
+            {
+                Left = 16,
+                Top = 210,
+                Width = width - 32,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = PortalFieldBack(),
+                ForeColor = TextColor
+            };
+            parallelBox.DrawMode = DrawMode.OwnerDrawFixed;
+            parallelBox.ItemHeight = 22;
+            parallelBox.DrawItem += DrawPortalComboItem;
+            FillMaxParallelDownloadBox(parallelBox, currentSettings.MaxParallelDownloads);
+
             FlatCheckBox autoStart = new FlatCheckBox
             {
                 Left = 16,
-                Top = 188,
+                Top = 254,
                 Width = width - 32,
                 Text = PortalText("开机自启", "Start with Windows"),
                 ForeColor = TextColor,
@@ -2959,7 +3140,7 @@ namespace ToolboxClient
             FlatCheckBox cleanOnExit = new FlatCheckBox
             {
                 Left = 16,
-                Top = 218,
+                Top = 284,
                 Width = width - 32,
                 Text = PortalText("退出自动清理下载文件", "Delete downloads on exit"),
                 ForeColor = TextColor,
@@ -2969,17 +3150,19 @@ namespace ToolboxClient
 
             Button save = MakeTemplateTopButton(PortalText("保存设置", "Save"), Accent, LightTheme ? Color.White : Color.FromArgb(7, 18, 24), Color.FromArgb(LightTheme ? 135 : 105, Accent), 88);
             save.Left = 16;
-            save.Top = 264;
+            save.Top = 330;
             save.Click += delegate
             {
                 currentSettings.DownloadDirectory = pathBox.Text.Trim();
                 ThemeOption selectedTheme = themeBox.SelectedItem as ThemeOption;
                 if (selectedTheme != null) currentSettings.Theme = selectedTheme.Value;
+                currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
                 currentSettings.AutoStart = autoStart.Checked;
                 currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
                 SaveClientSettings(currentSettings);
                 SaveDownloadDirectory(pathBox.Text, currentSettings);
                 SetAutoStart(autoStart.Checked);
+                StartQueuedDownloads();
                 ApplyTheme(currentSettings.Theme);
                 ApplyTemplatePalette();
                 ApplyPortalThemeToShell();
@@ -2993,6 +3176,8 @@ namespace ToolboxClient
             panel.Controls.Add(browse);
             panel.Controls.Add(themeLabel);
             panel.Controls.Add(themeBox);
+            panel.Controls.Add(parallelLabel);
+            panel.Controls.Add(parallelBox);
             panel.Controls.Add(autoStart);
             panel.Controls.Add(cleanOnExit);
             panel.Controls.Add(save);
@@ -3186,6 +3371,7 @@ namespace ToolboxClient
             if (key == "toolbox") return "System Tools";
             if (key == "driver") return "Audio Drivers";
             if (key == "software") return "Common Software";
+            if (key == "software_catalog") return "Software Catalog";
             if (key == "websites") return "Common Sites";
             if (key == "settings") return "Package Settings";
             if (key == "downloads") return "Download Manager";
@@ -3211,6 +3397,7 @@ namespace ToolboxClient
             if (value == "系统工具") return "System Tools";
             if (value == "声卡驱动") return "Audio Drivers";
             if (value == "常用软件") return "Common Software";
+            if (value == "软件大全") return "Software Catalog";
             if (value == "常用网站") return "Common Sites";
             if (value == "打包设置") return "Package Settings";
             if (value == "下载管理") return "Download Manager";
@@ -3346,6 +3533,7 @@ namespace ToolboxClient
             if (!portalVariant) return;
             if (currentPage == "downloads") RenderPortalDownloadsPage();
             else if (currentPage == "settings") RenderPortalSettingsPage();
+            else if (currentPage == SoftwareCatalogPageId) RenderSoftwareCatalogPage();
             else RenderCurrentSections();
         }
 
@@ -3371,6 +3559,1291 @@ namespace ToolboxClient
                     RenderPortalSettingsPage();
                 }
             }
+        }
+
+        private void RenderSoftwareCatalogPage()
+        {
+            if (recordsPanel != null) recordsPanel.Visible = false;
+            if (settingsPanel != null) settingsPanel.Visible = false;
+            title.Text = portalVariant ? PortalText("软件大全", "Software Catalog") : "软件大全";
+
+            softwareCatalogLayoutUpdating = true;
+            content.SuspendLayout();
+            try
+            {
+                content.Controls.Clear();
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+
+                int available = SoftwareCatalogContentWidth();
+                content.Controls.Add(CreateSoftwareCatalogHeading(available));
+                content.Controls.Add(CreateSoftwareCatalogToolbar(available));
+
+                softwareResultsPanel = new BufferedFlowLayoutPanel
+                {
+                    Width = available,
+                    Height = 320,
+                    Margin = new Padding(0, 0, 0, 12),
+                    FlowDirection = FlowDirection.LeftToRight,
+                    WrapContents = true,
+                    AutoScroll = false,
+                    BackColor = Bg,
+                    Padding = new Padding(0)
+                };
+                content.Controls.Add(softwareResultsPanel);
+            }
+            finally
+            {
+                content.ResumeLayout();
+                softwareCatalogLayoutUpdating = false;
+            }
+            RefreshSoftwareCatalogResults();
+        }
+
+        private int SoftwareCatalogContentWidth()
+        {
+            int width = content == null ? 720 : content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12;
+            return Math.Max(640, width);
+        }
+
+        private Control CreateSoftwareCatalogHeading(int width)
+        {
+            string heading = portalVariant ? PortalText("软件大全", "Software Catalog") : "软件大全";
+            string subtitle = portalVariant
+                ? PortalText("整合内置目录、Windows Winget 和常用软件站入口，搜索后可解析安装包并加入下载。", "Search built-in apps, Winget packages, and software directory sources.")
+                : "整合内置目录、Windows Winget 和常用软件站入口，搜索后可解析安装包并加入下载。";
+            if (portalVariant) return CreatePortalPageHeading(heading, subtitle, width);
+
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = studioVariant ? 86 : 94,
+                Margin = new Padding(0, 0, 0, 14),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                Radius = 8
+            };
+            Label h = new Label
+            {
+                Left = 18,
+                Top = 14,
+                Width = width - 36,
+                Height = 30,
+                Text = "▦  " + heading,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, studioVariant ? 15F : 16F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            Label p = new Label
+            {
+                Left = 18,
+                Top = 46,
+                Width = width - 36,
+                Height = 28,
+                Text = subtitle,
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            panel.Controls.Add(h);
+            panel.Controls.Add(p);
+            return panel;
+        }
+
+        private Control CreateSoftwareCatalogToolbar(int width)
+        {
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = 118,
+                Margin = new Padding(0, 0, 0, 16),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                Radius = 8
+            };
+
+            Label searchLabel = new Label
+            {
+                Left = 18,
+                Top = 14,
+                Width = 220,
+                Height = 22,
+                Text = portalVariant ? PortalText("搜索软件 / 游戏", "Search apps / games") : "搜索软件 / 游戏",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Bold)
+            };
+            panel.Controls.Add(searchLabel);
+
+            int categoryWidth = 132;
+            int searchWidth = Math.Max(220, width - 36 - categoryWidth - 104 - 96 - 34);
+            softwareSearchBox = new TextBox
+            {
+                Left = 18,
+                Top = 40,
+                Width = searchWidth,
+                Height = 30,
+                Text = softwareCatalogQuery,
+                BackColor = PanelBg2,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font(Font.FontFamily, 10F, FontStyle.Regular)
+            };
+            panel.Controls.Add(softwareSearchBox);
+
+            Label categoryLabel = new Label
+            {
+                Left = softwareSearchBox.Right + 12,
+                Top = 14,
+                Width = categoryWidth,
+                Height = 22,
+                Text = portalVariant ? PortalText("分类", "Category") : "分类",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Bold)
+            };
+            panel.Controls.Add(categoryLabel);
+
+            softwareCategoryBox = new ComboBox
+            {
+                Left = softwareSearchBox.Right + 12,
+                Top = 40,
+                Width = categoryWidth,
+                Height = 30,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = PanelBg2,
+                ForeColor = TextColor,
+                FlatStyle = FlatStyle.Flat
+            };
+            string[] categories = SoftwareCatalogCategories();
+            softwareCategoryBox.Items.AddRange(categories);
+            if (Array.IndexOf(categories, softwareCatalogCategory) < 0) softwareCatalogCategory = "全部";
+            softwareCategoryBox.SelectedItem = softwareCatalogCategory;
+            panel.Controls.Add(softwareCategoryBox);
+
+            Button winget = MakeCatalogButton(portalVariant ? PortalText("Winget 搜索", "Winget Search") : "Winget 搜索", 104, true);
+            winget.Left = softwareCategoryBox.Right + 12;
+            winget.Top = 39;
+            winget.Click += delegate { SearchSoftwareWithWinget(CurrentSoftwareSearchKeyword()); };
+            panel.Controls.Add(winget);
+
+            Button web = MakeCatalogButton(portalVariant ? PortalText("聚合搜索", "Web Search") : "聚合搜索", 96, false);
+            web.Left = winget.Right + 10;
+            web.Top = 39;
+            web.Click += delegate { OpenSoftwareWebSearch(CurrentSoftwareSearchKeyword()); };
+            panel.Controls.Add(web);
+
+            softwareCatalogStatus = new Label
+            {
+                Left = 18,
+                Top = 82,
+                Width = width - 36,
+                Height = 22,
+                Text = "",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            panel.Controls.Add(softwareCatalogStatus);
+
+            softwareSearchBox.TextChanged += delegate
+            {
+                softwareCatalogQuery = softwareSearchBox.Text;
+                QueueSoftwareCatalogRefresh();
+            };
+            softwareCategoryBox.SelectedIndexChanged += delegate
+            {
+                softwareCatalogCategory = Convert.ToString(softwareCategoryBox.SelectedItem);
+                RefreshSoftwareCatalogResults();
+            };
+
+            return panel;
+        }
+
+        private void QueueSoftwareCatalogRefresh()
+        {
+            if (softwareSearchTimer == null)
+            {
+                softwareSearchTimer = new System.Windows.Forms.Timer();
+                softwareSearchTimer.Interval = 220;
+                softwareSearchTimer.Tick += delegate
+                {
+                    softwareSearchTimer.Stop();
+                    RefreshSoftwareCatalogResults();
+                };
+            }
+            softwareSearchTimer.Stop();
+            softwareSearchTimer.Start();
+        }
+
+        private string CurrentSoftwareSearchKeyword()
+        {
+            string value = softwareSearchBox == null ? softwareCatalogQuery : softwareSearchBox.Text;
+            value = (value ?? "").Trim();
+            return String.IsNullOrWhiteSpace(value) ? "常用软件" : value;
+        }
+
+        private void RefreshSoftwareCatalogResults()
+        {
+            if (softwareResultsPanel == null) return;
+            string query = (softwareCatalogQuery ?? "").Trim();
+            string category = String.IsNullOrWhiteSpace(softwareCatalogCategory) ? "全部" : softwareCatalogCategory;
+            bool hasQuery = !String.IsNullOrWhiteSpace(query);
+            List<SoftwareCatalogEntry> source = SoftwareCatalogEntries();
+            List<SoftwareCatalogEntry> localResults = new List<SoftwareCatalogEntry>();
+            foreach (SoftwareCatalogEntry entry in source)
+            {
+                if (entry.SearchOnly && !hasQuery) continue;
+                if (!category.Equals("全部", StringComparison.OrdinalIgnoreCase) &&
+                    !category.Equals(entry.Category, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!SoftwareMatchesQuery(entry, query)) continue;
+                localResults.Add(entry);
+            }
+
+            localResults.Sort(delegate(SoftwareCatalogEntry a, SoftwareCatalogEntry b)
+            {
+                int categoryCompare = String.Compare(a.Category, b.Category, StringComparison.CurrentCultureIgnoreCase);
+                return categoryCompare != 0 ? categoryCompare : String.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
+            });
+
+            if (hasQuery) QueueWingetCatalogSearch(query);
+
+            List<SoftwareCatalogEntry> results = new List<SoftwareCatalogEntry>();
+            foreach (SoftwareCatalogEntry entry in localResults) results.Add(entry);
+            AppendWingetCatalogResults(results, query, category);
+            AppendSoftwareDirectorySearchEntries(results, query, category);
+
+            if (softwareCatalogStatus != null)
+            {
+                string prefix = String.IsNullOrWhiteSpace(query) ? "当前目录" : "搜索结果";
+                string wingetText = wingetCatalogSearching && hasQuery ? "，Winget 正在搜索" : "";
+                softwareCatalogStatus.Text = prefix + "：" + results.Count + " 个，内置目录 " + source.Count + " 个" + wingetText + "；点“安装”会优先解析安装包加入下载。";
+            }
+
+            int available = SoftwareCatalogContentWidth();
+            softwareResultsPanel.Width = available;
+            int gap = 14;
+            int minCardWidth = 286;
+            int columns = available >= 980 ? 3 : (available >= 640 ? 2 : 1);
+            while (columns > 1 && ((available - gap * columns - 2) / columns) < minCardWidth) columns--;
+            int cardWidth = Math.Max(minCardWidth, (available - gap * columns - 2) / columns);
+            int cardHeight = portalVariant ? 134 : (studioVariant ? 126 : 132);
+            int countForHeight = Math.Max(1, results.Count == 0 ? 1 : results.Count);
+            int rows = (int)Math.Ceiling(countForHeight / (double)columns);
+
+            softwareCatalogLayoutUpdating = true;
+            softwareResultsPanel.SuspendLayout();
+            try
+            {
+                softwareResultsPanel.Height = Math.Max(188, rows * (cardHeight + gap) + 6);
+                softwareResultsPanel.Controls.Clear();
+                if (results.Count == 0)
+                {
+                    softwareResultsPanel.Controls.Add(CreateSoftwareNoResultCard(cardWidth, cardHeight + 28, query));
+                }
+                else
+                {
+                    for (int i = 0; i < results.Count; i++)
+                    {
+                        softwareResultsPanel.Controls.Add(CreateSoftwareCatalogCard(results[i], cardWidth, cardHeight, i));
+                    }
+                }
+            }
+            finally
+            {
+                softwareResultsPanel.ResumeLayout();
+                softwareCatalogLayoutUpdating = false;
+            }
+        }
+
+        private Control CreateSoftwareNoResultCard(int width, int height, string query)
+        {
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = height,
+                Margin = new Padding(0, 0, 14, 14),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                Radius = 8
+            };
+            string keyword = String.IsNullOrWhiteSpace(query) ? "这个关键词" : query;
+            Label heading = new Label
+            {
+                Left = 16,
+                Top = 16,
+                Width = width - 32,
+                Height = 26,
+                Text = "没有找到：" + keyword,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            Label desc = new Label
+            {
+                Left = 16,
+                Top = 46,
+                Width = width - 32,
+                Height = 44,
+                Text = "可以继续调用 Windows Winget 搜索，或打开聚合搜索在常用软件站里找官方下载入口。",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Regular)
+            };
+            Button winget = MakeCatalogButton("Winget 搜索", 104, true);
+            winget.Left = 16;
+            winget.Top = height - 46;
+            winget.Click += delegate { SearchSoftwareWithWinget(CurrentSoftwareSearchKeyword()); };
+            Button web = MakeCatalogButton("聚合搜索", 92, false);
+            web.Left = 132;
+            web.Top = height - 46;
+            web.Click += delegate { OpenSoftwareWebSearch(CurrentSoftwareSearchKeyword()); };
+            panel.Controls.Add(heading);
+            panel.Controls.Add(desc);
+            panel.Controls.Add(winget);
+            panel.Controls.Add(web);
+            return panel;
+        }
+
+        private void QueueWingetCatalogSearch(string query)
+        {
+            string value = (query ?? "").Trim();
+            if (value.Length < 2) return;
+            if (value.Equals(wingetCatalogQuery, StringComparison.OrdinalIgnoreCase)) return;
+            if (wingetCatalogSearching && value.Equals(wingetCatalogPendingQuery, StringComparison.OrdinalIgnoreCase)) return;
+
+            wingetCatalogPendingQuery = value;
+            wingetCatalogSearching = true;
+            int version = ++wingetCatalogSearchVersion;
+            string uiQuery = value;
+            string wingetKeyword = WingetLookupKeyword(value);
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                List<SoftwareCatalogEntry> results = new List<SoftwareCatalogEntry>();
+                try
+                {
+                    results = SearchWingetCatalogEntries(wingetKeyword, uiQuery);
+                }
+                catch
+                {
+                }
+                BeginInvoke(new Action(delegate
+                {
+                    if (version != wingetCatalogSearchVersion) return;
+                    wingetCatalogQuery = uiQuery;
+                    wingetCatalogPendingQuery = "";
+                    wingetCatalogResults = results;
+                    wingetCatalogSearching = false;
+                    RefreshSoftwareCatalogResults();
+                }));
+            });
+        }
+
+        private void AppendWingetCatalogResults(List<SoftwareCatalogEntry> results, string query, string category)
+        {
+            if (String.IsNullOrWhiteSpace(query)) return;
+            if (!query.Equals(wingetCatalogQuery, StringComparison.OrdinalIgnoreCase)) return;
+            foreach (SoftwareCatalogEntry entry in wingetCatalogResults)
+            {
+                if (!category.Equals("全部", StringComparison.OrdinalIgnoreCase) &&
+                    !category.Equals(entry.Category, StringComparison.OrdinalIgnoreCase)) continue;
+                if (ContainsSoftwareEntry(results, entry)) continue;
+                results.Add(entry);
+            }
+        }
+
+        private void AppendSoftwareDirectorySearchEntries(List<SoftwareCatalogEntry> results, string query, string category)
+        {
+            if (String.IsNullOrWhiteSpace(query)) return;
+            if (!category.Equals("全部", StringComparison.OrdinalIgnoreCase)) return;
+            string keyword = query.Trim();
+            AddDirectorySearchEntry(results, "360 软件宝库搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 360 软件宝库 下载"), "覆盖常用 Windows 软件和游戏，可继续在 360 软件宝库里搜索下载。", "360软件大全");
+            AddDirectorySearchEntry(results, "2345 软件大全搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 2345 软件大全 下载"), "打开 2345 软件大全相关搜索结果，作为未收录软件的补充入口。", "2345软件大全");
+            AddDirectorySearchEntry(results, "火绒软件入口搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 火绒 应用商店 下载"), "打开火绒相关软件入口搜索，适合继续找安全来源。", "火绒软件大全");
+            AddDirectorySearchEntry(results, "全网官方下载搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 官方下载 Windows"), "打开全网官方下载搜索，优先找官网、微软商店或可信软件下载页。", "官方下载");
+        }
+
+        private void AddDirectorySearchEntry(List<SoftwareCatalogEntry> results, string sourceName, string keyword, string website, string description, string tag)
+        {
+            SoftwareCatalogEntry entry = new SoftwareCatalogEntry
+            {
+                Name = sourceName + "：" + keyword,
+                Category = "聚合搜索",
+                Description = description,
+                PackageId = "",
+                Website = website,
+                DownloadUrl = "",
+                SearchOnly = true,
+                Tags = new string[] { keyword, tag, "软件大全", "下载" }
+            };
+            if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
+        }
+
+        private bool ContainsSoftwareEntry(List<SoftwareCatalogEntry> results, SoftwareCatalogEntry entry)
+        {
+            foreach (SoftwareCatalogEntry existing in results)
+            {
+                if (!String.IsNullOrWhiteSpace(entry.PackageId) &&
+                    entry.PackageId.Equals(existing.PackageId, StringComparison.OrdinalIgnoreCase)) return true;
+                if (entry.Name.Equals(existing.Name, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        private List<SoftwareCatalogEntry> SearchWingetCatalogEntries(string wingetKeyword, string originalQuery)
+        {
+            List<SoftwareCatalogEntry> results = new List<SoftwareCatalogEntry>();
+            string safe = CleanCommandArgument(wingetKeyword);
+            if (String.IsNullOrWhiteSpace(safe)) return results;
+            string args = "search " + CmdArgument(safe) + " --source winget --accept-source-agreements --disable-interactivity";
+            string output = RunWingetAndCapture(args, 26000);
+            if (String.IsNullOrWhiteSpace(output) && !safe.Equals(originalQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                output = RunWingetAndCapture("search " + CmdArgument(CleanCommandArgument(originalQuery)) + " --source winget --accept-source-agreements --disable-interactivity", 26000);
+            }
+            return ParseWingetSearchOutput(output, originalQuery);
+        }
+
+        private string RunWingetAndCapture(string args, int timeoutMs)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("winget.exe", args);
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                psi.StandardErrorEncoding = Encoding.UTF8;
+                using (Process process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(timeoutMs))
+                    {
+                        try { process.Kill(); } catch { }
+                    }
+                    return output + Environment.NewLine + error;
+                }
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private List<SoftwareCatalogEntry> ParseWingetSearchOutput(string output, string originalQuery)
+        {
+            List<SoftwareCatalogEntry> results = new List<SoftwareCatalogEntry>();
+            if (String.IsNullOrWhiteSpace(output)) return results;
+            string[] lines = output.Replace("\r", "\n").Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string rawLine in lines)
+            {
+                if (results.Count >= 16) break;
+                string line = rawLine.Trim();
+                if (line.Length == 0) continue;
+                if (line.StartsWith("-", StringComparison.Ordinal) || line.StartsWith("|", StringComparison.Ordinal) || line.StartsWith("\\", StringComparison.Ordinal) || line.StartsWith("/", StringComparison.Ordinal)) continue;
+                if (line.IndexOf("找不到", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("No package found", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (line.IndexOf("名称", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("ID", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                if (line.IndexOf("Name", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("Id", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                Match match = Regex.Match(line, @"\s([A-Za-z0-9][A-Za-z0-9_.-]*\.[A-Za-z0-9][A-Za-z0-9_.-]*)\s");
+                if (!match.Success) continue;
+                string packageId = match.Groups[1].Value.Trim();
+                string name = line.Substring(0, match.Groups[1].Index).Trim();
+                if (String.IsNullOrWhiteSpace(name)) name = packageId;
+                if (name.Length > 46) name = name.Substring(0, 46).Trim() + "...";
+                string category = GuessSoftwareCategory(name + " " + packageId + " " + originalQuery);
+                SoftwareCatalogEntry entry = new SoftwareCatalogEntry
+                {
+                    Name = name,
+                    Category = category,
+                    Description = "来自 Windows Winget 软件源；点击安装会解析安装包地址并加入工具箱下载。",
+                    PackageId = packageId,
+                    Website = "https://winget.run/pkg/" + Uri.EscapeDataString(packageId.Replace(".", "/")),
+                    DownloadUrl = "",
+                    SearchOnly = false,
+                    Tags = new string[] { originalQuery, "winget", "软件源", "下载" }
+                };
+                if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
+            }
+            return results;
+        }
+
+        private static string WingetLookupKeyword(string query)
+        {
+            string value = (query ?? "").Trim().ToLowerInvariant();
+            if (value.IndexOf("运行库", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("运行环境", StringComparison.OrdinalIgnoreCase) >= 0) return "runtime";
+            if (value.IndexOf("vc", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("vcredist", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("c++", StringComparison.OrdinalIgnoreCase) >= 0) return "Visual C++ Redistributable";
+            if (value.IndexOf("directx", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("dx", StringComparison.OrdinalIgnoreCase) >= 0) return "DirectX";
+            if (value.Equals("net", StringComparison.OrdinalIgnoreCase) || value.IndexOf(".net", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("dotnet", StringComparison.OrdinalIgnoreCase) >= 0) return "dotnet runtime";
+            if (value.IndexOf("远程", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("远控", StringComparison.OrdinalIgnoreCase) >= 0) return "remote desktop";
+            if (value.IndexOf("驱动", StringComparison.OrdinalIgnoreCase) >= 0) return "driver";
+            return query;
+        }
+
+        private static string GuessSoftwareCategory(string text)
+        {
+            string value = (text ?? "").ToLowerInvariant();
+            if (value.IndexOf("runtime", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("redist", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("directx", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("运行库", StringComparison.OrdinalIgnoreCase) >= 0) return "运行库";
+            if (value.IndexOf("driver", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("nvidia", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("amd", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("intel", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("驱动", StringComparison.OrdinalIgnoreCase) >= 0) return "驱动硬件";
+            if (value.IndexOf("remote", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("desk", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("todesk", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("anydesk", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("teamviewer", StringComparison.OrdinalIgnoreCase) >= 0) return "远程控制";
+            if (value.IndexOf("browser", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("chrome", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("firefox", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0) return "浏览器";
+            if (value.IndexOf("game", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("steam", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("epic", StringComparison.OrdinalIgnoreCase) >= 0) return "游戏平台";
+            if (value.IndexOf("music", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("video", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("audio", StringComparison.OrdinalIgnoreCase) >= 0) return "音视频";
+            if (value.IndexOf("code", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("python", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("node", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("git", StringComparison.OrdinalIgnoreCase) >= 0) return "开发编程";
+            return "Winget 搜索";
+        }
+
+        private Control CreateSoftwareCatalogCard(SoftwareCatalogEntry entry, int width, int height, int index)
+        {
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = height,
+                Margin = new Padding(0, 0, 14, 14),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                Radius = 8
+            };
+
+            Color accent = CardAccent("winget", entry.Name, index);
+            PictureBox icon = new PictureBox
+            {
+                Left = 16,
+                Top = 16,
+                Width = 34,
+                Height = 34,
+                BackColor = Color.Transparent,
+                SizeMode = PictureBoxSizeMode.CenterImage,
+                Image = CreateSoftwareCatalogIconImage(entry, accent, 34)
+            };
+            Label name = new Label
+            {
+                Left = 60,
+                Top = 12,
+                Width = width - 76,
+                Height = 28,
+                Text = entry.Name,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            Label meta = new Label
+            {
+                Left = 60,
+                Top = 38,
+                Width = width - 76,
+                Height = 22,
+                Text = entry.Category + (String.IsNullOrWhiteSpace(entry.PackageId) ? " / 官网入口" : " / " + entry.PackageId),
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 8.2F, FontStyle.Regular),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            Label desc = new Label
+            {
+                Left = 16,
+                Top = 66,
+                Width = width - 32,
+                Height = 28,
+                Text = entry.Description,
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 8.6F, FontStyle.Regular),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            bool openOnly = entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId);
+            bool canInstall = !String.IsNullOrWhiteSpace(entry.DownloadUrl) || !String.IsNullOrWhiteSpace(entry.PackageId) || !String.IsNullOrWhiteSpace(entry.Website);
+            Button install = MakeCatalogButton(openOnly ? "打开" : (canInstall ? "安装" : "搜索"), 72, true);
+            install.Left = 16;
+            install.Top = height - 44;
+            install.Click += delegate
+            {
+                InstallSoftwareCatalogEntry(entry);
+            };
+            Button website = MakeCatalogButton("官网", 66, false);
+            website.Left = 96;
+            website.Top = height - 44;
+            website.Click += delegate { OpenSoftwareCatalogWebsite(entry); };
+            Button search = MakeCatalogButton("搜索", 66, false);
+            search.Left = 170;
+            search.Top = height - 44;
+            search.Click += delegate { OpenSoftwareWebSearch(entry.Name); };
+
+            panel.Controls.Add(icon);
+            panel.Controls.Add(name);
+            panel.Controls.Add(meta);
+            panel.Controls.Add(desc);
+            panel.Controls.Add(install);
+            panel.Controls.Add(website);
+            panel.Controls.Add(search);
+            if (topToolTip != null) topToolTip.SetToolTip(panel, entry.Name + Environment.NewLine + entry.Description);
+            return panel;
+        }
+
+        private Image CreateSoftwareCatalogIconImage(SoftwareCatalogEntry entry, Color accent, int size)
+        {
+            Bitmap bitmap = new Bitmap(size, size);
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.Clear(Color.Transparent);
+                Rectangle rect = new Rectangle(0, 0, size - 1, size - 1);
+                Color back = LightTheme ? Blend(Color.White, accent, 0.18) : Blend(PanelBg2, accent, 0.28);
+                using (GraphicsPath path = RoundRect(rect, 8))
+                using (SolidBrush brush = new SolidBrush(back))
+                using (Pen border = new Pen(Blend(back, accent, 0.42), 1F))
+                {
+                    graphics.FillPath(brush, path);
+                    graphics.DrawPath(border, path);
+                }
+
+                string iconText = SoftwareIconText(entry);
+                float fontSize = iconText.Length > 1 ? 9.2F : 12F;
+                using (Font iconFont = new Font(Font.FontFamily, fontSize, FontStyle.Bold))
+                using (SolidBrush textBrush = new SolidBrush(accent))
+                using (StringFormat format = new StringFormat())
+                {
+                    format.Alignment = StringAlignment.Center;
+                    format.LineAlignment = StringAlignment.Center;
+                    graphics.DrawString(iconText, iconFont, textBrush, new RectangleF(2, 2, size - 4, size - 4), format);
+                }
+            }
+            return bitmap;
+        }
+
+        private Button MakeCatalogButton(string text, int width, bool primary)
+        {
+            RoundButton button = new RoundButton
+            {
+                Width = width,
+                Height = 32,
+                Margin = Padding.Empty,
+                Text = text,
+                BackColor = primary ? Accent : PanelBg2,
+                ForeColor = primary && LightTheme ? Color.White : TextColor,
+                BorderColor = primary ? Color.FromArgb(Math.Min(255, Accent.R + 35), Math.Min(255, Accent.G + 35), Math.Min(255, Accent.B + 35)) : Line,
+                HoverBackColor = primary ? Blend(Accent, Color.White, LightTheme ? 0.14 : 0.08) : (LightTheme ? Color.FromArgb(239, 246, 255) : Color.FromArgb(39, 63, 86)),
+                Radius = 8,
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
+                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Bold)
+            };
+            button.FlatAppearance.BorderSize = 0;
+            return button;
+        }
+
+        private void InstallSoftwareCatalogEntry(SoftwareCatalogEntry entry)
+        {
+            if (entry == null)
+            {
+                SearchSoftwareWithWinget(CurrentSoftwareSearchKeyword());
+                return;
+            }
+            if (entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId))
+            {
+                OpenSoftwareCatalogWebsite(entry);
+                return;
+            }
+            if (!String.IsNullOrWhiteSpace(entry.DownloadUrl))
+            {
+                status.Text = "正在加入下载：" + entry.Name;
+                DownloadFile(entry.DownloadUrl);
+                return;
+            }
+            if (!String.IsNullOrWhiteSpace(entry.PackageId))
+            {
+                ResolveAndDownloadSoftwareCatalogEntry(entry);
+                return;
+            }
+            if (!String.IsNullOrWhiteSpace(entry.Website))
+            {
+                ResolveAndDownloadSoftwareCatalogEntry(entry);
+                return;
+            }
+            SearchSoftwareWithWinget(entry.Name);
+        }
+
+        private void ResolveAndDownloadSoftwareCatalogEntry(SoftwareCatalogEntry entry)
+        {
+            if (entry == null) return;
+            status.Text = "正在解析安装包地址：" + entry.Name;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string installerUrl = "";
+                string error = "";
+                try
+                {
+                    if (!String.IsNullOrWhiteSpace(entry.PackageId)) installerUrl = ResolveWingetInstallerUrl(entry.PackageId);
+                    if (String.IsNullOrWhiteSpace(installerUrl) && !String.IsNullOrWhiteSpace(entry.Website))
+                    {
+                        installerUrl = ResolveInstallerUrlFromOfficialPage(entry.Website);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                }
+                BeginInvoke(new Action(delegate
+                {
+                    if (!String.IsNullOrWhiteSpace(installerUrl))
+                    {
+                        status.Text = "正在加入下载：" + entry.Name;
+                        DownloadFile(installerUrl);
+                        return;
+                    }
+                    status.Text = String.IsNullOrWhiteSpace(error)
+                        ? "未解析到安装包地址：" + entry.Name
+                        : "解析安装包失败：" + entry.Name;
+                }));
+            });
+        }
+
+        private string ResolveWingetInstallerUrl(string packageId)
+        {
+            if (String.IsNullOrWhiteSpace(packageId)) return "";
+            ProcessStartInfo psi = new ProcessStartInfo("winget.exe",
+                "show --id " + CmdArgument(packageId) + " -e --source winget --accept-source-agreements");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.StandardOutputEncoding = Encoding.UTF8;
+            psi.StandardErrorEncoding = Encoding.UTF8;
+            using (Process process = Process.Start(psi))
+            {
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                if (!process.WaitForExit(30000))
+                {
+                    try { process.Kill(); } catch { }
+                    return "";
+                }
+                return PickInstallerUrlFromWingetOutput(output + Environment.NewLine + error);
+            }
+        }
+
+        private static string PickInstallerUrlFromWingetOutput(string output)
+        {
+            if (String.IsNullOrWhiteSpace(output)) return "";
+            string fallback = "";
+            string[] lines = output.Replace("\r", "\n").Split(new char[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string rawLine in lines)
+            {
+                string line = rawLine.Trim();
+                string url = ExtractFirstHttpUrl(line);
+                if (String.IsNullOrWhiteSpace(url)) continue;
+                bool installerLine =
+                    line.IndexOf("Installer", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    line.IndexOf("安装", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    line.IndexOf("下载", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (installerLine) return url;
+                if (String.IsNullOrWhiteSpace(fallback) && LooksLikeInstallerDownloadUrl(url)) fallback = url;
+            }
+            return fallback;
+        }
+
+        private string ResolveInstallerUrlFromOfficialPage(string website)
+        {
+            if (String.IsNullOrWhiteSpace(website)) return "";
+            string normalizedWebsite = NormalizeDownloadUrl(website, "");
+            if (LooksLikeInstallerDownloadUrl(normalizedWebsite) && !RemoteUrlLooksLikeWebPage(normalizedWebsite)) return normalizedWebsite;
+            Uri baseUri;
+            if (!Uri.TryCreate(normalizedWebsite, UriKind.Absolute, out baseUri)) return "";
+            string html = DownloadPlainText(normalizedWebsite, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            string direct = PickInstallerUrlFromPageText(html, baseUri);
+            if (!String.IsNullOrWhiteSpace(direct)) return direct;
+
+            foreach (string scriptUrl in ExtractLinkedScriptUrls(html, baseUri))
+            {
+                try
+                {
+                    string script = DownloadPlainText(scriptUrl, "application/javascript,text/javascript,*/*;q=0.8");
+                    direct = PickInstallerUrlFromPageText(script, new Uri(scriptUrl));
+                    if (!String.IsNullOrWhiteSpace(direct)) return direct;
+                }
+                catch
+                {
+                }
+            }
+            return "";
+        }
+
+        private List<string> ExtractLinkedScriptUrls(string html, Uri baseUri)
+        {
+            List<string> scripts = new List<string>();
+            if (String.IsNullOrWhiteSpace(html) || baseUri == null) return scripts;
+            foreach (Match match in Regex.Matches(html, @"(?i)<script[^>]+src\s*=\s*[""']([^""']+\.js(?:\?[^""']*)?)[""']"))
+            {
+                string src = match.Groups[1].Value;
+                try
+                {
+                    Uri uri;
+                    if (src.StartsWith("//", StringComparison.Ordinal)) src = baseUri.Scheme + ":" + src;
+                    if (!Uri.TryCreate(src, UriKind.Absolute, out uri)) uri = new Uri(baseUri, src);
+                    string url = uri.ToString();
+                    bool exists = false;
+                    foreach (string item in scripts)
+                    {
+                        if (item.Equals(url, StringComparison.OrdinalIgnoreCase))
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) scripts.Add(url);
+                    if (scripts.Count >= 8) break;
+                }
+                catch
+                {
+                }
+            }
+            return scripts;
+        }
+
+        private string PickInstallerUrlFromPageText(string html, Uri baseUri)
+        {
+            if (String.IsNullOrWhiteSpace(html) || baseUri == null) return "";
+            List<string> candidates = new List<string>();
+
+            foreach (Match match in Regex.Matches(html, @"https?://[^\s""'<>]+", RegexOptions.IgnoreCase))
+            {
+                AddInstallerCandidate(candidates, match.Value, baseUri);
+            }
+            foreach (Match match in Regex.Matches(html, @"(?i)(?:href|src|data-url|data-href|download-url)\s*=\s*[""']([^""']+)[""']"))
+            {
+                AddInstallerCandidate(candidates, match.Groups[1].Value, baseUri);
+            }
+            foreach (Match match in Regex.Matches(html, @"[""']([^""']+\.(?:exe|msi|msix|appx|zip)(?:\?[^""']*)?)[""']", RegexOptions.IgnoreCase))
+            {
+                AddInstallerCandidate(candidates, match.Groups[1].Value, baseUri);
+            }
+
+            string best = "";
+            int bestScore = Int32.MinValue;
+            foreach (string candidate in candidates)
+            {
+                int score = InstallerCandidateScore(candidate);
+                if (score > bestScore)
+                {
+                    best = candidate;
+                    bestScore = score;
+                }
+            }
+            if (bestScore < 25) return "";
+            if (RemoteUrlLooksLikeWebPage(best)) return "";
+            return best;
+        }
+
+        private static void AddInstallerCandidate(List<string> candidates, string rawUrl, Uri baseUri)
+        {
+            string value = (rawUrl ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(value)) return;
+            value = value.Replace("&amp;", "&");
+            if (value.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase)) return;
+            if (value.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)) return;
+            if (value.StartsWith("#", StringComparison.Ordinal)) return;
+            try
+            {
+                Uri uri;
+                if (value.StartsWith("//", StringComparison.Ordinal)) value = baseUri.Scheme + ":" + value;
+                if (!Uri.TryCreate(value, UriKind.Absolute, out uri))
+                {
+                    uri = new Uri(baseUri, value);
+                }
+                string url = uri.ToString();
+                if (!LooksLikeInstallerDownloadUrl(url)) return;
+                foreach (string existing in candidates)
+                {
+                    if (existing.Equals(url, StringComparison.OrdinalIgnoreCase)) return;
+                }
+                candidates.Add(url);
+            }
+            catch
+            {
+            }
+        }
+
+        private static int InstallerCandidateScore(string url)
+        {
+            string value = (url ?? "").ToLowerInvariant();
+            int score = 0;
+            if (value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase) >= 0) score += 120;
+            if (value.IndexOf(".msi", StringComparison.OrdinalIgnoreCase) >= 0) score += 115;
+            if (value.IndexOf(".msix", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".appx", StringComparison.OrdinalIgnoreCase) >= 0) score += 90;
+            if (value.IndexOf(".zip", StringComparison.OrdinalIgnoreCase) >= 0) score += 45;
+            if (value.IndexOf("download", StringComparison.OrdinalIgnoreCase) >= 0) score += 35;
+            if (value.IndexOf("installer", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("setup", StringComparison.OrdinalIgnoreCase) >= 0) score += 35;
+            if (value.IndexOf("windows", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("win", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("pc", StringComparison.OrdinalIgnoreCase) >= 0) score += 25;
+            if (value.IndexOf("x64", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("64", StringComparison.OrdinalIgnoreCase) >= 0) score += 8;
+            if (value.IndexOf("android", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".apk", StringComparison.OrdinalIgnoreCase) >= 0) score -= 120;
+            if (value.IndexOf("mac", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".dmg", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".pkg", StringComparison.OrdinalIgnoreCase) >= 0) score -= 120;
+            if (value.IndexOf("linux", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".deb", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".rpm", StringComparison.OrdinalIgnoreCase) >= 0) score -= 120;
+            if (value.IndexOf(".png", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".jpg", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".gif", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".css", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf(".js", StringComparison.OrdinalIgnoreCase) >= 0) score -= 160;
+            return score;
+        }
+
+        private static string ExtractFirstHttpUrl(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            Match match = Regex.Match(text, @"https?://[^\s""'<>]+", RegexOptions.IgnoreCase);
+            if (!match.Success) return "";
+            string value = match.Value.Trim();
+            while (value.EndsWith(".", StringComparison.Ordinal) ||
+                   value.EndsWith(",", StringComparison.Ordinal) ||
+                   value.EndsWith(";", StringComparison.Ordinal) ||
+                   value.EndsWith(")", StringComparison.Ordinal) ||
+                   value.EndsWith("]", StringComparison.Ordinal))
+            {
+                value = value.Substring(0, value.Length - 1);
+            }
+            return value;
+        }
+
+        private static bool LooksLikeInstallerDownloadUrl(string url)
+        {
+            string value = (url ?? "").ToLowerInvariant();
+            return value.IndexOf(".exe", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf(".msi", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf(".msix", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf(".appx", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf(".zip", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("download", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   value.IndexOf("installer", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void SearchSoftwareWithWinget(string keyword)
+        {
+            string safe = CleanCommandArgument(keyword);
+            if (String.IsNullOrWhiteSpace(safe)) safe = "software";
+            status.Text = "正在调用 Winget 搜索：" + safe;
+            RunCommand("winget search " + CmdArgument(safe) + " & pause", false);
+        }
+
+        private void OpenSoftwareCatalogWebsite(SoftwareCatalogEntry entry)
+        {
+            if (entry != null && !String.IsNullOrWhiteSpace(entry.Website))
+            {
+                Open(entry.Website);
+                return;
+            }
+            OpenSoftwareWebSearch(entry == null ? CurrentSoftwareSearchKeyword() : entry.Name);
+        }
+
+        private void OpenSoftwareWebSearch(string keyword)
+        {
+            string value = String.IsNullOrWhiteSpace(keyword)
+                ? "常用软件 360软件宝库 2345软件大全 火绒 官方下载"
+                : keyword.Trim() + " 360软件宝库 2345软件大全 火绒 官方下载";
+            Open("https://www.baidu.com/s?wd=" + Uri.EscapeDataString(value));
+        }
+
+        private static string CmdArgument(string value)
+        {
+            return "\"" + CleanCommandArgument(value) + "\"";
+        }
+
+        private static string CleanCommandArgument(string value)
+        {
+            string text = (value ?? "").Trim();
+            char[] blocked = new char[] { '"', '&', '|', '<', '>', '^', '%', '\r', '\n' };
+            foreach (char ch in blocked) text = text.Replace(ch.ToString(), "");
+            return text;
+        }
+
+        private static bool SoftwareMatchesQuery(SoftwareCatalogEntry entry, string query)
+        {
+            if (String.IsNullOrWhiteSpace(query)) return true;
+            string[] parts = query.Split(new char[] { ' ', '\t', ',', '，', ';', '；' }, StringSplitOptions.RemoveEmptyEntries);
+            string haystack = entry.SearchText();
+            foreach (string raw in parts)
+            {
+                string part = (raw ?? "").Trim();
+                if (part.Length == 0) continue;
+                if (haystack.IndexOf(part, StringComparison.OrdinalIgnoreCase) < 0) return false;
+            }
+            return true;
+        }
+
+        private static string[] SoftwareCatalogCategories()
+        {
+            return new string[]
+            {
+                "全部", "浏览器", "社交通讯", "下载工具", "办公文档", "压缩刻录", "系统工具",
+                "运行库", "驱动硬件", "远程控制", "网络工具", "数据库", "安全杀毒",
+                "图像设计", "音视频", "开发编程", "游戏平台", "热门游戏",
+                "输入法", "云盘同步", "音频制作", "Winget 搜索", "聚合搜索"
+            };
+        }
+
+        private static string SoftwareCategoryIcon(string category)
+        {
+            string text = category ?? "";
+            if (text.IndexOf("游戏", StringComparison.OrdinalIgnoreCase) >= 0) return "▶";
+            if (text.IndexOf("浏览", StringComparison.OrdinalIgnoreCase) >= 0) return "⌂";
+            if (text.IndexOf("开发", StringComparison.OrdinalIgnoreCase) >= 0) return "{ }";
+            if (text.IndexOf("音", StringComparison.OrdinalIgnoreCase) >= 0) return "♫";
+            if (text.IndexOf("图", StringComparison.OrdinalIgnoreCase) >= 0) return "◐";
+            if (text.IndexOf("安全", StringComparison.OrdinalIgnoreCase) >= 0) return "✓";
+            if (text.IndexOf("运行", StringComparison.OrdinalIgnoreCase) >= 0) return "VC";
+            if (text.IndexOf("驱动", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("硬件", StringComparison.OrdinalIgnoreCase) >= 0) return "DRV";
+            if (text.IndexOf("远程", StringComparison.OrdinalIgnoreCase) >= 0) return "⇄";
+            if (text.IndexOf("网络", StringComparison.OrdinalIgnoreCase) >= 0) return "⌁";
+            if (text.IndexOf("数据库", StringComparison.OrdinalIgnoreCase) >= 0) return "DB";
+            if (text.IndexOf("Winget", StringComparison.OrdinalIgnoreCase) >= 0) return "WG";
+            if (text.IndexOf("系统", StringComparison.OrdinalIgnoreCase) >= 0) return "⚙";
+            if (text.IndexOf("云", StringComparison.OrdinalIgnoreCase) >= 0) return "☁";
+            return "▦";
+        }
+
+        private static string SoftwareIconText(SoftwareCatalogEntry entry)
+        {
+            string name = entry == null ? "" : (entry.Name ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(name)) return SoftwareCategoryIcon(entry == null ? "" : entry.Category);
+            if (name.StartsWith("Microsoft ", StringComparison.OrdinalIgnoreCase)) name = name.Substring(10).Trim();
+            if (name.StartsWith("Adobe ", StringComparison.OrdinalIgnoreCase)) name = name.Substring(6).Trim();
+            if (name.StartsWith("Tencent ", StringComparison.OrdinalIgnoreCase)) name = name.Substring(8).Trim();
+
+            string[] words = name.Split(new char[] { ' ', '.', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
+            StringBuilder initials = new StringBuilder();
+            foreach (string word in words)
+            {
+                if (word.Length == 0) continue;
+                char ch = word[0];
+                if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+                {
+                    initials.Append(Char.ToUpperInvariant(ch));
+                    if (initials.Length >= 2) break;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            if (initials.Length > 0) return initials.ToString();
+            return name.Substring(0, Math.Min(2, name.Length));
+        }
+
+        private List<SoftwareCatalogEntry> SoftwareCatalogEntries()
+        {
+            if (softwareCatalogCache != null) return softwareCatalogCache;
+            softwareCatalogCache = new List<SoftwareCatalogEntry>();
+
+            AddSoftware("Google Chrome", "浏览器", "主流网页浏览器，适合日常上网、网页调试和账号同步。", "Google.Chrome", "https://www.google.cn/chrome/", "chrome", "谷歌浏览器");
+            AddSoftware("Microsoft Edge", "浏览器", "Windows 默认浏览器，兼容 Chromium 扩展生态。", "Microsoft.Edge", "https://www.microsoft.com/edge", "edge", "浏览器");
+            AddSoftware("Mozilla Firefox", "浏览器", "开源浏览器，适合隐私、插件和多平台同步。", "Mozilla.Firefox", "https://www.mozilla.org/firefox/", "firefox", "火狐");
+            AddSoftware("Brave Browser", "浏览器", "强调隐私防护的 Chromium 浏览器。", "Brave.Brave", "https://brave.com/", "brave");
+            AddSoftware("Opera", "浏览器", "内置侧栏和轻量效率工具的浏览器。", "Opera.Opera", "https://www.opera.com/", "opera");
+            AddSearchOnlySoftware("360 安全浏览器", "浏览器", "国内常用浏览器，可从 Winget 或官网获取最新版。", "360.360SE", "https://browser.360.cn/", "360", "浏览器");
+            AddSearchOnlySoftware("360 极速浏览器", "浏览器", "360 极速浏览器，搜索 360 或浏览器时显示。", "360.360Chrome", "https://browser.360.cn/ee/", "360", "极速浏览器");
+            AddSearchOnlySoftware("360 极速浏览器X", "浏览器", "360 极速浏览器 X，搜索 360 或浏览器时显示。", "360.360Chrome.X", "https://browser.360.cn/ee/", "360", "极速浏览器x");
+            AddSoftware("QQ 浏览器", "浏览器", "腾讯 QQ 浏览器桌面版。", "Tencent.QQBrowser", "https://browser.qq.com/", "qq浏览器", "浏览器");
+            AddSearchOnlySoftware("2345 加速浏览器", "浏览器", "2345 浏览器入口，建议按需从官网下载安装。", "", "https://www.2345.com/?k=browser", "2345", "浏览器", "2345浏览器");
+
+            AddSoftware("微信", "社交通讯", "常用聊天、文件传输和办公沟通软件。", "Tencent.WeChat", "https://weixin.qq.com/", "wechat", "weixin");
+            AddSoftware("QQ", "社交通讯", "腾讯 QQ 桌面客户端。", "Tencent.QQ", "https://im.qq.com/", "腾讯qq");
+            AddSoftware("企业微信", "社交通讯", "企业沟通和客户联系工具。", "Tencent.WeCom", "https://work.weixin.qq.com/", "wecom");
+            AddSoftware("钉钉", "社交通讯", "企业协同、会议和审批工具。", "Alibaba.DingTalk", "https://www.dingtalk.com/", "dingtalk");
+            AddSoftware("飞书", "社交通讯", "协作文档、即时沟通和会议套件。", "ByteDance.Feishu", "https://www.feishu.cn/", "lark");
+            AddSoftware("Telegram Desktop", "社交通讯", "Telegram 桌面客户端。", "Telegram.TelegramDesktop", "https://desktop.telegram.org/", "telegram");
+            AddSoftware("Discord", "社交通讯", "社区语音、文字和游戏协作软件。", "Discord.Discord", "https://discord.com/download", "discord");
+            AddSoftware("腾讯会议", "社交通讯", "腾讯会议桌面客户端，会议、屏幕共享和录制常用。", "Tencent.TencentMeeting", "https://meeting.tencent.com/download/", "会议", "wemeet", "tencent meeting");
+            AddSoftware("Zoom Workplace", "社交通讯", "Zoom 视频会议客户端。", "Zoom.Zoom", "https://zoom.us/download", "zoom", "会议");
+            AddSoftware("Cisco Webex Meetings", "社交通讯", "Webex 会议和团队协作客户端。", "Cisco.CiscoWebexMeetings", "https://www.webex.com/downloads.html", "webex", "会议");
+
+            AddSoftware("迅雷", "下载工具", "国内常用下载工具，支持多种下载任务。", "Thunder.Thunder", "https://www.xunlei.com/", "xunlei");
+            AddSoftware("qBittorrent", "下载工具", "开源 BT 下载工具，轻量无广告。", "qBittorrent.qBittorrent", "https://www.qbittorrent.org/", "bt", "torrent");
+            AddSoftware("Motrix", "下载工具", "开源全能下载器，支持 HTTP、BT、磁力链接。", "agalwood.Motrix", "https://motrix.app/", "下载器");
+            AddSoftware("Neat Download Manager", "下载工具", "多线程下载管理器。", "NeatDownloadManager.NeatDownloadManager", "https://www.neatdownloadmanager.com/", "下载");
+            AddSoftware("Internet Download Manager", "下载工具", "经典下载管理器，可从官网安装。", "Tonec.InternetDownloadManager", "https://www.internetdownloadmanager.com/", "idm");
+
+            AddSoftware("WPS Office", "办公文档", "常用国产办公套件，支持文字、表格、演示。", "Kingsoft.WPSOffice.CN", "https://www.wps.cn/", "wps", "office");
+            AddSoftware("LibreOffice", "办公文档", "开源办公套件，兼容常见文档格式。", "TheDocumentFoundation.LibreOffice", "https://www.libreoffice.org/", "office");
+            AddSoftware("Adobe Acrobat Reader", "办公文档", "PDF 阅读和批注工具。", "Adobe.Acrobat.Reader.64-bit", "https://get.adobe.com/reader/", "pdf");
+            AddSoftware("腾讯文档", "办公文档", "在线文档与表格协作工具。", "Tencent.TencentDocs", "https://docs.qq.com/desktop/", "文档", "协作");
+            AddSoftware("有道词典", "办公文档", "翻译、词典和学习工具。", "NetEase.YoudaoDict", "https://cidian.youdao.com/", "翻译", "词典");
+            AddSoftware("Notion", "办公文档", "笔记、知识库和项目管理工具。", "Notion.Notion", "https://www.notion.so/desktop", "笔记");
+
+            AddSoftware("7-Zip", "压缩刻录", "开源压缩解压工具，支持 7z、zip、rar 等格式。", "7zip.7zip", "https://www.7-zip.org/", "解压", "压缩");
+            AddSoftware("WinRAR", "压缩刻录", "经典压缩解压工具。", "RARLab.WinRAR", "https://www.win-rar.com/", "rar");
+            AddSoftware("Bandizip", "压缩刻录", "界面友好的压缩解压工具。", "Bandisoft.Bandizip", "https://www.bandisoft.com/bandizip/", "zip");
+            AddSearchOnlySoftware("360 压缩", "压缩刻录", "360 压缩工具，搜索 360 或压缩时显示。", "360.360Zip", "https://yasuo.360.cn/", "360", "360压缩", "zip");
+            AddSoftware("PeaZip", "压缩刻录", "开源压缩文件管理器。", "PeaZip.PeaZip", "https://peazip.github.io/", "zip");
+            AddSoftware("ImgBurn", "压缩刻录", "经典镜像刻录工具。", "LIGHTNINGUK.ImgBurn", "https://www.imgburn.com/", "iso", "刻录");
+
+            AddSoftware("Microsoft PowerToys", "系统工具", "微软官方效率工具集，含置顶、批量重命名、取色等。", "Microsoft.PowerToys", "https://learn.microsoft.com/windows/powertoys/", "效率工具");
+            AddSoftware("Everything", "系统工具", "极速文件名搜索工具。", "voidtools.Everything", "https://www.voidtools.com/", "文件搜索");
+            AddSoftware("Notepad++", "系统工具", "轻量代码和文本编辑器。", "Notepad++.Notepad++", "https://notepad-plus-plus.org/", "文本编辑");
+            AddSoftware("Rufus", "系统工具", "U 盘启动盘制作工具。", "Rufus.Rufus", "https://rufus.ie/", "启动盘", "u盘");
+            AddSoftware("Ventoy", "系统工具", "多 ISO 启动盘工具。", "Ventoy.Ventoy", "https://www.ventoy.net/", "pe", "启动盘");
+            AddSoftware("CrystalDiskInfo", "系统工具", "硬盘健康状态检测工具。", "CrystalDewWorld.CrystalDiskInfo", "https://crystalmark.info/", "硬盘", "smart");
+            AddSoftware("CrystalDiskMark", "系统工具", "硬盘测速工具。", "CrystalDewWorld.CrystalDiskMark", "https://crystalmark.info/", "测速");
+            AddSoftware("CPU-Z", "系统工具", "CPU、主板和内存信息查看工具。", "CPUID.CPU-Z", "https://www.cpuid.com/softwares/cpu-z.html", "硬件检测");
+            AddSoftware("GPU-Z", "系统工具", "显卡信息查看工具。", "TechPowerUp.GPU-Z", "https://www.techpowerup.com/gpuz/", "显卡");
+            AddSoftware("Geek Uninstaller", "系统工具", "轻量软件卸载工具。", "GeekUninstaller.GeekUninstaller", "https://geekuninstaller.com/", "卸载");
+            AddSoftware("Revo Uninstaller", "系统工具", "软件卸载和残留清理工具。", "RevoUninstaller.RevoUninstaller", "https://www.revouninstaller.com/", "卸载");
+            AddSoftware("TrafficMonitor", "系统工具", "任务栏网速、CPU、内存监控工具。", "zhongyang219.TrafficMonitor", "https://github.com/zhongyang219/TrafficMonitor", "网速", "监控");
+
+            AddSoftware("Visual C++ Redistributable AIO", "运行库", "微软 VC++ 运行库合集，适合游戏、插件和旧软件缺少 DLL 时安装。", "abbodi1406.vcredist", "https://github.com/abbodi1406/vcredist", "vc++", "vcredist", "运行库", "微软常用运行库", "游戏运行库");
+            AddSoftware("Microsoft Visual C++ 2015-2022 x64", "运行库", "微软 Visual C++ 2015-2022 运行库 64 位。", "Microsoft.VCRedist.2015+.x64", "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist", "vc++", "vcredist", "运行库", "x64");
+            AddSoftware("Microsoft Visual C++ 2015-2022 x86", "运行库", "微软 Visual C++ 2015-2022 运行库 32 位。", "Microsoft.VCRedist.2015+.x86", "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist", "vc++", "vcredist", "运行库", "x86");
+            AddSoftware("Microsoft Visual C++ 2010 x64", "运行库", "部分老游戏和旧插件需要的 VC++ 2010 运行库。", "Microsoft.VCRedist.2010.x64", "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist", "vc++", "运行库", "老游戏");
+            AddSoftware("Microsoft Visual C++ 2010 x86", "运行库", "部分老游戏和旧插件需要的 VC++ 2010 运行库 32 位。", "Microsoft.VCRedist.2010.x86", "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist", "vc++", "运行库", "老游戏");
+            AddSoftware("DirectX End-User Runtime", "运行库", "DirectX 9.0c 终端用户运行库，常用于旧游戏缺少 d3dx DLL。", "Microsoft.DirectX", "https://www.microsoft.com/download/details.aspx?id=35", "directx", "dx", "运行库", "游戏运行库");
+            AddSoftware(".NET Desktop Runtime 8", "运行库", ".NET 桌面运行时，很多 Windows 桌面软件需要。", "Microsoft.DotNet.DesktopRuntime.8", "https://dotnet.microsoft.com/download/dotnet/8.0", ".net", "dotnet", "运行库", "桌面运行时");
+            AddSoftware(".NET Runtime 8", "运行库", ".NET 控制台和服务端运行时。", "Microsoft.DotNet.Runtime.8", "https://dotnet.microsoft.com/download/dotnet/8.0", ".net", "dotnet", "运行库");
+            AddSoftware(".NET Desktop Runtime 6", "运行库", ".NET 6 桌面运行时，部分旧版软件仍会使用。", "Microsoft.DotNet.DesktopRuntime.6", "https://dotnet.microsoft.com/download/dotnet/6.0", ".net", "dotnet", "运行库");
+            AddSoftware("Java 8 Runtime", "运行库", "Java 8 运行环境，适合旧版 Java 软件和部分工具。", "Azul.Zulu.8.JRE", "https://www.azul.com/downloads/", "java", "jre", "运行库");
+            AddSoftware("Java 17 Runtime", "运行库", "Java 17 运行环境，适合新版 Java 软件。", "Azul.Zulu.17.JRE", "https://www.azul.com/downloads/", "java", "jre", "运行库");
+            AddSoftware("NDI Runtime", "运行库", "NDI 视频制作和采集相关运行库。", "NDI.NDIRuntime", "https://ndi.video/tools/", "ndi", "运行库", "直播");
+
+            AddSoftware("Display Driver Uninstaller", "驱动硬件", "显卡驱动彻底卸载清理工具，重装 NVIDIA/AMD 驱动前常用。", "Wagnardsoft.DisplayDriverUninstaller", "https://www.wagnardsoft.com/", "ddu", "显卡驱动", "驱动卸载");
+            AddSoftware("NVCleanstall", "驱动硬件", "NVIDIA 驱动自定义安装工具。", "TechPowerUp.NVCleanstall", "https://www.techpowerup.com/nvcleanstall/", "nvidia", "显卡驱动");
+            AddSoftware("NVIDIA PhysX", "驱动硬件", "NVIDIA PhysX 运行组件，部分旧游戏需要。", "Nvidia.PhysX", "https://www.nvidia.com/", "physx", "运行库", "游戏组件");
+            AddSoftware("NVIDIA Profile Inspector", "驱动硬件", "NVIDIA 显卡配置和游戏 Profile 调整工具。", "Orbmu2k.nvidiaProfileInspector", "https://github.com/Orbmu2k/nvidiaProfileInspector", "nvidia", "显卡");
+            AddSoftware("Intel Driver & Support Assistant", "驱动硬件", "英特尔官方驱动检测和更新工具。", "Intel.IntelDriverAndSupportAssistant", "https://www.intel.cn/content/www/cn/zh/support/detect.html", "intel", "驱动");
+            AddSoftware("AMD Software", "驱动硬件", "AMD 显卡驱动和控制面板入口。", "", "https://www.amd.com/zh-hans/support/download/drivers.html", "amd", "显卡驱动", "驱动");
+            AddSoftware("Realtek Audio Driver", "驱动硬件", "瑞昱声卡驱动搜索入口，建议优先使用主板/整机官网驱动。", "", "https://www.realtek.com/Download/List?cate_id=593", "realtek", "声卡驱动", "音频驱动");
+
+            AddSoftware("ToDesk", "远程控制", "国产远程控制和远程协助工具。", "Youqu.ToDesk", "https://www.todesk.com/", "远程", "远控");
+            AddSoftware("向日葵远程控制", "远程控制", "国内常用远程控制、远程开机和远程运维工具。", "Oray.Sunlogin.Client", "https://sunlogin.oray.com/download", "sunlogin", "远程", "远控", "向日葵");
+            AddSoftware("AnyDesk", "远程控制", "轻量远程桌面控制工具。", "AnyDeskSoftwareGmbH.AnyDesk", "https://anydesk.com/", "远程");
+            AddSoftware("TeamViewer", "远程控制", "跨平台远程协助和远程控制工具。", "TeamViewer.TeamViewer", "https://www.teamviewer.com/", "远程");
+            AddSoftware("RustDesk", "远程控制", "开源远程桌面工具，可自建服务端。", "RustDesk.RustDesk", "https://rustdesk.com/", "远程", "开源");
+            AddSoftware("Parsec", "远程控制", "低延迟远程桌面和游戏串流工具。", "Parsec.Parsec", "https://parsec.app/", "远程", "串流");
+
+            AddSoftware("Clash Verge Rev", "网络工具", "代理配置和网络调试客户端。", "ClashVergeRev.ClashVergeRev", "https://github.com/clash-verge-rev/clash-verge-rev", "clash", "代理", "网络");
+            AddSoftware("Wireshark", "网络工具", "抓包和网络协议分析工具。", "WiresharkFoundation.Wireshark", "https://www.wireshark.org/", "抓包", "网络");
+            AddSoftware("FileZilla", "网络工具", "FTP/SFTP 文件传输客户端。", "FileZilla.Client", "https://filezilla-project.org/", "ftp", "sftp");
+            AddSoftware("Xshell", "网络工具", "SSH 终端和服务器管理工具。", "NetSarang.Xshell", "https://www.xshell.com/", "ssh");
+            AddSoftware("MobaXterm", "网络工具", "SSH、SFTP、远程终端和网络工具箱。", "Mobatek.MobaXterm", "https://mobaxterm.mobatek.net/", "ssh", "sftp");
+            AddSoftware("FinalShell", "网络工具", "国产 SSH 终端和服务器管理工具。", "", "https://www.hostbuf.com/", "ssh", "服务器");
+
+            AddSoftware("MySQL Workbench", "数据库", "MySQL 官方数据库管理工具。", "Oracle.MySQLWorkbench", "https://dev.mysql.com/downloads/workbench/", "mysql", "数据库");
+            AddSoftware("DBeaver Community", "数据库", "通用数据库管理工具，支持 MySQL、PostgreSQL、SQLite 等。", "dbeaver.dbeaver", "https://dbeaver.io/", "数据库", "sql");
+            AddSoftware("Navicat Premium", "数据库", "常用商业数据库管理工具，建议从官网下载安装。", "PremiumSoft.NavicatPremium", "https://www.navicat.com.cn/", "navicat", "数据库");
+            AddSoftware("RedisInsight", "数据库", "Redis 官方图形化管理工具。", "Redis.RedisInsight", "https://redis.io/insight/", "redis", "数据库");
+            AddSoftware("SQLiteStudio", "数据库", "SQLite 图形化数据库管理工具。", "SQLite.SQLiteStudio", "https://sqlitestudio.pl/", "sqlite", "数据库");
+
+            AddDownloadSoftware("火绒安全", "安全杀毒", "国内常用安全防护工具，可从官网下载安装。", "", "https://www.huorong.cn/", "https://www.huorong.cn/product/downloadHr60.php?pro=hr60", "杀毒", "安全");
+            AddSearchOnlySoftware("360 安全卫士", "安全杀毒", "国内常用安全和系统维护工具。", "", "https://weishi.360.cn/", "360", "安全");
+            AddSoftware("Malwarebytes", "安全杀毒", "恶意软件查杀工具。", "Malwarebytes.Malwarebytes", "https://www.malwarebytes.com/", "malware");
+            AddSoftware("Process Explorer", "安全杀毒", "Sysinternals 进程查看与排查工具。", "Microsoft.Sysinternals.ProcessExplorer", "https://learn.microsoft.com/sysinternals/downloads/process-explorer", "进程");
+            AddSoftware("Autoruns", "安全杀毒", "Sysinternals 启动项排查工具。", "Microsoft.Sysinternals.Autoruns", "https://learn.microsoft.com/sysinternals/downloads/autoruns", "启动项");
+
+            AddSoftware("OBS Studio", "图像设计", "开源录屏、直播和推流工具。", "OBSProject.OBSStudio", "https://obsproject.com/", "录屏", "直播");
+            AddSoftware("ShareX", "图像设计", "截图、录屏和自动上传工具。", "ShareX.ShareX", "https://getsharex.com/", "截图");
+            AddSoftware("Snipaste", "图像设计", "截图、贴图和标注工具。", "liule.Snipaste", "https://www.snipaste.com/", "截图", "贴图");
+            AddSoftware("Bandicam", "图像设计", "录屏和游戏录制工具。", "BandicamCompany.Bandicam", "https://www.bandicam.cn/", "录屏", "游戏录制");
+            AddSearchOnlySoftware("360 看图", "图像设计", "360 看图工具，搜索 360 或看图时显示。", "360.360AlbumViewer", "https://kantu.360.cn/", "360", "看图");
+            AddSoftware("GIMP", "图像设计", "开源图片编辑软件。", "GIMP.GIMP", "https://www.gimp.org/", "修图");
+            AddSoftware("Krita", "图像设计", "开源绘画和插画工具。", "KDE.Krita", "https://krita.org/", "绘画");
+            AddSoftware("Inkscape", "图像设计", "开源矢量图设计工具。", "Inkscape.Inkscape", "https://inkscape.org/", "svg", "矢量");
+            AddSoftware("Blender", "图像设计", "开源 3D 建模、动画和渲染软件。", "BlenderFoundation.Blender", "https://www.blender.org/", "3d", "建模");
+            AddSoftware("Figma", "图像设计", "界面设计和协作工具。", "Figma.Figma", "https://www.figma.com/downloads/", "ui", "设计");
+
+            AddSoftware("VLC media player", "音视频", "开源万能播放器。", "VideoLAN.VLC", "https://www.videolan.org/vlc/", "播放器");
+            AddSoftware("PotPlayer", "音视频", "Windows 常用视频播放器。", "Daum.PotPlayer", "https://potplayer.daum.net/", "播放器");
+            AddSoftware("网易云音乐", "音视频", "网易云音乐桌面客户端。", "NetEase.CloudMusic", "https://music.163.com/#/download", "音乐");
+            AddSoftware("QQ 音乐", "音视频", "QQ 音乐桌面客户端。", "Tencent.QQMusic", "https://y.qq.com/download/download.html", "音乐");
+            AddSoftware("Spotify", "音视频", "流媒体音乐客户端。", "Spotify.Spotify", "https://www.spotify.com/download/windows/", "music");
+            AddSoftware("剪映专业版", "音视频", "视频剪辑和短视频制作工具。", "ByteDance.JianyingPro", "https://www.capcut.cn/", "剪辑", "视频");
+            AddSoftware("HandBrake", "音视频", "开源视频转码工具。", "HandBrake.HandBrake", "https://handbrake.fr/", "转码");
+
+            AddSoftware("Visual Studio Code", "开发编程", "微软开源代码编辑器。", "Microsoft.VisualStudioCode", "https://code.visualstudio.com/", "vscode", "代码");
+            AddSoftware("Git", "开发编程", "版本控制命令行工具。", "Git.Git", "https://git-scm.com/", "git");
+            AddSoftware("Windows Terminal", "开发编程", "微软现代终端工具。", "Microsoft.WindowsTerminal", "https://github.com/microsoft/terminal", "terminal");
+            AddSoftware("Python 3", "开发编程", "Python 运行环境和解释器。", "Python.Python.3.12", "https://www.python.org/downloads/windows/", "python");
+            AddSoftware("Node.js LTS", "开发编程", "Node.js 长期支持版运行环境。", "OpenJS.NodeJS.LTS", "https://nodejs.org/", "node", "npm");
+            AddSoftware("Docker Desktop", "开发编程", "容器开发和运行环境。", "Docker.DockerDesktop", "https://www.docker.com/products/docker-desktop/", "docker");
+            AddSoftware("Postman", "开发编程", "API 调试和接口协作工具。", "Postman.Postman", "https://www.postman.com/downloads/", "api");
+            AddSoftware("JetBrains Toolbox", "开发编程", "JetBrains IDE 管理器。", "JetBrains.Toolbox", "https://www.jetbrains.com/toolbox-app/", "idea", "pycharm");
+            AddSoftware("Visual Studio Community", "开发编程", "微软集成开发环境。", "Microsoft.VisualStudio.2022.Community", "https://visualstudio.microsoft.com/zh-hans/vs/community/", "vs");
+
+            AddSoftware("Steam", "游戏平台", "Valve 游戏平台和商店。", "Valve.Steam", "https://store.steampowered.com/about/", "steam");
+            AddSoftware("Epic Games Launcher", "游戏平台", "Epic 游戏平台和商店。", "EpicGames.EpicGamesLauncher", "https://store.epicgames.com/download", "epic");
+            AddSoftware("WeGame", "游戏平台", "腾讯游戏平台。", "Tencent.WeGame", "https://www.wegame.com.cn/", "腾讯游戏");
+            AddSoftware("GOG Galaxy", "游戏平台", "GOG 游戏平台。", "GOG.Galaxy", "https://www.gog.com/galaxy", "gog");
+            AddSoftware("Ubisoft Connect", "游戏平台", "育碧游戏平台。", "Ubisoft.Connect", "https://ubisoftconnect.com/", "ubisoft");
+            AddSoftware("EA app", "游戏平台", "EA 游戏平台客户端。", "ElectronicArts.EADesktop", "https://www.ea.com/ea-app", "origin", "ea");
+            AddSoftware("Battle.net", "游戏平台", "暴雪战网客户端。", "Blizzard.BattleNet", "https://download.battle.net/", "暴雪", "战网");
+
+            AddSoftware("英雄联盟", "热门游戏", "腾讯代理的 MOBA 游戏，建议从官网或 WeGame 安装。", "", "https://lol.qq.com/download.shtml", "lol", "league of legends");
+            AddSoftware("无畏契约", "热门游戏", "Valorant 国服，建议从官网下载安装。", "", "https://val.qq.com/download.html", "valorant");
+            AddSoftware("穿越火线", "热门游戏", "腾讯 FPS 游戏，建议从官网下载安装。", "", "https://cf.qq.com/cp/a20241115down/", "cf");
+            AddSoftware("地下城与勇士", "热门游戏", "DNF 国服，建议从官网下载安装。", "", "https://dnf.qq.com/web2015/down.shtml", "dnf");
+            AddSoftware("原神", "热门游戏", "米哈游开放世界游戏。", "", "https://ys.mihoyo.com/", "genshin");
+            AddSoftware("崩坏：星穹铁道", "热门游戏", "米哈游回合制 RPG。", "", "https://sr.mihoyo.com/", "star rail");
+            AddSoftware("我的世界启动器", "热门游戏", "Minecraft 官方启动器。", "Microsoft.MinecraftLauncher", "https://www.minecraft.net/download", "minecraft");
+            AddSoftware("网易我的世界", "热门游戏", "网易代理 Minecraft 中国版。", "", "https://mc.163.com/", "minecraft", "网易");
+            AddSoftware("Roblox", "热门游戏", "Roblox 桌面客户端。", "Roblox.Roblox", "https://www.roblox.com/download", "roblox");
+
+            AddSoftware("搜狗输入法", "输入法", "国内常用中文输入法。", "Sogou.SogouInput", "https://pinyin.sogou.com/", "输入法", "拼音");
+            AddSoftware("百度输入法", "输入法", "百度中文输入法。", "Baidu.BaiduPinyin", "https://shurufa.baidu.com/", "输入法");
+            AddSoftware("QQ 输入法", "输入法", "腾讯中文输入法。", "", "https://qq.pinyin.cn/", "输入法");
+            AddSoftware("RIME 小狼毫", "输入法", "开源中文输入法框架。", "Rime.Weasel", "https://rime.im/", "rime", "小狼毫");
+
+            AddDownloadSoftware("天翼云盘", "云盘同步", "中国电信云盘桌面客户端，支持文件备份、同步盘和多端同步。", "", "https://cloud.189.cn/download_client.jsp", "https://cloud.189.cn/api/portal/getClientByType.action?clientType=TELEPC-newf", "天翼网盘", "189", "中国电信", "cloud189");
+            AddSoftware("百度网盘", "云盘同步", "百度网盘桌面客户端。", "Baidu.BaiduNetdisk", "https://pan.baidu.com/download", "网盘");
+            AddSoftware("阿里云盘", "云盘同步", "阿里云盘桌面客户端。", "Alibaba.aDrive", "https://www.aliyundrive.com/download", "网盘");
+            AddSoftware("腾讯微云", "云盘同步", "腾讯云盘同步工具。", "", "https://www.weiyun.com/download.html", "微云");
+            AddSoftware("OneDrive", "云盘同步", "微软云盘同步工具。", "Microsoft.OneDrive", "https://www.microsoft.com/microsoft-365/onedrive/download", "onedrive");
+            AddSoftware("Dropbox", "云盘同步", "Dropbox 同步客户端。", "Dropbox.Dropbox", "https://www.dropbox.com/install", "dropbox");
+            AddSoftware("坚果云", "云盘同步", "国内常用文件同步云盘。", "Nutstore.Nutstore", "https://www.jianguoyun.com/s/downloads", "同步");
+
+            AddSoftware("Audacity", "音频制作", "开源音频录制和编辑工具。", "Audacity.Audacity", "https://www.audacityteam.org/", "音频编辑");
+            AddSoftware("REAPER", "音频制作", "轻量专业 DAW 音频工作站。", "Cockos.REAPER", "https://www.reaper.fm/", "daw");
+            AddSoftware("LMMS", "音频制作", "开源音乐制作软件。", "LMMS.LMMS", "https://lmms.io/", "daw");
+            AddSoftware("MuseScore", "音频制作", "乐谱制作和播放工具。", "Muse.MuseScore", "https://musescore.org/", "乐谱");
+            AddSoftware("Voicemeeter", "音频制作", "虚拟调音台和声卡路由工具。", "VB-Audio.Voicemeeter", "https://vb-audio.com/Voicemeeter/", "虚拟声卡");
+
+            return softwareCatalogCache;
+        }
+
+        private void AddSoftware(string name, string category, string description, string packageId, string website, params string[] tags)
+        {
+            AddSoftwareEntry(name, category, description, packageId, website, "", false, tags);
+        }
+
+        private void AddDownloadSoftware(string name, string category, string description, string packageId, string website, string downloadUrl, params string[] tags)
+        {
+            AddSoftwareEntry(name, category, description, packageId, website, downloadUrl, false, tags);
+        }
+
+        private void AddSearchOnlySoftware(string name, string category, string description, string packageId, string website, params string[] tags)
+        {
+            AddSoftwareEntry(name, category, description, packageId, website, "", true, tags);
+        }
+
+        private void AddSoftwareEntry(string name, string category, string description, string packageId, string website, string downloadUrl, bool searchOnly, params string[] tags)
+        {
+            softwareCatalogCache.Add(new SoftwareCatalogEntry
+            {
+                Name = name,
+                Category = category,
+                Description = description,
+                PackageId = packageId,
+                Website = website,
+                DownloadUrl = downloadUrl,
+                SearchOnly = searchOnly,
+                Tags = tags ?? new string[0]
+            });
         }
 
         private Control CreatePortalActionButton(Dictionary<string, object> item, int width, int height, int index)
@@ -3891,28 +5364,26 @@ namespace ToolboxClient
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, url);
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
+            task.StateText = PortalText("等待中", "Queued");
             lock (activeDownloadsLock) activeDownloads.Add(task);
-            status.Text = PortalText("正在下载：", "Downloading: ") + fileName;
+            status.Text = PortalText("已加入下载队列：", "Queued: ") + fileName;
             if (progressPanel != null) progressPanel.Visible = false;
             UpdateDownloadBadges();
             if (!studioVariant && !portalVariant) ShowActiveDownloadView();
             RenderActiveDownloads();
-
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                DownloadFileWorker(task);
-            });
+            StartQueuedDownloads();
         }
 
         private DownloadRequest ResolveDownloadRequest(string url)
         {
             DownloadRequest request = Resolve8UidDownloadRequest(url);
+            if (request == null) request = ResolveCloud189ClientDownloadRequest(url);
             if (request == null)
             {
                 request = new DownloadRequest
                 {
                     OriginalUrl = url,
-                    Url = url,
+                    Url = NormalizeDownloadUrl(url, ""),
                     FileName = FileNameFromUrl(url),
                     BrowserUrl = url
                 };
@@ -3921,9 +5392,55 @@ namespace ToolboxClient
             {
                 string remoteName = ProbeRemoteFileName(request.Url);
                 if (IsUsefulDownloadFileName(remoteName)) request.FileName = remoteName;
+                else if (!LooksLikeInstallerDownloadUrl(request.Url) && RemoteUrlLooksLikeWebPage(request.Url))
+                {
+                    return BrowserDownloadRequest(
+                        String.IsNullOrWhiteSpace(request.BrowserUrl) ? request.OriginalUrl : request.BrowserUrl,
+                        "该软件需要在官方页面选择安装包，已为你打开官方下载页。");
+                }
             }
             request.FileName = SafeDownloadFileName(request.FileName);
             return request;
+        }
+
+        private DownloadRequest ResolveCloud189ClientDownloadRequest(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return null;
+            if (!uri.Host.Equals("cloud.189.cn", StringComparison.OrdinalIgnoreCase)) return null;
+            if (uri.AbsolutePath.IndexOf("/api/portal/getClientByType.action", StringComparison.OrdinalIgnoreCase) < 0) return null;
+            try
+            {
+                string json = DownloadPlainText(url, "application/json");
+                Dictionary<string, object> root = AsDict(serializer.DeserializeObject(json));
+                Dictionary<string, object> client = AsDict(Get(root, "clientVO"));
+                string directUrl = NormalizeDownloadUrl(GetText(client, "downloadUrl", ""), uri.GetLeftPart(UriPartial.Authority));
+                if (String.IsNullOrWhiteSpace(directUrl))
+                {
+                    return BrowserDownloadRequest("https://cloud.189.cn/download_client.jsp", "天翼云盘安装包地址暂时无法解析，已打开官方客户端下载页。");
+                }
+                string version = GetText(client, "clientVersion", "");
+                string fileName = "天翼云盘" + (String.IsNullOrWhiteSpace(version) ? "" : "-" + version) + ".exe";
+                return new DownloadRequest
+                {
+                    OriginalUrl = url,
+                    Url = directUrl,
+                    BrowserUrl = "https://cloud.189.cn/download_client.jsp",
+                    FileName = fileName
+                };
+            }
+            catch
+            {
+                return BrowserDownloadRequest("https://cloud.189.cn/download_client.jsp", "天翼云盘安装包地址解析失败，已打开官方客户端下载页。");
+            }
+        }
+
+        private static string NormalizeDownloadUrl(string url, string origin)
+        {
+            string value = (url ?? "").Trim();
+            if (value.StartsWith("//", StringComparison.Ordinal)) return "https:" + value;
+            if (value.StartsWith("/", StringComparison.Ordinal) && !String.IsNullOrWhiteSpace(origin)) return origin.TrimEnd(new char[] { '/' }) + value;
+            return value;
         }
 
         private DownloadRequest Resolve8UidDownloadRequest(string url)
@@ -4039,6 +5556,28 @@ namespace ToolboxClient
             {
             }
             return "";
+        }
+
+        private bool RemoteUrlLooksLikeWebPage(string url)
+        {
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = "HEAD";
+                request.AllowAutoRedirect = true;
+                request.UserAgent = "Mozilla/5.0 ToolboxClient";
+                request.Timeout = 5000;
+                request.ReadWriteTimeout = 5000;
+                request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    return ResponseLooksLikeWebPage(response);
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool ResponseLooksLikeWebPage(HttpWebResponse response)
@@ -4233,66 +5772,113 @@ namespace ToolboxClient
             return Path.Combine(dir, name + "-" + DateTime.Now.ToString("yyyyMMddHHmmss") + ext);
         }
 
+        private void StartQueuedDownloads()
+        {
+            List<DownloadTask> toStart = new List<DownloadTask>();
+            lock (activeDownloadsLock)
+            {
+                int maxParallel = GetMaxParallelDownloads();
+                int running = 0;
+                foreach (DownloadTask task in activeDownloads)
+                {
+                    if (task.Started && !task.Finished) running++;
+                }
+                foreach (DownloadTask task in activeDownloads)
+                {
+                    if (running >= maxParallel) break;
+                    if (task.Started || task.Finished || task.CancelRequested) continue;
+                    task.Started = true;
+                    task.StateText = PortalText("准备下载", "Preparing");
+                    toStart.Add(task);
+                    running++;
+                }
+            }
+            foreach (DownloadTask task in toStart)
+            {
+                ThreadPool.QueueUserWorkItem(delegate { DownloadFileWorker(task); });
+            }
+            RenderActiveDownloads();
+        }
+
         private void DownloadFileWorker(DownloadTask task)
         {
             Exception failure = null;
             long received = 0;
             long total = -1;
-            try
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                long resumeFrom = 0;
-                if (File.Exists(task.Path)) resumeFrom = new FileInfo(task.Path).Length;
-                received = resumeFrom;
-                if (resumeFrom > 0)
+                try
                 {
-                    task.Received = resumeFrom;
-                    task.StateText = "继续下载";
-                }
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(task.Url);
-                task.ActiveRequest = request;
-                request.UserAgent = "Mozilla/5.0 ToolboxClient";
-                request.Timeout = 15000;
-                request.ReadWriteTimeout = 15000;
-                if (resumeFrom > 0) request.AddRange(resumeFrom);
-                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-                {
-                    bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
-                    if (resumeFrom > 0 && !resumed)
+                    task.Attempt = attempt;
+                    long resumeFrom = 0;
+                    if (File.Exists(task.Path)) resumeFrom = new FileInfo(task.Path).Length;
+                    received = resumeFrom;
+                    if (resumeFrom > 0)
                     {
-                        resumeFrom = 0;
-                        received = 0;
-                        task.Received = 0;
+                        task.Received = resumeFrom;
+                        task.StateText = attempt > 1 ? "重试续传 " + attempt + "/3" : "继续下载";
                     }
-                    total = response.ContentLength;
-                    if (resumed && total > 0) total += resumeFrom;
-                    using (Stream input = response.GetResponseStream())
-                    using (FileStream output = new FileStream(task.Path, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read))
+                    HttpWebRequest request = (HttpWebRequest)WebRequest.Create(task.Url);
+                    task.ActiveRequest = request;
+                    request.UserAgent = "Mozilla/5.0 ToolboxClient";
+                    request.Accept = "*/*";
+                    request.AllowAutoRedirect = true;
+                    request.KeepAlive = true;
+                    request.Timeout = 45000;
+                    request.ReadWriteTimeout = 120000;
+                    request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                    if (resumeFrom > 0) request.AddRange(resumeFrom);
+                    using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                     {
-                        byte[] buffer = new byte[64 * 1024];
-                        int read;
-                        DateTime lastUi = DateTime.MinValue;
-                        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                        bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
+                        if (resumeFrom > 0 && !resumed)
                         {
-                            task.PauseEvent.WaitOne();
-                            if (task.CancelRequested) throw new OperationCanceledException();
-                            output.Write(buffer, 0, read);
-                            received += read;
-                            task.Received = received;
-                            task.Total = total;
-                            task.StateText = PortalText("下载中", "Downloading");
-                            task.UpdateSpeed();
-                            if ((DateTime.Now - lastUi).TotalMilliseconds > 60)
+                            resumeFrom = 0;
+                            received = 0;
+                            task.Received = 0;
+                        }
+                        total = response.ContentLength;
+                        if (resumed && total > 0) total += resumeFrom;
+                        task.Total = total;
+                        using (Stream input = response.GetResponseStream())
+                        using (FileStream output = new FileStream(task.Path, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read))
+                        {
+                            byte[] buffer = new byte[128 * 1024];
+                            int read;
+                            DateTime lastUi = DateTime.MinValue;
+                            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
                             {
-                                lastUi = DateTime.Now;
-                                BeginInvoke(new Action(delegate { RenderActiveDownloads(); }));
+                                task.PauseEvent.WaitOne();
+                                if (task.CancelRequested) throw new OperationCanceledException();
+                                output.Write(buffer, 0, read);
+                                received += read;
+                                task.Received = received;
+                                task.Total = total;
+                                task.StateText = PortalText("下载中", "Downloading");
+                                task.UpdateSpeed();
+                                if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                                {
+                                    lastUi = DateTime.Now;
+                                    BeginInvoke(new Action(delegate { RenderActiveDownloads(); }));
+                                }
                             }
                         }
                     }
+                    failure = null;
+                    break;
                 }
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
+                catch (Exception ex)
+                {
+                    failure = ex;
+                    task.ActiveRequest = null;
+                    if (ex is OperationCanceledException || task.CancelRequested) break;
+                    if (attempt < 3)
+                    {
+                        task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
+                        BeginInvoke(new Action(delegate { RenderActiveDownloads(); }));
+                        Thread.Sleep(900 * attempt);
+                    }
+                }
             }
 
             BeginInvoke(new Action(delegate
@@ -4304,6 +5890,7 @@ namespace ToolboxClient
 
         private void FinishControlledDownload(DownloadTask task, Exception failure)
         {
+            task.Finished = true;
             bool cancelled = failure is OperationCanceledException || task.CancelRequested;
             task.PauseEvent.Set();
 
@@ -4313,6 +5900,7 @@ namespace ToolboxClient
                 AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), "已保留未完成文件，下次点击会继续下载。");
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
+                StartQueuedDownloads();
                 return;
             }
 
@@ -4326,13 +5914,15 @@ namespace ToolboxClient
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
+                StartQueuedDownloads();
                 return;
             }
 
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
-            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message));
+            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已自动重试 3 次。");
             RemoveActiveDownload(task);
             FillDownloadRecords();
+            StartQueuedDownloads();
         }
 
         private void RemoveActiveDownload(DownloadTask task)
@@ -4395,6 +5985,35 @@ namespace ToolboxClient
             string dir = settings.DownloadDirectory;
             if (String.IsNullOrWhiteSpace(dir) || IsLegacyDownloadsDirectory(dir)) dir = DefaultDownloadDirectory();
             return Environment.ExpandEnvironmentVariables(dir);
+        }
+
+        private int GetMaxParallelDownloads()
+        {
+            return NormalizeMaxParallelDownloads(LoadClientSettings().MaxParallelDownloads);
+        }
+
+        private static int NormalizeMaxParallelDownloads(int value)
+        {
+            if (value <= 0) return DefaultMaxParallelDownloads;
+            if (value > 20) return 20;
+            return value;
+        }
+
+        private void FillMaxParallelDownloadBox(ComboBox box, int selected)
+        {
+            if (box == null) return;
+            box.Items.Clear();
+            for (int i = 1; i <= 20; i++) box.Items.Add(i.ToString());
+            string value = NormalizeMaxParallelDownloads(selected).ToString();
+            int index = box.Items.IndexOf(value);
+            box.SelectedIndex = index >= 0 ? index : DefaultMaxParallelDownloads - 1;
+        }
+
+        private static int SelectedMaxParallelDownloads(ComboBox box)
+        {
+            int parsed;
+            if (box != null && Int32.TryParse(Convert.ToString(box.SelectedItem), out parsed)) return NormalizeMaxParallelDownloads(parsed);
+            return DefaultMaxParallelDownloads;
         }
 
         private static bool IsLegacyDownloadsDirectory(string dir)
@@ -5351,7 +6970,18 @@ namespace ToolboxClient
             cancel.Top = resume.Top = pause.Top = buttonTop;
             pause.Click += delegate { task.PauseEvent.Reset(); task.StateText = PortalText("已暂停", "Paused"); UpdateDownloadTaskRow(task, row); RenderActiveDownloads(); };
             resume.Click += delegate { task.PauseEvent.Set(); task.StateText = PortalText("下载中", "Downloading"); UpdateDownloadTaskRow(task, row); RenderActiveDownloads(); };
-            cancel.Click += delegate { task.Cancel(); task.StateText = PortalText("正在取消", "Canceling"); UpdateDownloadTaskRow(task, row); RenderActiveDownloads(); };
+            cancel.Click += delegate
+            {
+                task.Cancel();
+                task.StateText = PortalText("正在取消", "Canceling");
+                if (!task.Started)
+                {
+                    FinishControlledDownload(task, new OperationCanceledException());
+                    return;
+                }
+                UpdateDownloadTaskRow(task, row);
+                RenderActiveDownloads();
+            };
             row.Resize += delegate
             {
                 int rightSpace = (buttonWidth * 3) + (buttonGap * 2) + 26;
@@ -5396,6 +7026,8 @@ namespace ToolboxClient
             bool paused = !task.PauseEvent.WaitOne(0);
             if (pause != null) pause.Enabled = !paused && !task.CancelRequested;
             if (resume != null) resume.Enabled = paused && !task.CancelRequested;
+            if (pause != null) pause.Enabled = task.Started && !paused && !task.CancelRequested;
+            if (resume != null) resume.Enabled = task.Started && paused && !task.CancelRequested;
             if (cancel != null) cancel.Enabled = !task.CancelRequested;
             if (pause != null) pause.Invalidate();
             if (resume != null) resume.Invalidate();
@@ -5795,7 +7427,7 @@ namespace ToolboxClient
             settingsPanel = new PopupPanel
             {
                 Width = 650,
-                Height = 430,
+                Height = 520,
                 Visible = false,
                 BackColor = PanelBg,
                 Padding = new Padding(18),
@@ -5909,10 +7541,108 @@ namespace ToolboxClient
                 Checked = currentSettings.DeleteDownloadsOnExit
             };
 
+            RoundedPanel parallelCard = new RoundedPanel
+            {
+                Left = 22,
+                Top = 264,
+                Width = 590,
+                Height = 78,
+                Radius = 14,
+                BackColor = cardBack,
+                BorderColor = Color.FromArgb(70, Line)
+            };
+            Label parallelLabel = new Label
+            {
+                Left = 16,
+                Top = 12,
+                Width = 180,
+                Height = 22,
+                Text = "同时最多下载",
+                ForeColor = labelColor,
+                BackColor = Color.Transparent
+            };
+            ComboBox parallelBox = new ComboBox
+            {
+                Left = 18,
+                Top = 40,
+                Width = 140,
+                Height = 28,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = fieldBack,
+                ForeColor = TextColor,
+                FlatStyle = FlatStyle.Flat,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 22
+            };
+            parallelBox.DrawItem += DrawDarkComboItem;
+            FillMaxParallelDownloadBox(parallelBox, currentSettings.MaxParallelDownloads);
+
+            RoundedPanel themeCard = new RoundedPanel
+            {
+                Left = 22,
+                Top = 356,
+                Width = 590,
+                Height = 78,
+                Radius = 14,
+                BackColor = cardBack,
+                BorderColor = Color.FromArgb(70, Line)
+            };
+            Label themeLabel = new Label
+            {
+                Left = 16,
+                Top = 12,
+                Width = 180,
+                Height = 22,
+                Text = "界面主题",
+                ForeColor = labelColor,
+                BackColor = Color.Transparent
+            };
+            ComboBox themeBox = new ComboBox
+            {
+                Left = 18,
+                Top = 40,
+                Width = 390,
+                Height = 28,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = fieldBack,
+                ForeColor = TextColor,
+                FlatStyle = FlatStyle.Flat,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 22
+            };
+            themeBox.DrawItem += DrawDarkComboItem;
+            themeBox.Items.Add(new ThemeOption("", "跟随后台主题"));
+            IList<ThemeOption> themes = AllThemeOptions();
+            foreach (ThemeOption option in themes) themeBox.Items.Add(option);
+            string selectedTheme = currentSettings.Theme ?? "";
+            int selectedThemeIndex = 0;
+            for (int i = 0; i < themeBox.Items.Count; i++)
+            {
+                ThemeOption option = themeBox.Items[i] as ThemeOption;
+                if (option != null && option.Value.Equals(selectedTheme, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedThemeIndex = i;
+                    break;
+                }
+            }
+            themeBox.SelectedIndex = selectedThemeIndex;
+            Label themeHint = new Label
+            {
+                Left = 424,
+                Top = 40,
+                Width = 148,
+                Height = 28,
+                Text = "选择后立即生效",
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
+            };
+
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
                 Left = 22,
-                Top = 270,
+                Top = 448,
                 Width = 590,
                 Height = 42,
                 FlowDirection = FlowDirection.RightToLeft,
@@ -5971,6 +7701,32 @@ namespace ToolboxClient
                 SaveClientSettings(currentSettings);
                 status.Text = cleanOnExit.Checked ? "关闭时将自动删除已下载文件" : "已关闭退出自动清理";
             };
+            parallelBox.SelectedIndexChanged += delegate
+            {
+                currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
+                SaveClientSettings(currentSettings);
+                status.Text = "同时下载数量已设置为：" + currentSettings.MaxParallelDownloads;
+                StartQueuedDownloads();
+            };
+            themeBox.SelectedIndexChanged += delegate
+            {
+                ThemeOption selected = themeBox.SelectedItem as ThemeOption;
+                if (selected == null) return;
+                currentSettings.Theme = selected.Value;
+                SaveClientSettings(currentSettings);
+                BeginInvoke(new Action(delegate
+                {
+                    Dictionary<string, object> latestApp = AsDict(Get(config, "app"));
+                    ApplyTheme(CurrentTheme(latestApp));
+                    if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) RenderSoftwareCatalogPage();
+                    else RenderCurrentSections();
+                    if (settingsPanel == null) BuildSettingsPanel();
+                    FillSettingsPanel();
+                    settingsPanel.Visible = true;
+                    settingsPanel.BringToFront();
+                    status.Text = String.IsNullOrWhiteSpace(selected.Value) ? "已切换为跟随后台主题" : "主题已切换：" + selected.Label;
+                }));
+            };
 
             pathCard.Controls.Add(label);
             pathCard.Controls.Add(pathBox);
@@ -5978,10 +7734,17 @@ namespace ToolboxClient
             optionCard.Controls.Add(optionLabel);
             optionCard.Controls.Add(autoStart);
             optionCard.Controls.Add(cleanOnExit);
+            parallelCard.Controls.Add(parallelLabel);
+            parallelCard.Controls.Add(parallelBox);
+            themeCard.Controls.Add(themeLabel);
+            themeCard.Controls.Add(themeBox);
+            themeCard.Controls.Add(themeHint);
             settingsPanel.Controls.Add(caption);
             settingsPanel.Controls.Add(close);
             settingsPanel.Controls.Add(pathCard);
             settingsPanel.Controls.Add(optionCard);
+            settingsPanel.Controls.Add(parallelCard);
+            settingsPanel.Controls.Add(themeCard);
             settingsPanel.Controls.Add(actions);
             close.BringToFront();
         }
@@ -6178,15 +7941,15 @@ namespace ToolboxClient
             return FormatBytes((long)bytesPerSecond) + "/s";
         }
 
-        private bool PromptPassword(string stored)
+        private bool PromptPassword(string stored, string title, string prompt)
         {
             while (true)
             {
-                using (PasswordDialog dialog = new PasswordDialog())
+                using (PasswordDialog dialog = new PasswordDialog(title, prompt))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return false;
                     if (VerifyPassword(dialog.Password, stored)) return true;
-                    MessageBox.Show("密码不正确。", "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("密码不正确。", String.IsNullOrWhiteSpace(title) ? "密码验证" : title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
         }
@@ -6719,6 +8482,7 @@ namespace ToolboxClient
             if (key == "toolbox") return "系统工具";
             if (key == "driver") return "声卡驱动";
             if (key == "software") return "常用软件";
+            if (key == "software_catalog") return "软件大全";
             if (key == "websites") return "常用网站";
             if (key == "settings") return "打包设置";
             return String.IsNullOrWhiteSpace(id) ? "未命名" : id;
@@ -7465,6 +9229,34 @@ namespace ToolboxClient
             public string Name;
         }
 
+        private sealed class SoftwareCatalogEntry
+        {
+            public string Name = "";
+            public string Category = "";
+            public string Description = "";
+            public string PackageId = "";
+            public string Website = "";
+            public string DownloadUrl = "";
+            public bool SearchOnly = false;
+            public string[] Tags = new string[0];
+
+            public string SearchText()
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.Append(Name).Append(' ');
+                sb.Append(Category).Append(' ');
+                sb.Append(Description).Append(' ');
+                sb.Append(PackageId).Append(' ');
+                sb.Append(Website).Append(' ');
+                sb.Append(DownloadUrl).Append(' ');
+                if (Tags != null)
+                {
+                    foreach (string tag in Tags) sb.Append(tag).Append(' ');
+                }
+                return sb.ToString();
+            }
+        }
+
         private sealed class RoundedPanel : Panel
         {
             public int Radius = 12;
@@ -7766,6 +9558,7 @@ namespace ToolboxClient
         {
             public string DownloadDirectory { get; set; }
             public string Theme { get; set; }
+            public int MaxParallelDownloads { get; set; }
             public bool AutoStart { get; set; }
             public bool DeleteDownloadsOnExit { get; set; }
         }
@@ -7878,10 +9671,13 @@ namespace ToolboxClient
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
             public volatile bool CancelRequested;
             public volatile HttpWebRequest ActiveRequest;
+            public volatile bool Started;
+            public volatile bool Finished;
             public long Received;
             public long Total = -1;
             public double SpeedBytesPerSecond;
             public string StateText = "准备下载";
+            public int Attempt = 0;
             private long lastSpeedBytes;
             private DateTime lastSpeedAt = DateTime.Now;
 
@@ -7980,9 +9776,9 @@ namespace ToolboxClient
         private readonly TextBox input;
         public string Password { get { return input.Text; } }
 
-        public PasswordDialog()
+        public PasswordDialog(string title, string prompt)
         {
-            Text = "工具箱密码";
+            Text = String.IsNullOrWhiteSpace(title) ? "密码验证" : title;
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -7990,7 +9786,7 @@ namespace ToolboxClient
             ClientSize = new Size(340, 132);
             Font = new Font("Microsoft YaHei UI", 9F);
 
-            Label label = new Label { Left = 16, Top = 16, Width = 300, Height = 24, Text = "请输入工具箱启动密码" };
+            Label label = new Label { Left = 16, Top = 16, Width = 300, Height = 24, Text = String.IsNullOrWhiteSpace(prompt) ? "请输入密码" : prompt };
             input = new TextBox { Left = 16, Top = 44, Width = 306, Height = 28, UseSystemPasswordChar = true };
             Button ok = new Button { Left = 166, Top = 88, Width = 75, Height = 28, Text = "进入", DialogResult = DialogResult.OK };
             Button cancel = new Button { Left = 247, Top = 88, Width = 75, Height = 28, Text = "取消", DialogResult = DialogResult.Cancel };

@@ -2,8 +2,8 @@ set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="private-local-tested-preserve-data-20260620"
-URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260620.tar.gz"
-SHA="1a77f590ee9e3bff34d4f12038667088dcd0988a98d3fb714c5a36dc4aa325a5"
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
+SHA="80efc8db0d75e2ec14559a2002404abcfd1d2c8359ade80b3b53aa55561f458e"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-private-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-private-local-tested-$TS"
@@ -35,6 +35,8 @@ systemctl restart "$SERVICE"
 sleep 2
 systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
-grep -q "withTargetUser" wwwroot/admin.js
-grep -q "Resolve8UidDownloadRequest" client-template/ToolboxClient.cs
-echo "OK: updated from private GitHub branch, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+grep -q "software_catalog_enabled" app.py
+grep -q "ensureButtonsPagePanels" wwwroot/admin.js
+grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs
+grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs
+echo "OK: updated to 20260622 local-tested build from private GitHub branch, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"

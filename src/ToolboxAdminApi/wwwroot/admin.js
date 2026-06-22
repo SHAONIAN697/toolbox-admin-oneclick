@@ -250,6 +250,22 @@ function setupCollapsiblePanels() {
   });
 }
 
+function ensureButtonsPagePanels() {
+  const view = $('view-buttons');
+  if (!view) return;
+  ['页面与分组', '新增按钮'].forEach((titleText) => {
+    const panel = [...view.querySelectorAll(':scope > .panel')].find((item) => {
+      return item.querySelector(':scope > .panel-head h2')?.textContent?.trim() === titleText;
+    });
+    if (!panel) return;
+    panel.classList.add('collapsible-panel');
+    if (!panel.dataset.collapseReady) panel.classList.add('is-collapsed');
+    panel.dataset.collapsiblePanel = '';
+    panel.dataset.defaultCollapsed = '1';
+  });
+  setupCollapsiblePanels();
+}
+
 function setStatus(message, isError = false) {
   const status = $('status');
   if (status) status.textContent = '';
@@ -696,8 +712,10 @@ function renderAll() {
   renderSystemSettings();
   renderTemplateControls();
   renderNotices();
+  ensureButtonsPagePanels();
   renderStats();
   renderManageControls();
+  renderPageAccessControls();
   renderSelectors();
   renderButtons();
   renderClientVariants();
@@ -984,29 +1002,31 @@ function organizeOverviewCards() {
   const view = $('view-overview');
   const firstPanel = view?.querySelector('.panel');
   const grid = firstPanel?.querySelector('.form-grid');
-  if (!view || !firstPanel || !grid || $('appPropertyPanel')) return;
+  if (!view || !firstPanel || !grid) return;
+  if ($('appPropertyPanel')) {
+    bindOverviewSaveActions();
+    return;
+  }
   firstPanel.querySelector('h2').textContent = '基础信息';
 
   const saveButton = $('saveAppBtn');
-  const saveBar = document.createElement('div');
-  saveBar.className = 'overview-savebar';
-  if (saveButton) {
-    saveButton.remove();
-    saveBar.appendChild(saveButton);
-  }
-  view.insertBefore(saveBar, view.querySelector('.stats'));
+  if (saveButton) saveButton.textContent = '保存基础信息';
 
-  const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel');
-  const loginPanel = createOverviewPanel('登录页设置', 'appLoginPanel');
-  const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel');
-  const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel');
+  const stats = view.querySelector('.stats');
+  const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel', 'saveAppPasswordBtn', '保存启动密码');
+  const loginPanel = createOverviewPanel('登录页设置', 'appLoginPanel', 'saveAppLoginBtn', '保存登录页');
+  const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel', 'saveAppExeBtn', '保存 EXE');
+  const pageAccessPanel = ensurePageAccessPanel();
+  const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel', 'saveAppUpdateBtn', '保存更新入口');
   const popupPanel = createPopupOverviewPanel();
-  view.insertBefore(loginPanel, saveBar);
-  view.insertBefore(passwordPanel, saveBar);
-  view.insertBefore(propertyPanel, saveBar);
-  view.insertBefore(updatePanel, saveBar);
-  view.insertBefore(popupPanel, saveBar);
+  view.insertBefore(loginPanel, stats);
+  view.insertBefore(passwordPanel, stats);
+  view.insertBefore(pageAccessPanel, stats);
+  view.insertBefore(propertyPanel, stats);
+  view.insertBefore(updatePanel, stats);
+  view.insertBefore(popupPanel, stats);
   setupCollapsiblePanels();
+  bindOverviewSaveActions();
   bindPopupSettingsActions();
 
   moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
@@ -1098,11 +1118,25 @@ function ensureLoginBrandFields() {
   hintLabel?.insertAdjacentElement('beforebegin', titleLabel);
 }
 
-function createOverviewPanel(title, id) {
+function bindOverviewSaveActions() {
+  const bind = (id, handler) => {
+    const button = $(id);
+    if (button) button.onclick = () => handler().catch((error) => setStatus(error.message, true));
+  };
+  bind('saveAppBtn', saveAppBasicSettings);
+  bind('saveAppLoginBtn', saveAppLoginSettings);
+  bind('saveAppPasswordBtn', saveAppPasswordSettings);
+  bind('saveAppExeBtn', saveAppExeSettings);
+  bind('saveAppUpdateBtn', saveAppUpdateSettings);
+  if ($('savePageAccessBtn')) $('savePageAccessBtn').onclick = () => savePageAccess().catch((error) => setStatus(error.message, true));
+}
+
+function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') {
   const panel = document.createElement('div');
   panel.className = 'panel';
   panel.id = id;
-  panel.innerHTML = `<div class="panel-head"><h2>${title}</h2></div><div class="form-grid"></div>`;
+  const action = saveButtonId ? `<button id="${saveButtonId}" type="button">${saveText}</button>` : '';
+  panel.innerHTML = `<div class="panel-head"><h2>${title}</h2>${action}</div><div class="form-grid"></div>`;
   return panel;
 }
 
@@ -2142,6 +2176,139 @@ function getPositions() {
   return positions;
 }
 
+function ensureFeatureSettings() {
+  if (!state.config.features || typeof state.config.features !== 'object' || Array.isArray(state.config.features)) {
+    state.config.features = {};
+  }
+  if (state.config.features.software_catalog_enabled === undefined) {
+    state.config.features.software_catalog_enabled = true;
+  }
+  return state.config.features;
+}
+
+function ensurePageLocks() {
+  if (!state.config.page_locks || typeof state.config.page_locks !== 'object' || Array.isArray(state.config.page_locks)) {
+    state.config.page_locks = {};
+  }
+  return state.config.page_locks;
+}
+
+function getLockablePages() {
+  const rows = [{ id: 'software_catalog', title: '软件大全', type: '内置页面' }];
+  const seen = new Set(rows.map((item) => item.id));
+  const pages = state.config.pages || {};
+  const sidebar = Array.isArray(state.config.sidebar) ? state.config.sidebar : [];
+
+  if ((state.config.toolbox_tabs || []).length) {
+    rows.push({ id: 'toolbox', title: '系统工具', type: '内置页面' });
+    seen.add('toolbox');
+  }
+
+  const addPage = (pageId, page, fallbackName = '') => {
+    if (!pageId || pageId === 'settings' || seen.has(pageId)) return;
+    seen.add(pageId);
+    rows.push({
+      id: pageId,
+      title: page?.title || page?.name || fallbackName || pageId,
+      type: '自定义页面'
+    });
+  };
+
+  sidebar.forEach((item) => {
+    const pageId = item?.id || '';
+    addPage(pageId, pages[pageId], item?.name || '');
+  });
+  Object.entries(pages).forEach(([pageId, page]) => addPage(pageId, page));
+  return rows;
+}
+
+function ensurePageAccessPanel() {
+  const view = $('view-overview');
+  if (!view) return null;
+  let panel = $('pageAccessPanel');
+  if (panel) return panel;
+  panel = document.createElement('div');
+  panel.id = 'pageAccessPanel';
+  panel.className = 'panel page-access-panel collapsible-panel is-collapsed';
+  panel.dataset.collapsiblePanel = '';
+  panel.dataset.defaultCollapsed = '1';
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>页面权限</h2>
+      <button id="savePageAccessBtn" type="button">保存权限</button>
+    </div>
+    <div class="form-grid compact page-feature-grid">
+      <label class="toggle-line">软件大全页面<span><input id="softwareCatalogEnabled" type="checkbox"> 显示</span></label>
+    </div>
+    <div class="table-wrap page-lock-wrap">
+      <table class="page-lock-table">
+        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>页面密码</th><th>状态</th></tr></thead>
+        <tbody id="pageLockRows"></tbody>
+      </table>
+    </div>
+    <p class="page-lock-note">开启上锁后，用户进入对应页面必须输入该页面的密码；密码留空表示不修改已保存密码。</p>
+  `;
+  const saveButton = panel.querySelector('#savePageAccessBtn');
+  if (saveButton) saveButton.onclick = () => savePageAccess().catch((error) => setStatus(error.message, true));
+  return panel;
+}
+
+function renderPageAccessControls() {
+  const panel = ensurePageAccessPanel();
+  if (!panel || !state.config) return;
+  const features = ensureFeatureSettings();
+  const locks = ensurePageLocks();
+  const softwareEnabled = $('softwareCatalogEnabled');
+  if (softwareEnabled) softwareEnabled.checked = features.software_catalog_enabled !== false;
+  const tbody = $('pageLockRows');
+  if (!tbody) return;
+  tbody.innerHTML = getLockablePages().map((page) => {
+    const lock = locks[page.id] && typeof locks[page.id] === 'object' ? locks[page.id] : {};
+    const enabled = lock.enabled === true;
+    const hasPassword = !!lock.password;
+    return `
+      <tr data-page-lock-id="${escapeAttr(page.id)}" data-page-lock-title="${escapeAttr(page.title)}">
+        <td><strong>${escapeHtml(page.title)}</strong><small>${escapeHtml(page.id)}</small></td>
+        <td>${escapeHtml(page.type)}</td>
+        <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
+        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入页面密码'}"></td>
+        <td><span class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置密码' : '未设置密码'}</span></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function savePageAccess() {
+  const features = ensureFeatureSettings();
+  features.software_catalog_enabled = $('softwareCatalogEnabled')?.checked !== false;
+
+  const locks = ensurePageLocks();
+  let missingPasswordFor = '';
+  document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
+    if (missingPasswordFor) return;
+    const pageId = row.dataset.pageLockId || '';
+    const title = row.dataset.pageLockTitle || pageId;
+    const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
+    const next = { ...current };
+    const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
+    next.enabled = row.querySelector('[data-page-lock-enabled]')?.checked === true;
+    next.title = title;
+    if (password) next.password = password;
+    if (next.enabled && !next.password) {
+      missingPasswordFor = title;
+      return;
+    }
+    locks[pageId] = next;
+  });
+
+  if (missingPasswordFor) {
+    setStatus(`请先给「${missingPasswordFor}」填写页面密码。`, true);
+    return;
+  }
+
+  await saveWholeConfig('页面权限已保存。');
+}
+
 function parsePositionValue(value) {
   const positions = getPositions();
   return positions.find((item) => item.value === value) || positions[0] || null;
@@ -2549,17 +2716,16 @@ function readAddTarget() {
   return $('addTarget')?.value.trim() || '';
 }
 
-async function saveApp() {
-  const passwordEnabled = $('appPasswordEnabled').checked;
-  const newPassword = $('appPassword').value.trim();
-  const hasExistingPassword = !!(state.config.app && state.config.app.password);
+async function saveAppPatch(patch, message) {
+  state.config = await api(appApiPath(), {
+    method: 'PATCH',
+    body: JSON.stringify(patch)
+  });
+  await refreshButtons(message);
+}
 
-  if (passwordEnabled && !hasExistingPassword && !newPassword) {
-    setStatus('开启工具箱密码时，请先填写新密码。', true);
-    return;
-  }
-
-  const patch = {
+async function saveAppBasicSettings() {
+  await saveAppPatch({
     title: $('appTitle').value.trim(),
     subtitle: $('appSubtitle').value.trim(),
     version: $('appVersion').value.trim(),
@@ -2570,33 +2736,59 @@ async function saveApp() {
     icon: $('appIcon').value.trim(),
     exe_icon: $('appExeIcon')?.value.trim() || '',
     window_width: Number($('appWidth').value || 1080),
-    window_height: Number($('appHeight').value || 700),
-    password_enabled: passwordEnabled,
-    update_url: $('appUpdateUrl')?.value.trim() || '',
-    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
-    update_button: $('appUpdateButton')?.value.trim() || '下载最新版',
+    window_height: Number($('appHeight').value || 700)
+  }, '基础信息已保存。');
+}
+
+async function saveAppLoginSettings() {
+  if (state.currentUser?.role !== 'super') {
+    setStatus('只有总管理员可以保存登录页设置。', true);
+    return;
+  }
+  await saveAppPatch({
+    admin_title: $('loginTitleInput')?.value.trim() || '工具箱后台登录',
+    login_hint: $('loginHintInput').value.trim()
+  }, '登录页设置已保存。');
+}
+
+async function saveAppPasswordSettings() {
+  const passwordEnabled = $('appPasswordEnabled').checked;
+  const newPassword = $('appPassword').value.trim();
+  const hasExistingPassword = !!(state.config.app && state.config.app.password);
+
+  if (passwordEnabled && !hasExistingPassword && !newPassword) {
+    setStatus('开启工具箱密码时，请先填写新密码。', true);
+    return;
+  }
+
+  const patch = {
+    password_enabled: passwordEnabled
+  };
+  if (newPassword) patch.password = newPassword;
+  await saveAppPatch(patch, '启动密码已保存。');
+}
+
+async function saveAppExeSettings() {
+  await saveAppPatch({
     exe_title: $('appExeTitle')?.value.trim() || '',
     exe_description: $('appExeDescription')?.value.trim() || '',
     exe_product: $('appExeProduct')?.value.trim() || '',
     exe_company: $('appExeCompany')?.value.trim() || '',
     exe_copyright: $('appExeCopyright')?.value.trim() || '',
     exe_version: $('appExeVersion')?.value.trim() || ''
-  };
+  }, 'EXE 属性已保存。');
+}
 
-  if (state.currentUser?.role === 'super') {
-    patch.admin_title = $('loginTitleInput')?.value.trim() || '工具箱后台登录';
-    patch.login_hint = $('loginHintInput').value.trim();
-  }
+async function saveAppUpdateSettings() {
+  await saveAppPatch({
+    update_url: $('appUpdateUrl')?.value.trim() || '',
+    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
+    update_button: $('appUpdateButton')?.value.trim() || '下载最新版'
+  }, '更新入口已保存。');
+}
 
-  if (newPassword) {
-    patch.password = newPassword;
-  }
-
-  state.config = await api(appApiPath(), {
-    method: 'PATCH',
-    body: JSON.stringify(patch)
-  });
-  await refreshButtons('应用信息已保存。');
+async function saveApp() {
+  await saveAppBasicSettings();
 }
 
 async function saveWholeConfig(message) {

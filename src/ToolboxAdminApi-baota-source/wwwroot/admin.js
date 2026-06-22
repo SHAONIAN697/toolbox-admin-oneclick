@@ -250,6 +250,22 @@ function setupCollapsiblePanels() {
   });
 }
 
+function ensureButtonsPagePanels() {
+  const view = $('view-buttons');
+  if (!view) return;
+  ['页面与分组', '新增按钮'].forEach((titleText) => {
+    const panel = [...view.querySelectorAll(':scope > .panel')].find((item) => {
+      return item.querySelector(':scope > .panel-head h2')?.textContent?.trim() === titleText;
+    });
+    if (!panel) return;
+    panel.classList.add('collapsible-panel');
+    if (!panel.dataset.collapseReady) panel.classList.add('is-collapsed');
+    panel.dataset.collapsiblePanel = '';
+    panel.dataset.defaultCollapsed = '1';
+  });
+  setupCollapsiblePanels();
+}
+
 function setStatus(message, isError = false) {
   const status = $('status');
   if (status) status.textContent = '';
@@ -690,13 +706,16 @@ function renderAll() {
   syncInviteAutoRefresh();
   renderUserContext();
   renderApp();
+  renderPopupSettings();
   renderAccount();
   renderMailSettings();
   renderSystemSettings();
   renderTemplateControls();
   renderNotices();
+  ensureButtonsPagePanels();
   renderStats();
   renderManageControls();
+  renderPageAccessControls();
   renderSelectors();
   renderButtons();
   renderClientVariants();
@@ -983,31 +1002,106 @@ function organizeOverviewCards() {
   const view = $('view-overview');
   const firstPanel = view?.querySelector('.panel');
   const grid = firstPanel?.querySelector('.form-grid');
-  if (!view || !firstPanel || !grid || $('appPropertyPanel')) return;
+  if (!view || !firstPanel || !grid) return;
+  if ($('appPropertyPanel')) {
+    bindOverviewSaveActions();
+    return;
+  }
   firstPanel.querySelector('h2').textContent = '基础信息';
 
   const saveButton = $('saveAppBtn');
-  const saveBar = document.createElement('div');
-  saveBar.className = 'overview-savebar';
-  if (saveButton) {
-    saveButton.remove();
-    saveBar.appendChild(saveButton);
-  }
-  view.insertBefore(saveBar, view.querySelector('.stats'));
+  if (saveButton) saveButton.textContent = '保存基础信息';
 
-  const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel');
-  const loginPanel = createOverviewPanel('登录页设置', 'appLoginPanel');
-  const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel');
-  const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel');
-  view.insertBefore(loginPanel, saveBar);
-  view.insertBefore(passwordPanel, saveBar);
-  view.insertBefore(propertyPanel, saveBar);
-  view.insertBefore(updatePanel, saveBar);
+  const stats = view.querySelector('.stats');
+  const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel', 'saveAppPasswordBtn', '保存启动密码');
+  const loginPanel = createOverviewPanel('登录页设置', 'appLoginPanel', 'saveAppLoginBtn', '保存登录页');
+  const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel', 'saveAppExeBtn', '保存 EXE');
+  const pageAccessPanel = ensurePageAccessPanel();
+  const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel', 'saveAppUpdateBtn', '保存更新入口');
+  const popupPanel = createPopupOverviewPanel();
+  view.insertBefore(loginPanel, stats);
+  view.insertBefore(passwordPanel, stats);
+  view.insertBefore(pageAccessPanel, stats);
+  view.insertBefore(propertyPanel, stats);
+  view.insertBefore(updatePanel, stats);
+  view.insertBefore(popupPanel, stats);
+  setupCollapsiblePanels();
+  bindOverviewSaveActions();
+  bindPopupSettingsActions();
 
   moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
   moveLabels(grid, passwordPanel.querySelector('.form-grid'), ['appPasswordEnabled', 'appPassword']);
   moveLabels(grid, propertyPanel.querySelector('.form-grid'), ['appExeTitle', 'appExeDescription', 'appExeProduct', 'appExeVersion', 'appExeCompany', 'appExeCopyright']);
   moveLabels(grid, updatePanel.querySelector('.form-grid'), ['appUpdateUrl', 'appUpdateTitle', 'appUpdateButton']);
+}
+
+function createPopupOverviewPanel() {
+  const panel = document.createElement('div');
+  panel.className = 'panel collapsible-panel is-collapsed';
+  panel.id = 'popupOverviewPanel';
+  panel.dataset.collapsiblePanel = '';
+  panel.dataset.defaultCollapsed = '1';
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>联系方式</h2>
+    </div>
+    <div class="popup-settings">
+      <div class="popup-admin-block">
+        <div class="popup-admin-head">
+          <h3>基础设置</h3>
+          <button id="savePopupBasicBtn" type="button">保存</button>
+        </div>
+        <div class="form-grid compact">
+          <label class="toggle-line">启用隐藏入口<span><input id="popupEnabled" type="checkbox"> 启用</span></label>
+          <label>Logo 连续点击次数<input id="popupClickCount" type="number" min="1" max="20" step="1"></label>
+          <label>数据缓存分钟<input id="popupCacheMinutes" type="number" min="0" max="1440" step="1"></label>
+          <label>弹窗标题<input id="popupTitle" placeholder="联系我们 / 支持作者"></label>
+          <label class="wide">感谢文案<textarea id="popupThanksText" rows="3" placeholder="感谢你的支持，我们会持续维护和更新工具箱。"></textarea></label>
+        </div>
+      </div>
+      <div class="popup-admin-block">
+        <div class="popup-admin-head">
+          <h3>联系方式二维码</h3>
+          <div class="popup-head-actions">
+            <button id="addPopupContactBtn" type="button">新增联系方式</button>
+            <button id="savePopupContactBtn" type="button">保存</button>
+          </div>
+        </div>
+        <div id="popupContactRows" class="popup-config-list"></div>
+      </div>
+      <div class="popup-admin-block">
+        <div class="popup-admin-head">
+          <h3>收款码</h3>
+          <div class="popup-head-actions">
+            <button id="addPopupPaymentBtn" type="button">新增收款码</button>
+            <button id="savePopupPaymentBtn" type="button">保存</button>
+          </div>
+        </div>
+        <div id="popupPaymentRows" class="popup-config-list"></div>
+      </div>
+      <div class="popup-admin-block">
+        <div class="popup-admin-head">
+          <h3>相关链接</h3>
+          <div class="popup-head-actions">
+            <button id="addPopupLinkBtn" type="button">新增链接</button>
+            <button id="savePopupLinkBtn" type="button">保存</button>
+          </div>
+        </div>
+        <div id="popupLinkRows" class="popup-config-list"></div>
+      </div>
+    </div>
+  `;
+  return panel;
+}
+
+function bindPopupSettingsActions() {
+  if ($('savePopupBasicBtn')) $('savePopupBasicBtn').onclick = () => savePopupSettings('基础设置').catch((error) => setStatus(error.message, true));
+  if ($('savePopupContactBtn')) $('savePopupContactBtn').onclick = () => savePopupSettings('联系方式二维码').catch((error) => setStatus(error.message, true));
+  if ($('savePopupPaymentBtn')) $('savePopupPaymentBtn').onclick = () => savePopupSettings('收款码').catch((error) => setStatus(error.message, true));
+  if ($('savePopupLinkBtn')) $('savePopupLinkBtn').onclick = () => savePopupSettings('相关链接').catch((error) => setStatus(error.message, true));
+  if ($('addPopupContactBtn')) $('addPopupContactBtn').onclick = () => addPopupItem('contact');
+  if ($('addPopupPaymentBtn')) $('addPopupPaymentBtn').onclick = () => addPopupItem('payment');
+  if ($('addPopupLinkBtn')) $('addPopupLinkBtn').onclick = () => addPopupItem('link');
 }
 
 function ensureLoginBrandFields() {
@@ -1024,11 +1118,25 @@ function ensureLoginBrandFields() {
   hintLabel?.insertAdjacentElement('beforebegin', titleLabel);
 }
 
-function createOverviewPanel(title, id) {
+function bindOverviewSaveActions() {
+  const bind = (id, handler) => {
+    const button = $(id);
+    if (button) button.onclick = () => handler().catch((error) => setStatus(error.message, true));
+  };
+  bind('saveAppBtn', saveAppBasicSettings);
+  bind('saveAppLoginBtn', saveAppLoginSettings);
+  bind('saveAppPasswordBtn', saveAppPasswordSettings);
+  bind('saveAppExeBtn', saveAppExeSettings);
+  bind('saveAppUpdateBtn', saveAppUpdateSettings);
+  if ($('savePageAccessBtn')) $('savePageAccessBtn').onclick = () => savePageAccess().catch((error) => setStatus(error.message, true));
+}
+
+function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') {
   const panel = document.createElement('div');
   panel.className = 'panel';
   panel.id = id;
-  panel.innerHTML = `<div class="panel-head"><h2>${title}</h2></div><div class="form-grid"></div>`;
+  const action = saveButtonId ? `<button id="${saveButtonId}" type="button">${saveText}</button>` : '';
+  panel.innerHTML = `<div class="panel-head"><h2>${title}</h2>${action}</div><div class="form-grid"></div>`;
   return panel;
 }
 
@@ -1531,17 +1639,11 @@ function renderSystemSettings() {
   const locations = state.system.locations || {};
   const agent = state.system.agent || {};
   const pay = state.system.pay || {};
-  const popup = state.system.popup || {};
   const integrity = state.system.integrity || {};
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
   if ($('systemMenuName')) $('systemMenuName').value = locations.adminSystemName || '系统管理';
   if ($('systemFrontendGlow')) $('systemFrontendGlow').checked = locations.frontendActiveGlow !== false;
   if ($('systemFrontendGroupCount')) $('systemFrontendGroupCount').checked = locations.frontendShowGroupCount !== false;
-  if ($('popupEnabled')) $('popupEnabled').checked = popup.enabled === true;
-  if ($('popupClickCount')) $('popupClickCount').value = Number(popup.clickCount || 3);
-  if ($('popupCacheMinutes')) $('popupCacheMinutes').value = Number(popup.cacheMinutes ?? 60);
-  if ($('popupTitle')) $('popupTitle').value = popup.title || '联系我们 / 支持作者';
-  if ($('popupThanksText')) $('popupThanksText').value = popup.thanksText || '感谢你的支持，我们会持续维护和更新工具箱。';
   if ($('integrityEnabled')) $('integrityEnabled').checked = integrity.enabled !== false;
   if ($('integrityTokenTtl')) $('integrityTokenTtl').value = Number(integrity.tokenTtlMinutes || 10080);
   if ($('integrityRotateSecret')) $('integrityRotateSecret').checked = false;
@@ -1553,15 +1655,35 @@ function renderSystemSettings() {
   if ($('payAlipayChannel')) $('payAlipayChannel').value = pay.alipayChannel || 'disabled';
   if ($('payWechatOrder')) $('payWechatOrder').value = Number(pay.wechatOrder || 10);
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
-  renderPopupConfigLists();
   renderPayGatewayCards();
   renderOrders();
 }
 
+function renderPopupSettings() {
+  if (!state.config) return;
+  const popup = ensurePopupSettings();
+  if ($('popupEnabled')) $('popupEnabled').checked = popup.enabled === true;
+  if ($('popupClickCount')) $('popupClickCount').value = Number(popup.clickCount || 3);
+  if ($('popupCacheMinutes')) $('popupCacheMinutes').value = Number(popup.cacheMinutes ?? 60);
+  if ($('popupTitle')) $('popupTitle').value = popup.title || '联系我们 / 支持作者';
+  if ($('popupThanksText')) $('popupThanksText').value = popup.thanksText || '感谢你的支持，我们会持续维护和更新工具箱。';
+  renderPopupConfigLists();
+}
+
+function ensurePopupSettings() {
+  if (!state.config) return { contacts: [], payments: [], links: [] };
+  if (!state.config.popup || typeof state.config.popup !== 'object') {
+    state.config.popup = {};
+  }
+  const popup = state.config.popup;
+  if (!Array.isArray(popup.contacts)) popup.contacts = [];
+  if (!Array.isArray(popup.payments)) popup.payments = [];
+  if (!Array.isArray(popup.links)) popup.links = [];
+  return popup;
+}
+
 function popupItems(kind) {
-  if (!state.system) return [];
-  if (!state.system.popup) state.system.popup = {};
-  const popup = state.system.popup;
+  const popup = ensurePopupSettings();
   const key = kind === 'contact' ? 'contacts' : (kind === 'payment' ? 'payments' : 'links');
   if (!Array.isArray(popup[key])) popup[key] = [];
   return popup[key];
@@ -1580,7 +1702,7 @@ function newPopupItem(kind) {
 }
 
 function addPopupItem(kind) {
-  if (!state.system) return;
+  if (!state.config) return;
   popupItems(kind).push(newPopupItem(kind));
   renderPopupConfigLists();
 }
@@ -1598,7 +1720,7 @@ function renderPopupConfigLists() {
 
 function renderPopupQrList(kind) {
   const wrap = $(popupListId(kind));
-  if (!wrap || !state.system) return;
+  if (!wrap || !state.config) return;
   const rows = popupItems(kind);
   if (!rows.length) {
     wrap.innerHTML = '<div class="popup-empty">暂无内容，点击右上角新增。</div>';
@@ -1611,8 +1733,7 @@ function renderPopupQrList(kind) {
         <label>排序<input data-popup-field="sort" type="number" step="1" value="${Number(item.sort || index + 1)}"></label>
         <label class="toggle-line">是否启用<span><input data-popup-field="enabled" type="checkbox" ${item.enabled !== false ? 'checked' : ''}> 启用</span></label>
         <label class="wide">说明<textarea data-popup-field="description" rows="2" placeholder="扫码添加微信">${escapeHtml(item.description || '')}</textarea></label>
-        <label>二维码图片地址<input data-popup-field="image" value="${escapeAttr(item.image || '')}" placeholder="/uploads/popup/xxx.png 或 https://"></label>
-        <label>上传图片<input data-popup-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+        <label>图床图片地址<input data-popup-field="image" value="${escapeAttr(item.image || '')}" placeholder="https://example.com/qrcode.png"></label>
         <label>按钮文字<input data-popup-field="buttonText" value="${escapeAttr(item.buttonText || '')}" placeholder="可选，例如：打开官网"></label>
         <label>按钮链接<input data-popup-field="buttonUrl" value="${escapeAttr(item.buttonUrl || '')}" placeholder="可选，仅支持 http/https"></label>
       </div>
@@ -1629,7 +1750,7 @@ function renderPopupQrList(kind) {
 
 function renderPopupLinkList() {
   const wrap = $('popupLinkRows');
-  if (!wrap || !state.system) return;
+  if (!wrap || !state.config) return;
   const rows = popupItems('link');
   if (!rows.length) {
     wrap.innerHTML = '<div class="popup-empty">暂无链接，点击右上角新增。</div>';
@@ -1667,9 +1788,6 @@ function bindPopupRows(wrap) {
       deletePopupItem(kind, index);
     };
   });
-  wrap.querySelectorAll('[data-popup-upload]').forEach((input) => {
-    input.onchange = () => uploadPopupImage(input).catch((error) => setStatus(error.message, true));
-  });
 }
 
 function updatePopupItemFromInput(input) {
@@ -1687,34 +1805,6 @@ function updatePopupItemFromInput(input) {
     const preview = row.querySelector('.popup-preview');
     if (preview) preview.innerHTML = item.image ? `<img src="${escapeAttr(item.image)}" alt="${escapeAttr(item.title || '二维码预览')}">` : '<span>未上传图片</span>';
   }
-}
-
-async function uploadPopupImage(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  if (!file.type.startsWith('image/')) {
-    throw new Error('请选择图片文件。');
-  }
-  if (file.size > 4 * 1024 * 1024) {
-    throw new Error('图片不能超过 4MB。');
-  }
-  const data = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('读取图片失败。'));
-    reader.readAsDataURL(file);
-  });
-  const result = await api('/api/super/system/popup/upload', {
-    method: 'POST',
-    body: JSON.stringify({ name: file.name, mime: file.type, data })
-  });
-  const row = input.closest('[data-popup-kind]');
-  const imageInput = row?.querySelector('[data-popup-field="image"]');
-  if (imageInput) {
-    imageInput.value = result.url || '';
-    updatePopupItemFromInput(imageInput);
-  }
-  setStatus('图片已上传。');
 }
 
 function collectPopupRows(kind) {
@@ -1739,6 +1829,58 @@ function collectPopupRows(kind) {
       buttonUrl: String(item.buttonUrl || '').trim()
     };
   });
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function validatePopupRows(rows, kind) {
+  const kindName = kind === 'contact' ? '联系方式' : (kind === 'payment' ? '收款码' : '相关链接');
+  rows.forEach((row, index) => {
+    const label = row.title || `${kindName}${index + 1}`;
+    if (kind === 'link') {
+      if (row.url && !isHttpUrl(row.url)) {
+        throw new Error(`${label} 的链接必须是 http:// 或 https:// 开头。`);
+      }
+      return;
+    }
+    if (row.image && !isHttpUrl(row.image)) {
+      throw new Error(`${label} 的图片地址必须是图床外链，且以 http:// 或 https:// 开头。`);
+    }
+    if (row.buttonUrl && !isHttpUrl(row.buttonUrl)) {
+      throw new Error(`${label} 的按钮链接必须是 http:// 或 https:// 开头。`);
+    }
+  });
+}
+
+function collectPopupSettings() {
+  const contacts = collectPopupRows('contact');
+  const payments = collectPopupRows('payment');
+  const links = collectPopupRows('link');
+  validatePopupRows(contacts, 'contact');
+  validatePopupRows(payments, 'payment');
+  validatePopupRows(links, 'link');
+  return {
+    enabled: $('popupEnabled')?.checked || false,
+    clickCount: Number($('popupClickCount')?.value || 3),
+    cacheMinutes: Number($('popupCacheMinutes')?.value || 60),
+    title: $('popupTitle')?.value.trim() || '联系我们 / 支持作者',
+    thanksText: $('popupThanksText')?.value.trim() || '感谢你的支持，我们会持续维护和更新工具箱。',
+    contacts,
+    payments,
+    links
+  };
+}
+
+async function savePopupSettings(sectionName = '联系方式') {
+  state.config = await api(isTemplateMode() ? '/api/super/template/popup' : '/api/admin/popup', {
+    method: 'PATCH',
+    body: JSON.stringify(collectPopupSettings())
+  });
+  renderPopupSettings();
+  if ($('jsonEditor') && canViewJson()) $('jsonEditor').value = JSON.stringify(state.config, null, 2);
+  setStatus(`${sectionName}已保存。`);
 }
 
 function renderTemplateControls() {
@@ -2034,6 +2176,139 @@ function getPositions() {
   return positions;
 }
 
+function ensureFeatureSettings() {
+  if (!state.config.features || typeof state.config.features !== 'object' || Array.isArray(state.config.features)) {
+    state.config.features = {};
+  }
+  if (state.config.features.software_catalog_enabled === undefined) {
+    state.config.features.software_catalog_enabled = true;
+  }
+  return state.config.features;
+}
+
+function ensurePageLocks() {
+  if (!state.config.page_locks || typeof state.config.page_locks !== 'object' || Array.isArray(state.config.page_locks)) {
+    state.config.page_locks = {};
+  }
+  return state.config.page_locks;
+}
+
+function getLockablePages() {
+  const rows = [{ id: 'software_catalog', title: '软件大全', type: '内置页面' }];
+  const seen = new Set(rows.map((item) => item.id));
+  const pages = state.config.pages || {};
+  const sidebar = Array.isArray(state.config.sidebar) ? state.config.sidebar : [];
+
+  if ((state.config.toolbox_tabs || []).length) {
+    rows.push({ id: 'toolbox', title: '系统工具', type: '内置页面' });
+    seen.add('toolbox');
+  }
+
+  const addPage = (pageId, page, fallbackName = '') => {
+    if (!pageId || pageId === 'settings' || seen.has(pageId)) return;
+    seen.add(pageId);
+    rows.push({
+      id: pageId,
+      title: page?.title || page?.name || fallbackName || pageId,
+      type: '自定义页面'
+    });
+  };
+
+  sidebar.forEach((item) => {
+    const pageId = item?.id || '';
+    addPage(pageId, pages[pageId], item?.name || '');
+  });
+  Object.entries(pages).forEach(([pageId, page]) => addPage(pageId, page));
+  return rows;
+}
+
+function ensurePageAccessPanel() {
+  const view = $('view-overview');
+  if (!view) return null;
+  let panel = $('pageAccessPanel');
+  if (panel) return panel;
+  panel = document.createElement('div');
+  panel.id = 'pageAccessPanel';
+  panel.className = 'panel page-access-panel collapsible-panel is-collapsed';
+  panel.dataset.collapsiblePanel = '';
+  panel.dataset.defaultCollapsed = '1';
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>页面权限</h2>
+      <button id="savePageAccessBtn" type="button">保存权限</button>
+    </div>
+    <div class="form-grid compact page-feature-grid">
+      <label class="toggle-line">软件大全页面<span><input id="softwareCatalogEnabled" type="checkbox"> 显示</span></label>
+    </div>
+    <div class="table-wrap page-lock-wrap">
+      <table class="page-lock-table">
+        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>页面密码</th><th>状态</th></tr></thead>
+        <tbody id="pageLockRows"></tbody>
+      </table>
+    </div>
+    <p class="page-lock-note">开启上锁后，用户进入对应页面必须输入该页面的密码；密码留空表示不修改已保存密码。</p>
+  `;
+  const saveButton = panel.querySelector('#savePageAccessBtn');
+  if (saveButton) saveButton.onclick = () => savePageAccess().catch((error) => setStatus(error.message, true));
+  return panel;
+}
+
+function renderPageAccessControls() {
+  const panel = ensurePageAccessPanel();
+  if (!panel || !state.config) return;
+  const features = ensureFeatureSettings();
+  const locks = ensurePageLocks();
+  const softwareEnabled = $('softwareCatalogEnabled');
+  if (softwareEnabled) softwareEnabled.checked = features.software_catalog_enabled !== false;
+  const tbody = $('pageLockRows');
+  if (!tbody) return;
+  tbody.innerHTML = getLockablePages().map((page) => {
+    const lock = locks[page.id] && typeof locks[page.id] === 'object' ? locks[page.id] : {};
+    const enabled = lock.enabled === true;
+    const hasPassword = !!lock.password;
+    return `
+      <tr data-page-lock-id="${escapeAttr(page.id)}" data-page-lock-title="${escapeAttr(page.title)}">
+        <td><strong>${escapeHtml(page.title)}</strong><small>${escapeHtml(page.id)}</small></td>
+        <td>${escapeHtml(page.type)}</td>
+        <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
+        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入页面密码'}"></td>
+        <td><span class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置密码' : '未设置密码'}</span></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function savePageAccess() {
+  const features = ensureFeatureSettings();
+  features.software_catalog_enabled = $('softwareCatalogEnabled')?.checked !== false;
+
+  const locks = ensurePageLocks();
+  let missingPasswordFor = '';
+  document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
+    if (missingPasswordFor) return;
+    const pageId = row.dataset.pageLockId || '';
+    const title = row.dataset.pageLockTitle || pageId;
+    const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
+    const next = { ...current };
+    const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
+    next.enabled = row.querySelector('[data-page-lock-enabled]')?.checked === true;
+    next.title = title;
+    if (password) next.password = password;
+    if (next.enabled && !next.password) {
+      missingPasswordFor = title;
+      return;
+    }
+    locks[pageId] = next;
+  });
+
+  if (missingPasswordFor) {
+    setStatus(`请先给「${missingPasswordFor}」填写页面密码。`, true);
+    return;
+  }
+
+  await saveWholeConfig('页面权限已保存。');
+}
+
 function parsePositionValue(value) {
   const positions = getPositions();
   return positions.find((item) => item.value === value) || positions[0] || null;
@@ -2159,6 +2434,7 @@ function renderButtons() {
   const tbody = $('buttonRows');
   const query = ($('buttonSearch').value || '').trim().toLowerCase();
   ensureButtonSortUi();
+  ensureButtonScriptHelpUi();
   ensureButtonFilters();
   renderButtonFilterOptions();
   const areaFilter = $('buttonAreaFilter')?.value || '';
@@ -2252,6 +2528,14 @@ function ensureButtonSortUi() {
   }
 }
 
+function ensureButtonScriptHelpUi() {
+  const addAction = $('addAction');
+  if (!addAction || $('buttonScriptHelp')) return;
+  const grid = addAction.closest('.form-grid');
+  if (!grid) return;
+  grid.insertAdjacentHTML('afterend', scriptHelpHtml('buttonScriptHelp', true));
+}
+
 function ensureButtonFilters() {
   const search = $('buttonSearch');
   if (!search || $('buttonFilterBar')) return;
@@ -2319,23 +2603,36 @@ function displayTarget(button) {
   return button.target || '';
 }
 
+function scriptHelpHtml(id = '', hidden = false) {
+  return `
+    <div ${id ? `id="${id}" ` : ''}class="script-help-box" ${hidden ? 'hidden' : ''}>
+      <strong>内置功能配置说明</strong>
+      <p>新增按钮时，动作选择“内置功能”；需要自己写命令时，在内置功能下拉里选择第一项“自定义内置功能”，然后填写要执行的 Windows 命令。</p>
+      <p>常用写法：打开程序填 <code>start "" "D:\\软件\\xxx.exe"</code>，打开控制面板项填 <code>control mmsys.cpl</code>，执行 PowerShell 填 <code>powershell -NoProfile -ExecutionPolicy Bypass -Command "你的命令"</code>。</p>
+      <p>涉及服务、注册表、防火墙、系统更新等命令，客户端会按管理员权限执行；建议先用测试用户下载工具箱验证。</p>
+    </div>
+  `;
+}
+
 function scriptOptionsHtml(selected = '') {
   const selectedValue = normalizeScriptTarget(selected);
+  const effectiveValue = selectedValue || SCRIPT_OPTIONS[0]?.value || '';
   const options = SCRIPT_OPTIONS.map(({ value, label }) =>
-    `<option value="${escapeAttr(value)}" ${value === selectedValue ? 'selected' : ''}>${escapeHtml(label)}</option>`
+    `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(label)}</option>`
   ).join('');
-  const customSelected = selectedValue && !SCRIPT_LABELS[selectedValue] ? 'selected' : '';
-  return `${options}<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option>`;
+  const customSelected = effectiveValue && !SCRIPT_LABELS[effectiveValue] ? 'selected' : '';
+  return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option><option value="" disabled>────────────</option>${options}`;
 }
 
 function targetControlHtml(action, target = '') {
   if (action === 'script') {
     const scriptId = normalizeScriptTarget(target);
-    const custom = scriptId && !SCRIPT_LABELS[scriptId];
+    const effectiveScriptId = scriptId || SCRIPT_OPTIONS[0]?.value || '';
+    const custom = effectiveScriptId && !SCRIPT_LABELS[effectiveScriptId];
     return `
       <div class="script-target-control">
-        <select class="target-input" data-field="target">${scriptOptionsHtml(scriptId)}</select>
-        <input class="target-input custom-script-input" data-field="custom-script" value="${custom ? escapeAttr(scriptId) : ''}" placeholder="输入要执行的命令" ${custom ? '' : 'hidden'}>
+        <select class="target-input" data-field="target">${scriptOptionsHtml(effectiveScriptId)}</select>
+        <input class="target-input custom-script-input" data-field="custom-script" value="${custom ? escapeAttr(effectiveScriptId) : ''}" placeholder="输入要执行的命令" ${custom ? '' : 'hidden'}>
       </div>
     `;
   }
@@ -2349,17 +2646,20 @@ function updateRowTargetState(row, button) {
   const currentTarget = readRowTarget(row) || button.target || '';
   if (holder) holder.innerHTML = targetControlHtml(action, currentTarget);
   bindScriptTargetControl(row);
-  note.textContent = '';
+  if (note && action !== 'script') note.textContent = '';
 }
 
 function bindScriptTargetControl(root) {
   const select = root.querySelector('[data-field="target"]');
   const custom = root.querySelector('[data-field="custom-script"]');
+  const note = root.querySelector('.target-note');
   if (!select || !custom || select.dataset.customReady) return;
   select.dataset.customReady = '1';
   const sync = () => {
-    custom.hidden = select.value !== CUSTOM_SCRIPT_VALUE;
-    if (!custom.hidden) custom.focus();
+    const isCustom = select.value === CUSTOM_SCRIPT_VALUE;
+    custom.hidden = !isCustom;
+    if (note) note.textContent = isCustom ? '自定义内置功能会直接执行下面填写的 Windows 命令。' : '';
+    if (isCustom) custom.focus();
   };
   select.onchange = sync;
   sync();
@@ -2370,6 +2670,7 @@ function updateAddTargetState() {
   const target = $('addTarget') || $('addScriptControl');
   if (!target) return;
   const label = target.closest('label');
+  const help = $('buttonScriptHelp');
   if (action === 'script') {
     const selected = normalizeScriptTarget(readAddTarget()) || SCRIPT_OPTIONS[0]?.value || '';
     const custom = selected && !SCRIPT_LABELS[selected];
@@ -2384,18 +2685,23 @@ function updateAddTargetState() {
     if (label?.firstChild?.nodeType === Node.TEXT_NODE) label.firstChild.textContent = '内置功能';
   } else if (target.tagName === 'SELECT') {
     label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
+    if (help) help.hidden = true;
   } else if (target.id === 'addScriptControl') {
     label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
+    if (help) help.hidden = true;
   }
 }
 
 function bindAddScriptTargetControl() {
   const select = $('addTarget');
   const custom = $('addCustomScript');
+  const help = $('buttonScriptHelp');
   if (!select || !custom) return;
   const sync = () => {
-    custom.hidden = select.value !== CUSTOM_SCRIPT_VALUE;
-    if (!custom.hidden) custom.focus();
+    const isCustom = select.value === CUSTOM_SCRIPT_VALUE;
+    custom.hidden = !isCustom;
+    if (help) help.hidden = !isCustom;
+    if (isCustom) custom.focus();
   };
   select.onchange = sync;
   sync();
@@ -2410,17 +2716,16 @@ function readAddTarget() {
   return $('addTarget')?.value.trim() || '';
 }
 
-async function saveApp() {
-  const passwordEnabled = $('appPasswordEnabled').checked;
-  const newPassword = $('appPassword').value.trim();
-  const hasExistingPassword = !!(state.config.app && state.config.app.password);
+async function saveAppPatch(patch, message) {
+  state.config = await api(appApiPath(), {
+    method: 'PATCH',
+    body: JSON.stringify(patch)
+  });
+  await refreshButtons(message);
+}
 
-  if (passwordEnabled && !hasExistingPassword && !newPassword) {
-    setStatus('开启工具箱密码时，请先填写新密码。', true);
-    return;
-  }
-
-  const patch = {
+async function saveAppBasicSettings() {
+  await saveAppPatch({
     title: $('appTitle').value.trim(),
     subtitle: $('appSubtitle').value.trim(),
     version: $('appVersion').value.trim(),
@@ -2431,33 +2736,59 @@ async function saveApp() {
     icon: $('appIcon').value.trim(),
     exe_icon: $('appExeIcon')?.value.trim() || '',
     window_width: Number($('appWidth').value || 1080),
-    window_height: Number($('appHeight').value || 700),
-    password_enabled: passwordEnabled,
-    update_url: $('appUpdateUrl')?.value.trim() || '',
-    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
-    update_button: $('appUpdateButton')?.value.trim() || '下载最新版',
+    window_height: Number($('appHeight').value || 700)
+  }, '基础信息已保存。');
+}
+
+async function saveAppLoginSettings() {
+  if (state.currentUser?.role !== 'super') {
+    setStatus('只有总管理员可以保存登录页设置。', true);
+    return;
+  }
+  await saveAppPatch({
+    admin_title: $('loginTitleInput')?.value.trim() || '工具箱后台登录',
+    login_hint: $('loginHintInput').value.trim()
+  }, '登录页设置已保存。');
+}
+
+async function saveAppPasswordSettings() {
+  const passwordEnabled = $('appPasswordEnabled').checked;
+  const newPassword = $('appPassword').value.trim();
+  const hasExistingPassword = !!(state.config.app && state.config.app.password);
+
+  if (passwordEnabled && !hasExistingPassword && !newPassword) {
+    setStatus('开启工具箱密码时，请先填写新密码。', true);
+    return;
+  }
+
+  const patch = {
+    password_enabled: passwordEnabled
+  };
+  if (newPassword) patch.password = newPassword;
+  await saveAppPatch(patch, '启动密码已保存。');
+}
+
+async function saveAppExeSettings() {
+  await saveAppPatch({
     exe_title: $('appExeTitle')?.value.trim() || '',
     exe_description: $('appExeDescription')?.value.trim() || '',
     exe_product: $('appExeProduct')?.value.trim() || '',
     exe_company: $('appExeCompany')?.value.trim() || '',
     exe_copyright: $('appExeCopyright')?.value.trim() || '',
     exe_version: $('appExeVersion')?.value.trim() || ''
-  };
+  }, 'EXE 属性已保存。');
+}
 
-  if (state.currentUser?.role === 'super') {
-    patch.admin_title = $('loginTitleInput')?.value.trim() || '工具箱后台登录';
-    patch.login_hint = $('loginHintInput').value.trim();
-  }
+async function saveAppUpdateSettings() {
+  await saveAppPatch({
+    update_url: $('appUpdateUrl')?.value.trim() || '',
+    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
+    update_button: $('appUpdateButton')?.value.trim() || '下载最新版'
+  }, '更新入口已保存。');
+}
 
-  if (newPassword) {
-    patch.password = newPassword;
-  }
-
-  state.config = await api(appApiPath(), {
-    method: 'PATCH',
-    body: JSON.stringify(patch)
-  });
-  await refreshButtons('应用信息已保存。');
+async function saveApp() {
+  await saveAppBasicSettings();
 }
 
 async function saveWholeConfig(message) {
@@ -3333,18 +3664,6 @@ async function saveSystemSettings(section) {
       wechatOfficial: collectPayGateway('wechatOfficial')
     };
   }
-  if (section === 'popup') {
-    body.popup = {
-      enabled: $('popupEnabled')?.checked || false,
-      clickCount: Number($('popupClickCount')?.value || 3),
-      cacheMinutes: Number($('popupCacheMinutes')?.value || 60),
-      title: $('popupTitle')?.value.trim() || '联系我们 / 支持作者',
-      thanksText: $('popupThanksText')?.value.trim() || '感谢你的支持，我们会持续维护和更新工具箱。',
-      contacts: collectPopupRows('contact'),
-      payments: collectPopupRows('payment'),
-      links: collectPopupRows('link')
-    };
-  }
   if (section === 'integrity') {
     body.integrity = {
       enabled: $('integrityEnabled')?.checked !== false,
@@ -3872,12 +4191,9 @@ if ($('closeNoticeComposerBtn')) $('closeNoticeComposerBtn').onclick = () => { $
 if ($('sendNoticeBtn')) $('sendNoticeBtn').onclick = () => sendNotice().catch((error) => setStatus(error.message, true));
 if ($('markAllNoticeReadBtn')) $('markAllNoticeReadBtn').onclick = () => markAllNoticesRead().catch((error) => setStatus(error.message, true));
 if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAllNotices().catch((error) => setStatus(error.message, true));
-  if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
-  if ($('savePopupSettingsBtn')) $('savePopupSettingsBtn').onclick = () => saveSystemSettings('popup').catch((error) => setStatus(error.message, true));
-  if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
-  if ($('addPopupContactBtn')) $('addPopupContactBtn').onclick = () => addPopupItem('contact');
-if ($('addPopupPaymentBtn')) $('addPopupPaymentBtn').onclick = () => addPopupItem('payment');
-if ($('addPopupLinkBtn')) $('addPopupLinkBtn').onclick = () => addPopupItem('link');
+if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
+if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
+bindPopupSettingsActions();
 if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));
 if ($('savePaySettingsBtn')) $('savePaySettingsBtn').onclick = () => saveSystemSettings('pay').catch((error) => setStatus(error.message, true));
 if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMode().catch((error) => setStatus(error.message, true));

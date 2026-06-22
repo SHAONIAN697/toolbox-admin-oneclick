@@ -743,6 +743,14 @@ body.is-template-mode .template-status {
   font-size: 15px;
 }
 
+.popup-head-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .popup-config-list {
   display: grid;
   gap: 12px;
@@ -1337,9 +1345,9 @@ body.is-template-mode .template-status {
 
 #view-overview > .panel:first-child,
 #appLoginPanel,
+#pageAccessPanel,
 #appUpdatePanel,
-#view-overview > .stats,
-.overview-savebar {
+#view-overview > .stats {
   grid-column: 1 / -1;
 }
 
@@ -1353,11 +1361,6 @@ body.is-template-mode .template-status {
 
 body.is-super-admin #appLoginPanel {
   display: block;
-}
-
-.overview-savebar {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .exchange-grid {
@@ -1751,6 +1754,25 @@ td small {
   width: 100%;
 }
 
+.page-feature-grid {
+  margin-bottom: 12px;
+}
+
+.page-lock-table {
+  min-width: 780px;
+}
+
+.page-lock-table input[type="password"] {
+  width: 100%;
+  min-width: 220px;
+}
+
+.page-lock-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .icon-field {
   display: grid;
   grid-template-columns: 54px minmax(220px, 1fr);
@@ -1822,6 +1844,34 @@ tr.row-highlight {
 .script-target-control {
   display: grid;
   gap: 8px;
+}
+
+.script-help-box {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(79, 183, 168, .28);
+  border-radius: 8px;
+  background: rgba(79, 183, 168, .08);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.script-help-box strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.script-help-box p {
+  margin: 4px 0;
+}
+
+.script-help-box code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(5, 9, 12, .48);
+  color: var(--text);
 }
 
 .custom-script-input {

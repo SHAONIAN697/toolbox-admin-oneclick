@@ -1,6 +1,6 @@
 # 工具箱三个客户端版本本地测试更新分支
 
-本分支用于保存 2026-06-19 至 2026-06-20 本地测试后已经同步到宝塔服务器的三个客户端版本更新。它是从 `main` 新建的独立分支，不覆盖旧版本主分支。
+本分支用于保存 2026-06-19 至 2026-06-22 本地测试后准备同步到宝塔服务器的三个客户端版本更新。它是从 `main` 新建的独立分支，不覆盖旧版本主分支。
 
 ## 本分支更新的是哪三个客户端
 
@@ -25,6 +25,11 @@
 ## 本次更新重点
 
 - 已统一同步三个客户端版本：默认版、工作台版、门户版。
+- 三个客户端都新增“软件大全”页面，支持内置目录、Winget 搜索和常用软件/游戏检索下载。
+- 软件大全可在后台开启或关闭；页面访问锁可按页面单独设置，也支持多个页面不同密码。
+- 客户端默认同时最多下载 5 个，并在三个版本里加入并发下载数量下拉选择。
+- 后台总览页改为多个独立保存卡片，页面权限移到启动密码下方并默认收缩；按钮页“页面与分组”和“新增按钮”也默认收缩。
+- 第一个客户端版本恢复全部主题选项，页面锁提示改为页面访问密码。
 - 总管理后台切换其他账号时，目标账号不再通过 `X-Target-User` 请求头传递，修复中文或特殊字符账号导致浏览器 `fetch` 拒绝请求的问题。
 - 客户端支持识别 `links.8uid.com/d/...` 这类中转直链，能解析真实文件名和下载入口；遇到验证码时自动打开浏览器处理。
 - 修复客户端旧 .NET 环境下 `Trim(Char)` 方法不兼容导致的弹窗错误。
@@ -53,7 +58,7 @@ cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz t
 已经部署过的宝塔服务器不要重新跑首次部署命令。更新时直接使用下面这条命令，它只覆盖程序文件，保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
 
 ```bash
-set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260620.tar.gz"; SHA="1a77f590ee9e3bff34d4f12038667088dcd0988a98d3fb714c5a36dc4aa325a5"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "withTargetUser" wwwroot/admin.js; grep -q "Resolve8UidDownloadRequest" client-template/ToolboxClient.cs; echo "OK: updated from GitHub branch, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz"; SHA="80efc8db0d75e2ec14559a2002404abcfd1d2c8359ade80b3b53aa55561f458e"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "software_catalog_enabled" app.py; grep -q "ensureButtonsPagePanels" wwwroot/admin.js; grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs; grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs; echo "OK: updated to 20260622 local-tested build, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
 ```
 
 这条更新命令会：
@@ -74,6 +79,7 @@ src/
   ToolboxAdminApi-oneclick/     一键部署版源码
   ToolboxAdminApi-baota-source/ 宝塔源码版
 packages/
+  toolbox-admin-baota-oneclick-clean-20260622.tar.gz
   toolbox-gjx-target-user-header-hotfix-preserve-data.tar.gz
   toolbox-gjx-8uid-download-compat-hotfix-preserve-data.tar.gz
   toolbox-gjx-title-slash-hotfix-preserve-data.tar.gz

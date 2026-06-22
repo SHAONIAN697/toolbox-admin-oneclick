@@ -1345,9 +1345,9 @@ body.is-template-mode .template-status {
 
 #view-overview > .panel:first-child,
 #appLoginPanel,
+#pageAccessPanel,
 #appUpdatePanel,
-#view-overview > .stats,
-.overview-savebar {
+#view-overview > .stats {
   grid-column: 1 / -1;
 }
 
@@ -1361,11 +1361,6 @@ body.is-template-mode .template-status {
 
 body.is-super-admin #appLoginPanel {
   display: block;
-}
-
-.overview-savebar {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .exchange-grid {
@@ -1757,6 +1752,25 @@ td small {
 
 .button-filters .search {
   width: 100%;
+}
+
+.page-feature-grid {
+  margin-bottom: 12px;
+}
+
+.page-lock-table {
+  min-width: 780px;
+}
+
+.page-lock-table input[type="password"] {
+  width: 100%;
+  min-width: 220px;
+}
+
+.page-lock-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .icon-field {

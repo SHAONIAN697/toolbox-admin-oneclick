@@ -251,10 +251,80 @@ def default_config():
             "output_dir": "",
         },
         "license": {"enabled": False, "api_base": "", "product_code": ""},
+        "features": {"software_catalog_enabled": True},
+        "page_locks": {},
         "sidebar": [],
         "toolbox_tabs": [],
         "pages": {},
     }
+
+
+def config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on", "enabled", "enable", "启用", "开启"):
+        return True
+    if text in ("0", "false", "no", "off", "disabled", "disable", "停用", "禁用", "关闭"):
+        return False
+    return default
+
+
+def normalize_feature_settings(config):
+    changed = False
+    features = config.get("features")
+    if not isinstance(features, dict):
+        features = {}
+        config["features"] = features
+        changed = True
+    enabled = config_bool(features.get("software_catalog_enabled"), True)
+    if features.get("software_catalog_enabled") is not enabled:
+        features["software_catalog_enabled"] = enabled
+        changed = True
+    return changed
+
+
+def normalize_page_locks(config):
+    changed = False
+    locks = config.get("page_locks")
+    if not isinstance(locks, dict):
+        locks = {}
+        config["page_locks"] = locks
+        changed = True
+    for raw_page_id in list(locks.keys()):
+        page_id = str(raw_page_id or "").strip()
+        if not page_id:
+            locks.pop(raw_page_id, None)
+            changed = True
+            continue
+        if page_id != raw_page_id:
+            locks[page_id] = locks.pop(raw_page_id)
+            changed = True
+        lock = locks.get(page_id)
+        if not isinstance(lock, dict):
+            lock = {"enabled": config_bool(lock, False), "password": ""}
+            locks[page_id] = lock
+            changed = True
+        enabled = config_bool(lock.get("enabled"), False)
+        if lock.get("enabled") is not enabled:
+            lock["enabled"] = enabled
+            changed = True
+        password = str(lock.get("password") or "").strip()
+        if password and not password.startswith("sha256$"):
+            password = stored_password(password)
+        if lock.get("password") != password:
+            lock["password"] = password
+            changed = True
+        if "title" in lock:
+            title = str(lock.get("title") or "").strip()
+            if lock.get("title") != title:
+                lock["title"] = title
+                changed = True
+    return changed
 
 
 def safe_id(value):
@@ -345,7 +415,10 @@ def find_csharp_compiler():
     compiler = shutil.which("mcs") or shutil.which("csc")
     if compiler:
         return compiler
+    windows_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))
     candidates = [
+        windows_dir / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe",
+        windows_dir / "Microsoft.NET" / "Framework" / "v4.0.30319" / "csc.exe",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Mono" / "lib" / "mono" / "4.5" / "mcs.exe",
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Mono" / "lib" / "mono" / "4.5" / "mcs.exe",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Mono" / "bin" / "mcs.exe",
@@ -401,6 +474,10 @@ def ensure_config_defaults(config):
     if app.get("password_enabled") is False and app.get("password"):
         app["password"] = ""
         changed = True
+    if normalize_feature_settings(config):
+        changed = True
+    if normalize_page_locks(config):
+        changed = True
     return changed
 
 
@@ -424,6 +501,9 @@ def read_config(user_id=""):
 
 def write_config(config, user_id=""):
     path = user_config_path(user_id) if user_id else DATA / "config.json"
+    if not isinstance(config, dict):
+        raise ValueError("配置格式错误。")
+    ensure_config_defaults(config)
     write_json(path, config)
 
 
