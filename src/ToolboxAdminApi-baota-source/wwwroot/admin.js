@@ -5,6 +5,7 @@
   targetUserId: localStorage.getItem('toolbox_target_user') || '',
   users: [],
   invites: [],
+  inviteFilter: ['all', 'used', 'unused'].includes(localStorage.getItem('toolbox_invite_filter')) ? localStorage.getItem('toolbox_invite_filter') : 'all',
   orders: [],
   mail: null,
   system: null,
@@ -1410,7 +1411,20 @@ function setPanelCounter(panel, id, count) {
     badge.className = 'panel-count';
     title.appendChild(badge);
   }
-  badge.textContent = `共 ${Number(count || 0)} 个`;
+  badge.textContent = `共 ${typeof count === 'string' ? count : Number(count || 0)} 个`;
+}
+
+function inviteIsUsed(invite) {
+  return Number(invite?.usedCount || 0) > 0;
+}
+
+function filteredInvites() {
+  const filter = state.inviteFilter || 'all';
+  return (state.invites || []).filter((invite) => {
+    if (filter === 'used') return inviteIsUsed(invite);
+    if (filter === 'unused') return !inviteIsUsed(invite);
+    return true;
+  });
 }
 
 function ensureUserBatchTools(panel) {
@@ -1445,12 +1459,23 @@ function renderInvites() {
   tbody.innerHTML = '';
 
   if (!isManager()) return;
-  setPanelCounter(tbody.closest('.panel'), 'inviteTotalCount', state.invites.length);
+  const visibleInvites = filteredInvites();
+  const totalInvites = state.invites.length;
+  const counterText = visibleInvites.length === totalInvites ? totalInvites : `${visibleInvites.length}/${totalInvites}`;
+  setPanelCounter(tbody.closest('.panel'), 'inviteTotalCount', counterText);
+  const filter = $('inviteUseFilter');
+  if (filter && filter.value !== state.inviteFilter) filter.value = state.inviteFilter || 'all';
 
-  state.invites.forEach((invite) => {
+  if (!visibleInvites.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="8" class="empty-cell">当前筛选下没有邀请码。</td>`;
+    tbody.appendChild(tr);
+  }
+
+  visibleInvites.forEach((invite) => {
     const usedCount = Number(invite.usedCount || 0);
     const maxUses = Number(invite.maxUses || 1);
-    const inviteUsed = usedCount > 0;
+    const inviteUsed = inviteIsUsed(invite);
     const usedBy = (invite.usedBy || [])
       .map((item) => `${item.username || item.userId || ''} ${item.usedAt ? new Date(item.usedAt).toLocaleString() : ''}`)
       .join('；');
@@ -3304,6 +3329,25 @@ function ensureInviteTools() {
 
   const panelHead = $('createInviteBtn')?.closest('.panel-head');
   if (panelHead && !$('exportInvitesBtn')) {
+    const filterWrap = document.createElement('label');
+    filterWrap.className = 'invite-filter';
+    filterWrap.innerHTML = `
+      <span>筛选</span>
+      <select id="inviteUseFilter">
+        <option value="all">全部</option>
+        <option value="used">已使用</option>
+        <option value="unused">未使用</option>
+      </select>
+    `;
+    filterWrap.querySelector('select').value = state.inviteFilter || 'all';
+    filterWrap.querySelector('select').onchange = (event) => {
+      state.inviteFilter = event.target.value || 'all';
+      localStorage.setItem('toolbox_invite_filter', state.inviteFilter);
+      const selectAll = $('inviteSelectAll');
+      if (selectAll) selectAll.checked = false;
+      renderInvites();
+    };
+    panelHead.insertBefore(filterWrap, $('createInviteBtn'));
     const exportBtn = document.createElement('button');
     exportBtn.id = 'exportInvitesBtn';
     exportBtn.type = 'button';
@@ -3322,7 +3366,7 @@ function ensureInviteTools() {
 
 function exportInvites() {
   const checked = [...document.querySelectorAll('.invite-check:checked')].map((box) => box.value).filter(Boolean);
-  const codes = checked.length ? checked : state.invites.map((invite) => invite.code).filter(Boolean);
+  const codes = checked.length ? checked : filteredInvites().map((invite) => invite.code).filter(Boolean);
   if (!codes.length) {
     setStatus('没有可导出的邀请码。', true);
     return;

@@ -6,7 +6,7 @@ PKG_NAME="toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="413ebe3c465754a33f935337a52aec6434d2e10b7fab69402b8a241745cc4d5c"
+SHA="e9c42c1da2d4f1d4b523a0e0bbc8e80f36377b0470461d0bb54d81e3e3c50966"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-local-tested-$TS"
@@ -76,6 +76,7 @@ systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "software_catalog_enabled" app.py
 grep -q "ensureButtonsPagePanels" wwwroot/admin.js
+grep -q "inviteUseFilter" wwwroot/admin.js
 grep -q "/api/admin/popup" app.py
 grep -q "savePopupAllBtn" wwwroot/admin.js
 ! grep -q "popup_sources" app.py

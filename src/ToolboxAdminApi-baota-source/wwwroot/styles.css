@@ -1457,6 +1457,10 @@ body.is-super-admin #appLoginPanel {
   display: none;
 }
 
+.collapsible-panel.is-collapsed .panel-head > .invite-filter {
+  display: none;
+}
+
 .panel-collapse-toggle {
   flex: 0 0 auto;
   min-height: 30px;
@@ -1726,6 +1730,11 @@ td small {
   margin-top: 4px;
 }
 
+.empty-cell {
+  color: var(--muted);
+  text-align: center;
+}
+
 .target-note {
   min-height: 18px;
   font-size: 12px;
@@ -1894,6 +1903,23 @@ tr.row-highlight {
 
 .invite-create input {
   min-height: 32px;
+  padding: 6px 9px;
+}
+
+.invite-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  min-width: 154px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.invite-filter select {
+  width: 96px;
+  min-height: 34px;
   padding: 6px 9px;
 }
 
@@ -2724,6 +2750,15 @@ body.sidebar-collapsed .nav.active {
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
+  }
+
+  .invite-table .empty-cell {
+    display: block;
+    text-align: center;
+  }
+
+  .invite-table .empty-cell::before {
+    content: none;
   }
 
   .invite-table td:nth-child(1)::before { content: "选择"; }
