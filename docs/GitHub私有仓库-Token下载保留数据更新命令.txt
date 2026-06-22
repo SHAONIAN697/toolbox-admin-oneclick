@@ -2,17 +2,57 @@ set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="private-local-tested-preserve-data-20260620"
-URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
-SHA="c6e5eab479448b627ef8bfb49c1732b8a903cfcd218cfacbf556fb80b08247c6"
+PKG_NAME="toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
+URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
+URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
+URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
+SHA="957fd26726d78a292f6dc9347c32b5b2f4ce24fff48323d024e352c2fc71c158"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-private-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-private-local-tested-$TS"
+REPO_TMP="/tmp/toolbox-github-private-repo-$TS"
 BACKUP="/www/backup/gjx-toolbox-$TS"
 
 [ -n "$GITHUB_TOKEN" ] || { echo "Set GITHUB_TOKEN first"; exit 1; }
-mkdir -p "$TMP" "$BACKUP"
+mkdir -p "$TMP" "$BACKUP" "$REPO_TMP"
 [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
-curl -L --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" -o "$PKG" "$URL"
+
+download_codeload() {
+  local repo_pkg="/tmp/toolbox-github-private-repo-$TS.tar.gz"
+  echo "Downloading from private codeload branch archive..."
+  rm -f "$repo_pkg"
+  rm -rf "$REPO_TMP"
+  mkdir -p "$REPO_TMP"
+  if ! curl -L --fail --retry 2 --connect-timeout 8 --speed-limit 20480 --speed-time 20 --max-time 180 -H "Authorization: Bearer $GITHUB_TOKEN" -o "$repo_pkg" "$URL_CODELOAD"; then
+    return 1
+  fi
+  if ! tar -xzf "$repo_pkg" -C "$REPO_TMP"; then
+    return 1
+  fi
+  local found
+  found="$(find "$REPO_TMP" -path "*/packages/$PKG_NAME" -type f | head -n 1)"
+  [ -n "$found" ] || return 1
+  cp "$found" "$PKG"
+  return 0
+}
+
+download_direct() {
+  local url="$1"
+  echo "Downloading private direct package: $url"
+  rm -f "$PKG"
+  curl -L --fail --retry 1 --connect-timeout 8 --speed-limit 20480 --speed-time 15 --max-time 60 -H "Authorization: Bearer $GITHUB_TOKEN" -o "$PKG" "$url"
+}
+
+download_git() {
+  command -v git >/dev/null 2>&1 || return 1
+  echo "Downloading through private git clone fallback..."
+  rm -rf "$REPO_TMP"
+  git clone --depth 1 --branch "$BRANCH" "https://${GITHUB_TOKEN}@github.com/SHAONIAN697/toolbox-admin-oneclick.git" "$REPO_TMP"
+  [ -f "$REPO_TMP/packages/$PKG_NAME" ] || return 1
+  cp "$REPO_TMP/packages/$PKG_NAME" "$PKG"
+}
+
+download_codeload || download_direct "$URL_RAW" || download_direct "$URL_GITHUB" || download_git || { echo "Download failed from all sources"; exit 1; }
 echo "$SHA  $PKG" | sha256sum -c -
 tar -xzf "$PKG" -C "$TMP"
 python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"
@@ -39,6 +79,7 @@ grep -q "software_catalog_enabled" app.py
 grep -q "ensureButtonsPagePanels" wwwroot/admin.js
 grep -q "/api/admin/popup" app.py
 grep -q "savePopupAllBtn" wwwroot/admin.js
+grep -q "popup_sources" app.py
 grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs
 grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs
 grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs

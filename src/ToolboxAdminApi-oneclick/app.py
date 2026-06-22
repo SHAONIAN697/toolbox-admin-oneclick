@@ -1029,8 +1029,18 @@ def normalize_popup_settings(value):
     return normalized
 
 
-def public_popup_config(base_url):
-    popup = normalize_popup_settings(read_system_settings().get("popup") or {})
+def public_popup_config(user_id, base_url):
+    popup_sources = []
+    if user_id:
+        popup_sources.append((read_config(user_id).get("popup") or {}))
+    popup_sources.append((read_config("").get("popup") or {}))
+    popup_sources.append((read_system_settings().get("popup") or {}))
+    popup = normalize_popup_settings(popup_sources[0] if popup_sources else {})
+    for source in popup_sources:
+        candidate = normalize_popup_settings(source)
+        if candidate.get("enabled") is True or candidate.get("contacts") or candidate.get("payments") or candidate.get("links"):
+            popup = candidate
+            break
     def public_qr_rows(rows):
         result = []
         for row in sorted([x for x in rows if x.get("enabled")], key=lambda x: (x.get("sort", 0), x.get("title", ""))):
@@ -2726,7 +2736,7 @@ class Handler(BaseHTTPRequestHandler):
                 user = find_user_by_api_key(self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", ""))
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
-                return self.send_json(public_popup_config(self.base_url()))
+                return self.send_json(public_popup_config(user["id"], self.base_url()))
             if path == "/api/login" and method == "POST":
                 body = self.read_body()
                 user = find_user_by_username((body.get("username") or "").strip())
