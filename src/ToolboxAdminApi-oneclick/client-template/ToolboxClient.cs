@@ -151,6 +151,7 @@ namespace ToolboxClient
         private Icon runtimeIcon;
         private ContactPopupConfig popupConfig;
         private DateTime popupCacheLoadedAt = DateTime.MinValue;
+        private const int BrandPopupClickWindowMs = 3000;
         private int brandClickCount = 0;
         private DateTime brandClickWindowStart = DateTime.MinValue;
         private DateTime lastBrandClickAt = DateTime.MinValue;
@@ -863,12 +864,17 @@ namespace ToolboxClient
 
         private void AttachBrandPopupEntry(Control root)
         {
+            if (root == null) return;
             root.Cursor = Cursors.Hand;
+            root.MouseDown -= HandleBrandPopupClick;
+            root.MouseUp -= HandleBrandPopupClick;
+            root.MouseClick -= HandleBrandPopupClick;
+            root.MouseDown += HandleBrandPopupClick;
             root.MouseUp += HandleBrandPopupClick;
+            root.MouseClick += HandleBrandPopupClick;
             foreach (Control child in root.Controls)
             {
-                child.Cursor = Cursors.Hand;
-                child.MouseUp += HandleBrandPopupClick;
+                AttachBrandPopupEntry(child);
             }
         }
 
@@ -893,7 +899,7 @@ namespace ToolboxClient
                 cfg = LoadPopupConfigNow(true);
             }
             DateTime now = DateTime.Now;
-            if ((now - brandClickWindowStart).TotalMilliseconds > 1200)
+            if ((now - brandClickWindowStart).TotalMilliseconds > BrandPopupClickWindowMs)
             {
                 brandClickWindowStart = now;
                 brandClickCount = 0;
