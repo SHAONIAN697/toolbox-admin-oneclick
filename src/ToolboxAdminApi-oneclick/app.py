@@ -1030,17 +1030,7 @@ def normalize_popup_settings(value):
 
 
 def public_popup_config(user_id, base_url):
-    popup_sources = []
-    if user_id:
-        popup_sources.append((read_config(user_id).get("popup") or {}))
-    popup_sources.append((read_config("").get("popup") or {}))
-    popup_sources.append((read_system_settings().get("popup") or {}))
-    popup = normalize_popup_settings(popup_sources[0] if popup_sources else {})
-    for source in popup_sources:
-        candidate = normalize_popup_settings(source)
-        if candidate.get("enabled") is True or candidate.get("contacts") or candidate.get("payments") or candidate.get("links"):
-            popup = candidate
-            break
+    popup = normalize_popup_settings(read_config(user_id).get("popup") or {})
     def public_qr_rows(rows):
         result = []
         for row in sorted([x for x in rows if x.get("enabled")], key=lambda x: (x.get("sort", 0), x.get("title", ""))):
