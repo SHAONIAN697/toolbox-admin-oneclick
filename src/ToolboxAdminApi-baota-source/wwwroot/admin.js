@@ -3328,7 +3328,7 @@ function ensureInviteTools() {
   }
 
   const panelHead = $('createInviteBtn')?.closest('.panel-head');
-  if (panelHead && !$('exportInvitesBtn')) {
+  if (panelHead && !$('inviteUseFilter')) {
     const filterWrap = document.createElement('label');
     filterWrap.className = 'invite-filter';
     filterWrap.innerHTML = `
@@ -3348,6 +3348,9 @@ function ensureInviteTools() {
       renderInvites();
     };
     panelHead.insertBefore(filterWrap, $('createInviteBtn'));
+  }
+
+  if (panelHead && !$('exportInvitesBtn')) {
     const exportBtn = document.createElement('button');
     exportBtn.id = 'exportInvitesBtn';
     exportBtn.type = 'button';
