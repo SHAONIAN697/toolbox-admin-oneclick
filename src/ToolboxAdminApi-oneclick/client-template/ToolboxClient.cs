@@ -153,6 +153,7 @@ namespace ToolboxClient
         private ContactPopupConfig popupConfig;
         private DateTime popupCacheLoadedAt = DateTime.MinValue;
         private const int BrandPopupClickWindowMs = 3000;
+        private const int BrandPopupClickDebounceMs = 0;
         private int brandClickCount = 0;
         private DateTime brandClickWindowStart = DateTime.MinValue;
         private DateTime lastBrandClickAt = DateTime.MinValue;
@@ -167,6 +168,8 @@ namespace ToolboxClient
         private bool portalTopMost = false;
         private Size portalWindowRegionSize = Size.Empty;
         private int portalWindowRegionRadius = 0;
+        private const int WsSysMenu = 0x00080000;
+        private const int WsMinimizeBox = 0x00020000;
         private const string StudioRecordsListTag = "studio_records_list";
         private const string StudioActiveDownloadsTag = "studio_active_downloads";
         private const string PortalRecordsListTag = "portal_records_list";
@@ -223,6 +226,8 @@ namespace ToolboxClient
             configUrl = NormalizeConfigUrl(url);
             Text = "工具箱";
             FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = true;
+            MinimizeBox = true;
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(860, 560);
             Size = new Size(1080, 700);
@@ -273,6 +278,16 @@ namespace ToolboxClient
             if (portalVariant) UpdatePortalWindowRegion();
         }
 
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.Style |= WsSysMenu | WsMinimizeBox;
+                return cp;
+            }
+        }
+
         private void BuildShell()
         {
             if (studioVariant)
@@ -298,8 +313,10 @@ namespace ToolboxClient
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 232F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             Controls.Add(root);
+            root.MouseDown += DragWindow;
 
             side = new Panel { Dock = DockStyle.Fill, BackColor = SideBg, Padding = new Padding(16, 46, 16, 18) };
+            side.MouseDown += DragWindow;
             root.Controls.Add(side, 0, 0);
 
             TableLayoutPanel sideLayout = new TableLayoutPanel
@@ -313,6 +330,7 @@ namespace ToolboxClient
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            sideLayout.MouseDown += DragWindow;
             side.Controls.Add(sideLayout);
 
             TableLayoutPanel brandPanel = new TableLayoutPanel
@@ -370,6 +388,7 @@ namespace ToolboxClient
             sideLayout.Controls.Add(nav, 0, 3);
 
             Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Bg, Padding = new Padding(44, 26, 28, 28) };
+            main.MouseDown += DragWindow;
             root.Controls.Add(main, 1, 0);
 
             TableLayoutPanel mainLayout = new TableLayoutPanel
@@ -383,6 +402,7 @@ namespace ToolboxClient
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 18F));
+            mainLayout.MouseDown += DragWindow;
             main.Controls.Add(mainLayout);
 
             titleBar = new Panel { Dock = DockStyle.Top, Height = 68, BackColor = Bg };
@@ -411,6 +431,7 @@ namespace ToolboxClient
                 Margin = Padding.Empty,
                 BackColor = Bg
             };
+            windowControls.MouseDown += DragWindow;
             titleBar.Controls.Add(windowControls);
 
             gridModeButton = MakeTopButton("▦");
@@ -444,7 +465,7 @@ namespace ToolboxClient
             Panel divider = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(31, 48, 66) };
             mainLayout.Controls.Add(divider, 0, 1);
 
-            status = new Label { Dock = DockStyle.Fill, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, Visible = true, Text = "同步准备中 v" + Program.BuildStamp };
+            status = new Label { Dock = DockStyle.Fill, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, Visible = true, Text = "同步准备中" };
             mainLayout.Controls.Add(status, 0, 3);
 
             progressPanel = new Panel { Dock = DockStyle.Fill, BackColor = Bg, Visible = false };
@@ -666,7 +687,7 @@ namespace ToolboxClient
 
             titleBar = top;
             title = new Label { Visible = false, Width = 1, Height = 1 };
-            status = new Label { Visible = false, Text = "同步准备中 v" + Program.BuildStamp };
+            status = new Label { Visible = false, Text = "同步准备中" };
             gridModeButton = new Button();
             listModeButton = new Button();
             BuildRecordsPanel();
@@ -695,6 +716,7 @@ namespace ToolboxClient
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 236F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             Controls.Add(root);
+            root.MouseDown += DragWindow;
 
             side = new Panel
             {
@@ -702,6 +724,7 @@ namespace ToolboxClient
                 BackColor = portalSideBack,
                 Padding = new Padding(8, 0, 8, 16)
             };
+            side.MouseDown += DragWindow;
             root.Controls.Add(side, 0, 0);
 
             TableLayoutPanel sideLayout = new TableLayoutPanel
@@ -715,6 +738,7 @@ namespace ToolboxClient
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            sideLayout.MouseDown += DragWindow;
             side.Controls.Add(sideLayout);
 
             TableLayoutPanel userPanel = new TableLayoutPanel
@@ -751,6 +775,7 @@ namespace ToolboxClient
             userPanel.Controls.Add(brandTitle, 1, 0);
             userPanel.Controls.Add(brandSubtitle, 1, 1);
             AttachBrandPopupEntry(userPanel);
+            userPanel.MouseDown += DragWindow;
             sideLayout.Controls.Add(userPanel, 0, 0);
 
             nav = new BufferedFlowLayoutPanel
@@ -851,7 +876,7 @@ namespace ToolboxClient
 
             titleBar = main;
             title = new Label { Visible = false, Width = 1, Height = 1 };
-            status = new Label { Visible = false, Text = "同步准备中 v" + Program.BuildStamp };
+            status = new Label { Visible = false, Text = "同步准备中" };
             gridModeButton = new Button();
             listModeButton = new Button();
             recordsButton = records;
@@ -871,9 +896,7 @@ namespace ToolboxClient
             root.MouseDown -= HandleBrandPopupClick;
             root.MouseUp -= HandleBrandPopupClick;
             root.MouseClick -= HandleBrandPopupClick;
-            root.MouseDown += HandleBrandPopupClick;
             root.MouseUp += HandleBrandPopupClick;
-            root.MouseClick += HandleBrandPopupClick;
             foreach (Control child in root.Controls)
             {
                 AttachBrandPopupEntry(child);
@@ -886,7 +909,7 @@ namespace ToolboxClient
             Control source = sender as Control;
             Point screenPoint = source == null ? Control.MousePosition : source.PointToScreen(e.Location);
             DateTime clickNow = DateTime.Now;
-            if ((clickNow - lastBrandClickAt).TotalMilliseconds < 90 &&
+            if ((clickNow - lastBrandClickAt).TotalMilliseconds < BrandPopupClickDebounceMs &&
                 Math.Abs(screenPoint.X - lastBrandClickScreenPoint.X) <= 2 &&
                 Math.Abs(screenPoint.Y - lastBrandClickScreenPoint.Y) <= 2)
             {
@@ -1375,7 +1398,6 @@ namespace ToolboxClient
             portalBrandSubtitleSource = GetText(app, "subtitle", "");
             string displayAppTitle = portalVariant ? PortalLabel(appTitle, "app.title") : appTitle;
             Text = displayAppTitle;
-            Text = displayAppTitle + " v" + Program.BuildStamp;
             brandTitle.Text = displayAppTitle;
             brandSubtitle.Text = portalVariant ? PortalLabel(portalBrandSubtitleSource, "app.subtitle") : portalBrandSubtitleSource;
             FitBrandTitle(displayAppTitle);
@@ -3570,7 +3592,7 @@ namespace ToolboxClient
                 string titleText = PortalLabel(portalBrandTitleSource, "app.title");
                 brandTitle.Text = titleText;
                 FitBrandTitle(titleText);
-                Text = titleText + " v" + Program.BuildStamp;
+                Text = titleText;
             }
             if (brandSubtitle != null) brandSubtitle.Text = PortalLabel(portalBrandSubtitleSource, "app.subtitle");
             if (recordsButton != null) recordsButton.Text = "↓  " + PortalText("下载管理", "Download Manager");
