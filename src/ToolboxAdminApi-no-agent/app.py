@@ -1,5 +1,4 @@
 ﻿#!/usr/bin/env python3
-import base64
 import hashlib
 import hmac
 import json
@@ -227,6 +226,19 @@ def save_sessions():
 SESSIONS.update(load_sessions())
 
 
+def default_popup_settings():
+    return {
+        "enabled": False,
+        "clickCount": 3,
+        "title": "联系我们 / 支持作者",
+        "thanksText": "感谢你的支持，我们会持续维护和更新工具箱。",
+        "cacheMinutes": 60,
+        "contacts": [],
+        "payments": [],
+        "links": [],
+    }
+
+
 def default_config():
     return {
         "app": {
@@ -248,6 +260,7 @@ def default_config():
             "output_dir": "",
         },
         "license": {"enabled": False, "api_base": "", "product_code": ""},
+        "popup": default_popup_settings(),
         "features": {"software_catalog_enabled": True},
         "page_locks": {},
         "sidebar": [],
@@ -487,6 +500,10 @@ def ensure_config_defaults(config):
     if normalize_feature_settings(config):
         changed = True
     if normalize_page_locks(config):
+        changed = True
+    normalized_popup = normalize_popup_settings(config.get("popup") or {})
+    if config.get("popup") != normalized_popup:
+        config["popup"] = normalized_popup
         changed = True
     return changed
 
@@ -867,6 +884,23 @@ def read_users():
     store.setdefault("users", [])
     store.setdefault("inviteCodes", [])
     store.setdefault("settings", {})
+    changed = False
+    for user in store["users"]:
+        if user.get("role") == "agent":
+            user["role"] = "user"
+            changed = True
+        for key in ("parentAgentId", "parentAgentName", "balance"):
+            if key in user:
+                user.pop(key, None)
+                changed = True
+    for invite in store["inviteCodes"]:
+        for key in ("ownerAgentId", "ownerAgentName", "boundAgentId", "boundAgentName", "isAgentInvite", "price", "chargedAmount"):
+            if key in invite:
+                invite.pop(key, None)
+                changed = True
+        if invite.get("registerRole") == "agent":
+            invite["registerRole"] = "user"
+            changed = True
     cleanup_invites(store)
     if not store["users"]:
         admin = {
@@ -883,6 +917,8 @@ def read_users():
         store["users"] = [admin]
         write_json(USERS_PATH, store)
         write_config(read_config(""), "admin")
+    elif changed:
+        write_json(USERS_PATH, store)
     return store
 
 
@@ -899,20 +935,20 @@ def is_super(user):
 
 
 def is_agent(user):
-    return user.get("role") == "agent"
+    return False
 
 
 def can_manage_users(user):
-    return is_super(user) or is_agent(user)
+    return is_super(user)
 
 
 def role_label(role):
-    return {"super": "总管理员", "agent": "代理", "user": "普通用户"}.get(role, "普通用户")
+    return {"super": "总管理员", "user": "普通用户"}.get(role, "普通用户")
 
 
 def is_login_api_path(path):
-    normalized = "/" + str(path or "").strip("/")
-    return normalized == "/api/login" or normalized.endswith("/api/login")
+    normalized = "/" + str(path or "").strip("/").lower()
+    return normalized in ("/api/login", "/desktop/login") or normalized.endswith("/api/login") or normalized.endswith("/desktop/login")
 
 
 def handle_desktop_login(handler):
@@ -951,16 +987,6 @@ def default_system_settings():
             "alipayOfficial": {"enabled": False, "appId": "", "privateKey": "", "publicKey": "", "gateway": "", "notifyUrl": "", "returnUrl": ""},
             "wechatOfficial": {"enabled": False, "mchId": "", "appId": "", "apiV3Key": "", "serialNo": "", "privateKey": "", "notifyUrl": ""},
         },
-        "popup": {
-            "enabled": False,
-            "clickCount": 3,
-            "title": "联系我们 / 支持作者",
-            "thanksText": "感谢你的支持，我们会持续维护和更新工具箱。",
-            "cacheMinutes": 60,
-            "contacts": [],
-            "payments": [],
-            "links": [],
-        },
         "clientBuild": {
             "cacheRetentionHours": 24,
             "jobRetentionHours": 24,
@@ -983,13 +1009,7 @@ def http_url(value):
 
 def popup_image_url(value):
     text = str(value or "").strip()
-    if text.lower().startswith(("http://", "https://")):
-        return text
-    if text.startswith("/uploads/popup/"):
-        return text
-    if text.startswith("uploads/popup/"):
-        return "/" + text
-    return ""
+    return text if text.lower().startswith(("http://", "https://")) else ""
 
 
 def popup_abs_url(value, base_url):
@@ -1048,7 +1068,7 @@ def normalize_popup_links(items):
 
 
 def normalize_popup_settings(value):
-    default = default_system_settings()["popup"]
+    default = default_popup_settings()
     popup = value if isinstance(value, dict) else {}
     normalized = {
         "enabled": popup.get("enabled", default["enabled"]) is True,
@@ -1103,51 +1123,6 @@ def public_popup_config(user_id, base_url):
     }
 
 
-def save_popup_upload(body):
-    name = str(body.get("name") or "popup-image").strip()
-    data = str(body.get("data") or body.get("base64") or "").strip()
-    if not data:
-        raise ValueError("请先选择要上传的图片。")
-    mime = str(body.get("mime") or "").strip().lower()
-    if data.startswith("data:"):
-        header, _, payload = data.partition(",")
-        data = payload
-        if ";" in header:
-            mime = header[5:].split(";", 1)[0].lower()
-    allowed = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }
-    ext = allowed.get(mime)
-    if not ext:
-        lower = name.lower()
-        for candidate in allowed.values():
-            if lower.endswith(candidate):
-                ext = candidate
-                break
-    if ext not in set(allowed.values()):
-        raise ValueError("只支持 PNG、JPG、WEBP、GIF 图片。")
-    try:
-        raw = base64.b64decode(data, validate=True)
-    except Exception:
-        raise ValueError("图片数据格式错误。")
-    if not raw:
-        raise ValueError("图片不能为空。")
-    if len(raw) > 4 * 1024 * 1024:
-        raise ValueError("图片不能超过 4MB。")
-    upload_dir = WWW / "uploads" / "popup"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{int(time.time() * 1000)}-{random_hex(4)}{ext}"
-    path = (upload_dir / filename).resolve()
-    if not str(path).startswith(str(upload_dir.resolve())):
-        raise ValueError("上传路径无效。")
-    path.write_bytes(raw)
-    return {"ok": True, "url": f"/uploads/popup/{filename}"}
-
-
 def read_system_settings():
     data = read_json(SYSTEM_PATH, default_system_settings())
     defaults = default_system_settings()
@@ -1178,7 +1153,9 @@ def read_system_settings():
     for selected_key in (pay.get("wechatChannel"), pay.get("alipayChannel")):
         if selected_key and selected_key != "disabled" and isinstance(pay.get(selected_key), dict):
             pay[selected_key].setdefault("enabled", True)
-    data["popup"] = normalize_popup_settings(data.get("popup") or {})
+    if "popup" in data:
+        data.pop("popup", None)
+        changed = True
     integrity = data.setdefault("integrity", {})
     if len(str(integrity.get("secret") or "").strip()) < 32:
         integrity["secret"] = random_hex(24)
@@ -1191,6 +1168,7 @@ def read_system_settings():
 def public_system_settings():
     data = read_system_settings()
     public = json.loads(json.dumps(data, ensure_ascii=False))
+    public.pop("popup", None)
     if isinstance(public.get("integrity"), dict):
         public["integrity"]["secret"] = ""
         public["integrity"]["secretConfigured"] = True
@@ -1199,14 +1177,9 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
-    for section in ("locations", "agent", "pay", "popup", "integrity", "clientBuild"):
+    for section in ("locations", "pay", "integrity", "clientBuild"):
         patch = body.get(section)
         if not isinstance(patch, dict):
-            continue
-        if section == "popup":
-            merged = dict(current.get("popup") or {})
-            merged.update(patch)
-            current["popup"] = normalize_popup_settings(merged)
             continue
         if section == "integrity":
             current.setdefault("integrity", {})
@@ -1250,19 +1223,10 @@ def write_system_settings(body):
                 current[section][key].update(value)
             else:
                 current.setdefault(section, {})[key] = value
-    try:
-        current["agent"]["invitePrice"] = max(0, float(current.get("agent", {}).get("invitePrice") or 0))
-    except Exception:
-        current["agent"]["invitePrice"] = 0
-    try:
-        current["agent"]["orderCooldownMinutes"] = max(0, int(current.get("agent", {}).get("orderCooldownMinutes") or 0))
-    except Exception:
-        current["agent"]["orderCooldownMinutes"] = 30
     pay = current.setdefault("pay", {})
     for selected_key in (pay.get("wechatChannel"), pay.get("alipayChannel")):
         if selected_key and selected_key != "disabled" and isinstance(pay.get(selected_key), dict):
             pay[selected_key].setdefault("enabled", True)
-    current["popup"] = normalize_popup_settings(current.get("popup") or {})
     write_json(SYSTEM_PATH, current)
     return public_system_settings()
 
@@ -1292,15 +1256,18 @@ def write_orders(data):
 
 
 def public_order(order):
+    user_id = order.get("userId") or order.get("agentId", "")
+    username = order.get("username") or order.get("agentUsername", "")
+    display_name = order.get("displayName") or order.get("agentDisplayName") or find_user_display_name(user_id, username)
     return {
         "id": order.get("id"),
         "status": order.get("status", "pending"),
         "action": order.get("action", ""),
         "amount": order.get("amount", 0),
         "currency": order.get("currency", "CNY"),
-        "agentId": order.get("agentId", ""),
-        "agentUsername": order.get("agentUsername", ""),
-        "agentDisplayName": order.get("agentDisplayName") or find_user_display_name(order.get("agentId", ""), order.get("agentUsername", "")),
+        "userId": user_id,
+        "username": username,
+        "displayName": display_name,
         "detail": localized_order_detail(order),
         "request": order.get("request") or {},
         "paymentMethod": order.get("paymentMethod", ""),
@@ -1330,9 +1297,9 @@ def localized_order_detail(order):
 
 def localized_notice_title(title):
     mapping = {
-        "Agent order pending": "代理订单待处理",
-        "Agent invite order fulfilled": "代理邀请码订单已通过",
-        "Agent invite created": "代理邀请码已生成",
+        "Agent order pending": "订单待处理",
+        "Agent invite order fulfilled": "邀请码订单已通过",
+        "Agent invite created": "邀请码已生成",
     }
     return mapping.get(title, title)
 
@@ -1345,9 +1312,9 @@ def localized_notice_content(content):
             rest = text.split(" created order ", 1)[1]
             order_id = rest.split(":", 1)[0]
             amount = rest.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"代理 {username} 提交了订单 {order_id}，金额：{amount}。"
+            return f"用户 {username} 提交了订单 {order_id}，金额：{amount}。"
         except Exception:
-            return "代理提交了新订单。"
+            return "用户提交了新订单。"
     if text.startswith("Super admin ") and " approved order " in text:
         try:
             approver = text.split("Super admin ", 1)[1].split(" approved order ", 1)[0]
@@ -1356,17 +1323,17 @@ def localized_notice_content(content):
             agent = rest.split(" for agent ", 1)[1].split(";", 1)[0]
             created = rest.split("created ", 1)[1].split(" invite", 1)[0]
             amount = rest.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"总管理员 {approver} 已通过代理 {agent} 的订单 {order_id}，生成 {created} 个邀请码，金额：{amount}。"
+            return f"总管理员 {approver} 已通过用户 {agent} 的订单 {order_id}，生成 {created} 个邀请码，金额：{amount}。"
         except Exception:
-            return "总管理员已通过代理订单并生成邀请码。"
+            return "总管理员已通过订单并生成邀请码。"
     if text.startswith("Agent ") and " invite code(s). Amount: " in text:
         try:
             username = text.split("Agent ", 1)[1].split(" created ", 1)[0]
             count = text.split(" created ", 1)[1].split(" invite", 1)[0]
             amount = text.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"代理 {username} 已生成 {count} 个邀请码，金额：{amount}。"
+            return f"用户 {username} 已生成 {count} 个邀请码，金额：{amount}。"
         except Exception:
-            return "代理已生成邀请码。"
+            return "已生成邀请码。"
     return text
 
 
@@ -1383,6 +1350,8 @@ def public_notice(notice, user_id=""):
         "createdByUsername": "" if created_by == "system" else created_by,
         "createdById": notice.get("createdById", ""),
         "read": user_id in set(notice.get("readBy") or []),
+        "refType": notice.get("refType", ""),
+        "refId": notice.get("refId", ""),
     }
 
 
@@ -1392,7 +1361,7 @@ def notice_visible_to_user(notice, user):
     return notice.get("active", True) is not False
 
 
-def add_system_notice(title, content, level="info", target_role=""):
+def add_system_notice(title, content, level="info", target_role="", ref_type="", ref_id=""):
     data = read_notices()
     notice = {
         "id": new_id("notice"),
@@ -1405,6 +1374,8 @@ def add_system_notice(title, content, level="info", target_role=""):
         "createdBy": "system",
         "createdById": "system",
         "readBy": [],
+        "refType": ref_type,
+        "refId": ref_id,
     }
     data["notices"].insert(0, notice)
     write_notices(data)
@@ -1415,9 +1386,6 @@ def scoped_users(store, actor):
     users = store.get("users", [])
     if is_super(actor):
         return users
-    if is_agent(actor):
-        own = actor.get("id")
-        return [u for u in users if u.get("id") == own or u.get("parentAgentId") == own]
     return [actor]
 
 
@@ -1427,8 +1395,6 @@ def assert_user_scope(actor, target_id):
     target = find_user_by_id(target_id)
     if not target:
         raise ValueError("用户不存在。")
-    if is_agent(actor) and target.get("parentAgentId") == actor.get("id"):
-        return
     if target.get("id") == actor.get("id"):
         return
     raise PermissionError("没有权限管理这个用户。")
@@ -1497,8 +1463,10 @@ def write_mail_settings(body):
     return current
 
 
-def public_user(user):
-    return {
+def public_user(user, store=None):
+    if not user:
+        return None
+    data = {
         "id": user.get("id"),
         "username": user.get("username"),
         "email": user.get("email", ""),
@@ -1507,12 +1475,11 @@ def public_user(user):
         "roleLabel": role_label(user.get("role")),
         "active": user.get("active", True),
         "canViewJson": user.get("canViewJson", user.get("role") == "super"),
-        "parentAgentId": user.get("parentAgentId", ""),
-        "balance": user.get("balance", 0),
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
     }
+    return data
 
 
 def find_user_by_id(user_id):
@@ -1548,10 +1515,10 @@ def find_user_by_api_key(key):
 
 
 def normalize_role(role):
-    return role if role in ("super", "agent", "user") else "user"
+    return role if role in ("super", "user") else "user"
 
 
-def create_user(username, password, display_name="", role="user", template_user=None, email="", parent_agent_id="", balance=0):
+def create_user(username, password, display_name="", role="user", template_user=None, email=""):
     username = (username or "").strip()
     email = (email or "").strip().lower()
     password = password or ""
@@ -1575,8 +1542,6 @@ def create_user(username, password, display_name="", role="user", template_user=
         "role": role,
         "active": True,
         "canViewJson": role == "super",
-        "parentAgentId": parent_agent_id if role == "user" else "",
-        "balance": float(balance or 0) if role == "agent" else 0,
         "passwordHash": stored_password(password),
         "apiKey": random_hex(20),
         "createdAt": now_iso(),
@@ -1724,14 +1689,15 @@ def public_payment_channels(settings):
     return [{"key": key, "label": PAYMENT_CHANNEL_LABELS.get(key, key)} for key in configured_payment_channels(settings)]
 
 
-def recent_pending_order(agent_id, action, cooldown_minutes, data=None):
+def recent_pending_order(user_id, action, cooldown_minutes, data=None):
     if cooldown_minutes <= 0:
         return None
     try:
         cutoff = time.time() - cooldown_minutes * 60
         data = data or read_orders()
         for order in data.get("orders", []):
-            if order.get("agentId") != agent_id or order.get("action") != action or order.get("status") != "pending":
+            order_user_id = order.get("userId") or order.get("agentId")
+            if order_user_id != user_id or order.get("action") != action or order.get("status") != "pending":
                 continue
             try:
                 created = time.mktime(time.strptime((order.get("createdAt") or "")[:19], "%Y-%m-%dT%H:%M:%S"))
@@ -1744,11 +1710,9 @@ def recent_pending_order(agent_id, action, cooldown_minutes, data=None):
     return None
 
 
-def create_admin_order(agent, action, amount, currency, detail, request=None, payment_method="", payment_channel=""):
-    settings = read_system_settings()
-    cooldown = int((settings.get("agent") or {}).get("orderCooldownMinutes") or 0)
+def create_admin_order(user, action, amount, currency, detail, request=None, payment_method="", payment_channel=""):
     data = read_orders()
-    existing = recent_pending_order(agent.get("id"), action, cooldown, data)
+    existing = recent_pending_order(user.get("id"), action, 0, data)
     if existing:
         existing["amount"] = round(float(amount or 0), 2)
         existing["currency"] = currency or "CNY"
@@ -1756,7 +1720,7 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
         existing["request"] = request or {}
         existing["paymentMethod"] = payment_method
         existing["paymentChannel"] = payment_channel
-        existing["agentDisplayName"] = user_display_name(agent)
+        existing["displayName"] = user_display_name(user)
         existing["updatedAt"] = now_iso()
         write_orders(data)
         return existing, False
@@ -1766,9 +1730,9 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
         "action": action,
         "amount": round(float(amount or 0), 2),
         "currency": currency or "CNY",
-        "agentId": agent.get("id"),
-        "agentUsername": agent.get("username"),
-        "agentDisplayName": user_display_name(agent),
+        "userId": user.get("id"),
+        "username": user.get("username"),
+        "displayName": user_display_name(user),
         "detail": detail,
         "request": request or {},
         "paymentMethod": payment_method,
@@ -1777,8 +1741,8 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
     }
     data["orders"].insert(0, order)
     write_orders(data)
-    title = "代理订单待处理"
-    content = f"代理 {user_display_name(agent)} 提交了订单 {order['id']}：{detail}。金额：{order['amount']} {order['currency']}。"
+    title = "订单待处理"
+    content = f"用户 {user_display_name(user)} 提交了订单 {order['id']}：{detail}。金额：{order['amount']} {order['currency']}。"
     add_system_notice(title, content, "warn", "super")
     try:
         send_admin_event_email(title, content)
@@ -1787,7 +1751,7 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
     return order, True
 
 
-def update_user_account(user_id, body, super_edit=False):
+def update_user_account(user_id, body, super_edit=False, actor=None):
     store = read_users()
     user = next((u for u in store["users"] if u.get("id") == user_id), None)
     if not user:
@@ -1809,14 +1773,10 @@ def update_user_account(user_id, body, super_edit=False):
         user["displayName"] = (body.get("displayName") or username).strip() or username
     if super_edit and "role" in body:
         user["role"] = normalize_role(body.get("role"))
-        if user["role"] != "user":
-            user["parentAgentId"] = ""
     if super_edit and "active" in body:
         user["active"] = bool(body.get("active"))
     if super_edit and "canViewJson" in body:
         user["canViewJson"] = bool(body.get("canViewJson")) or user.get("role") == "super"
-    if super_edit and "balance" in body and user.get("role") == "agent":
-        user["balance"] = float(body.get("balance") or 0)
     if body.get("password"):
         user["passwordHash"] = stored_password(body.get("password"))
     if super_edit and body.get("resetApiKey"):
@@ -1864,29 +1824,27 @@ def invite_request_from_body(store, body):
 
 
 def invite_quote_for_actor(store, actor, body):
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    price = float(agent_settings.get("invitePrice") or 0)
-    request = invite_request_from_body(store, body)
-    count = request["count"]
-    total = count * price
-    balance = float(actor.get("balance") or 0)
-    allow_negative = bool(agent_settings.get("allowNegativeBalance"))
-    currency = agent_settings.get("currency") or "CNY"
+    request = normalize_invite_request_for_actor(store, actor, invite_request_from_body(store, body))
     return {
         "request": request,
-        "price": round(price, 2),
-        "total": round(total, 2),
-        "currency": currency,
-        "balance": round(balance, 2),
-        "balanceEnough": balance >= total,
-        "allowNegativeBalance": allow_negative,
-        "channels": public_payment_channels(settings),
+        "price": 0,
+        "total": 0,
+        "currency": "CNY",
+        "balance": 0,
+        "balanceEnough": True,
+        "allowNegativeBalance": False,
+        "channels": [],
     }
 
 
+def normalize_invite_request_for_actor(store, actor, request):
+    normalized = dict(request or {})
+    normalized["registerRole"] = "user"
+    return normalized
+
+
 def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
-    request = invite_request_from_body(store, body)
+    request = normalize_invite_request_for_actor(store, actor, invite_request_from_body(store, body))
     prefix = request["prefix"]
     count = request["count"]
     max_uses = request["maxUses"]
@@ -1899,8 +1857,7 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
         invite = {"code": code, "active": True, "maxUses": max_uses,
                   "usedCount": 0, "usedBy": [], "retentionDays": retention_days,
                   "createdAt": now_iso(), "createdBy": actor.get("username"),
-                  "createdById": actor.get("id"), "ownerAgentId": actor.get("id") if is_agent(actor) else "",
-                  "price": price if is_agent(actor) else 0, "chargedAmount": charged_amount if is_agent(actor) else 0}
+                  "createdById": actor.get("id"), "registerRole": "user"}
         created.append(invite)
     store["inviteCodes"][0:0] = created
     return created
@@ -1911,72 +1868,8 @@ def order_detail_for_invites(request):
 
 
 def create_invites_for_actor(store, actor, body):
-    quote = invite_quote_for_actor(store, actor, body)
-    request = quote["request"]
-    price = float(quote["price"] or 0)
-    total = float(quote["total"] or 0)
-    currency = quote["currency"]
-    if is_agent(actor):
-        payment_method = (body.get("paymentMethod") or "").strip()
-        payment_channel = (body.get("paymentChannel") or "").strip()
-        channels = [x.get("key") for x in quote.get("channels") or []]
-        if not payment_method:
-            payment_method = "manual"
-        if payment_method == "interface" and payment_channel not in channels:
-            raise ValueError("支付接口未配置或不可用，请选择提交总管理审核。")
-        if payment_method not in ("balance", "manual", "interface"):
-            raise ValueError("不支持的付款方式。")
-        order, fresh = create_admin_order(
-            actor,
-            "create_invites",
-            total,
-            currency,
-            order_detail_for_invites(request),
-            request=request,
-            payment_method=payment_method,
-            payment_channel=payment_channel,
-        )
-        suffix = "已创建订单并通知总管理" if fresh else "已有待处理订单，已更新并发送到总管理后台"
-        return {"order": public_order(order), "created": False, "message": f"{suffix}，管理通过后才会生成邀请码。订单号：{order.get('id')}。"}
-    created = generate_invites_for_actor(store, actor, request, price, total)
-    return {"invites": created, "created": True, "balance": actor.get("balance", 0)}
-
-
-def fulfill_invite_order(order, approver):
-    if order.get("action") != "create_invites" or order.get("fulfilledAt"):
-        return []
-    store = read_users()
-    agent = next((u for u in store.get("users", []) if u.get("id") == order.get("agentId")), None)
-    if not agent:
-        raise ValueError("订单对应的代理不存在。")
-    request = order.get("request") or {}
-    if not request:
-        raise ValueError("订单缺少邀请码生成参数。")
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    price = float(agent_settings.get("invitePrice") or 0)
-    amount = float(order.get("amount") or 0)
-    payment_method = order.get("paymentMethod") or "manual"
-    if payment_method == "balance":
-        balance = float(agent.get("balance") or 0)
-        allow_negative = bool(agent_settings.get("allowNegativeBalance"))
-        if balance < amount and not allow_negative:
-            raise ValueError(f"代理余额不足，不能通过余额支付订单。当前余额 {balance:.2f}，订单金额 {amount:.2f}。")
-        agent["balance"] = balance - amount
-    created = generate_invites_for_actor(store, agent, request, price, amount)
-    write_users(store)
-    order["fulfilledAt"] = now_iso()
-    order["fulfilledBy"] = approver.get("username")
-    order["fulfilledByName"] = user_display_name(approver)
-    order["agentDisplayName"] = user_display_name(agent)
-    order["fulfilledInviteCodes"] = [x.get("code") for x in created]
-    content = f"总管理员 {user_display_name(approver)} 已通过代理 {user_display_name(agent)} 的订单 {order.get('id')}，生成 {len(created)} 个邀请码，金额：{amount:.2f} {order.get('currency', 'CNY')}。"
-    add_system_notice("代理邀请码订单已通过", content, "info", "super")
-    try:
-        send_admin_event_email("代理邀请码订单已通过", content)
-    except Exception:
-        pass
-    return created
+    created = generate_invites_for_actor(store, actor, body, 0, 0)
+    return {"invites": created, "created": True, "balance": 0}
 
 def get_target(button):
     action = button.get("action", "link")
@@ -2825,7 +2718,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
-            if (path == "/desktop/login" or is_login_api_path(path)) and method == "POST":
+            if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()
@@ -2838,8 +2731,7 @@ class Handler(BaseHTTPRequestHandler):
                 max_uses = int(invite.get("maxUses") or 1)
                 if max_uses > 0 and used >= max_uses:
                     raise ValueError("邀请码已被使用。")
-                parent_agent_id = invite.get("ownerAgentId") or ""
-                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"), parent_agent_id)
+                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"))
                 store = read_users()
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
                 invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
@@ -2925,6 +2817,13 @@ class Handler(BaseHTTPRequestHandler):
                 apply_app_patch(cfg, self.read_body())
                 write_user_template_config(cfg)
                 return self.send_json(read_user_template_config())
+            if path == "/api/super/template/popup" and method == "PATCH":
+                cfg = read_user_template_config()
+                merged = dict(cfg.get("popup") or {})
+                merged.update(self.read_body())
+                cfg["popup"] = normalize_popup_settings(merged)
+                write_user_template_config(cfg)
+                return self.send_json(read_user_template_config())
             if path == "/api/super/template/buttons":
                 cfg = read_user_template_config()
                 if method == "GET":
@@ -2964,7 +2863,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "接口不存在"}, 404)
         if path == "/api/super/users/batch" and method == "POST":
             if not is_super(auth["user"]):
-                return self.send_json({"error": "代理不能批量管理账号。"}, 403)
+                return self.send_json({"error": "只有总管理员可以批量管理账号。"}, 403)
             b = self.read_body()
             ids = set(b.get("ids") or [])
             action = b.get("action")
@@ -2991,12 +2890,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "changed": changed})
         if path == "/api/super/users":
             if method == "GET":
-                return self.send_json({"users": [public_user(u) for u in scoped_users(store, auth["user"])]})
+                return self.send_json({"users": [public_user(u, store) for u in scoped_users(store, auth["user"])]})
             if method == "POST":
                 if not is_super(auth["user"]):
-                    return self.send_json({"error": "代理不能直接创建账号，请使用邀请码。"}, 403)
+                    return self.send_json({"error": "只有总管理员可以创建账号。"}, 403)
                 b = self.read_body()
-                return self.send_json(public_user(create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"), auth["user"], b.get("email"), "", b.get("balance") or 0)))
+                return self.send_json(public_user(create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"), auth["user"], b.get("email"))))
             if method == "PATCH":
                 b = self.read_body()
                 if not is_super(auth["user"]):
@@ -3005,11 +2904,11 @@ class Handler(BaseHTTPRequestHandler):
                     if "active" in b:
                         allowed["active"] = bool(b.get("active"))
                     b = allowed
-                user = update_user_account(b.get("id"), b, True)
+                user = update_user_account(b.get("id"), b, True, auth["user"])
                 return self.send_json(public_user(user))
             if method == "DELETE":
                 if not is_super(auth["user"]):
-                    return self.send_json({"error": "代理不能删除账号。"}, 403)
+                    return self.send_json({"error": "只有总管理员可以删除账号。"}, 403)
                 b = self.read_body()
                 if b.get("id") == "admin":
                     raise ValueError("不能删除默认总管理员。")
@@ -3020,10 +2919,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(invite_quote_for_actor(store, auth["user"], self.read_body()))
         if path == "/api/super/invites":
             if method == "GET":
-                invites = store["inviteCodes"]
-                if is_agent(auth["user"]):
-                    invites = [x for x in invites if x.get("ownerAgentId") == auth["user"].get("id")]
-                return self.send_json({"invites": invites})
+                return self.send_json({"invites": store["inviteCodes"]})
             if method == "POST":
                 b = self.read_body()
                 result = create_invites_for_actor(store, auth["user"], b)
@@ -3035,8 +2931,6 @@ class Handler(BaseHTTPRequestHandler):
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == b.get("code")), None)
                 if not invite:
                     raise ValueError("邀请码不存在。")
-                if is_agent(auth["user"]) and invite.get("ownerAgentId") != auth["user"].get("id"):
-                    return self.send_json({"error": "代理不能管理别人的邀请码。"}, 403)
                 if "active" in b:
                     invite["active"] = bool(b.get("active"))
                 if "maxUses" in b:
@@ -3050,8 +2944,6 @@ class Handler(BaseHTTPRequestHandler):
                 codes = set(b.get("codes") or [])
                 if not codes and b.get("code"):
                     codes.add(b.get("code"))
-                if is_agent(auth["user"]):
-                    codes = {code for code in codes if any(x.get("code") == code and x.get("ownerAgentId") == auth["user"].get("id") for x in store["inviteCodes"])}
                 store["inviteCodes"] = [x for x in store["inviteCodes"] if x.get("code") not in codes]
                 write_users(store)
                 return self.send_json({"ok": True})
@@ -3082,9 +2974,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PATCH":
                 return self.send_json(write_system_settings(self.read_body()))
         if path == "/api/super/system/popup/upload" and method == "POST":
-            if not is_super(auth["user"]):
-                return self.send_json({"error": "只有总管理员可以操作。"}, 403)
-            return self.send_json(save_popup_upload(self.read_body()))
+            return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
         if path == "/api/super/orders":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作。"}, 403)
@@ -3101,8 +2991,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("不支持的订单状态。")
                 order["status"] = status
                 order["updatedAt"] = now_iso()
-                if status in ("paid", "done"):
-                    fulfill_invite_order(order, auth["user"])
                 write_orders(data)
                 return self.send_json(public_order(order))
             if method == "DELETE":

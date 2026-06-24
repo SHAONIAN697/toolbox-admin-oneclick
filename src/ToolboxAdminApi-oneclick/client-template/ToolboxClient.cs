@@ -54,7 +54,7 @@ namespace ToolboxClient
         private static void ConfigureNetworkSecurity()
         {
             ServicePointManager.Expect100Continue = false;
-            ServicePointManager.DefaultConnectionLimit = 24;
+            ServicePointManager.DefaultConnectionLimit = 256;
             ServicePointManager.UseNagleAlgorithm = false;
             ServicePointManager.SecurityProtocol =
                 (SecurityProtocolType)3072 |
@@ -131,7 +131,11 @@ namespace ToolboxClient
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
+        private bool pausedDownloadsRestored = false;
         private const int DefaultMaxParallelDownloads = 5;
+        private const int MaxSegmentedDownloadConnections = 32;
+        private const long SegmentedDownloadMinBytes = 8L * 1024L * 1024L;
+        private const long SegmentedDownloadMinSegmentBytes = 2L * 1024L * 1024L;
         private const int MaxVisibleDownloadTaskRows = 5;
         private const int DownloadTaskRowHeight = 84;
         private const int DownloadTaskRowGap = 8;
@@ -441,8 +445,8 @@ namespace ToolboxClient
             Button minButton = MakeTopButton("−");
             Button maxButton = MakeTopButton("□");
             Button closeButton = MakeTopButton("×");
-            gridModeButton.Click += delegate { listMode = false; UpdateModeButtons(); RenderCurrentSections(); };
-            listModeButton.Click += delegate { listMode = true; UpdateModeButtons(); RenderCurrentSections(); };
+            gridModeButton.Click += delegate { SetViewModePreference("grid"); };
+            listModeButton.Click += delegate { SetViewModePreference("list"); };
             recordsButton.Click += delegate { ShowDownloadRecords(); };
             settingsButton.Click += delegate { ShowClientSettings(); };
             minButton.Click += delegate { WindowState = FormWindowState.Minimized; };
@@ -495,7 +499,8 @@ namespace ToolboxClient
                 WrapContents = true,
                 AutoScroll = true,
                 BackColor = Bg,
-                Padding = new Padding(0, 28, 0, 0)
+                Padding = new Padding(0, 28, 0, 0),
+                SuppressFocusAutoScroll = true
             };
             content.Resize += delegate
             {
@@ -672,7 +677,8 @@ namespace ToolboxClient
                 WrapContents = false,
                 AutoScroll = true,
                 BackColor = Color.FromArgb(238, 241, 245),
-                Padding = new Padding(0, 0, 0, 10)
+                Padding = new Padding(0, 0, 0, 10),
+                SuppressFocusAutoScroll = true
             };
             content.Resize += delegate
             {
@@ -865,7 +871,8 @@ namespace ToolboxClient
                 WrapContents = false,
                 AutoScroll = true,
                 BackColor = portalShellBack,
-                Padding = new Padding(0, 16, 0, 20)
+                Padding = new Padding(0, 16, 0, 20),
+                SuppressFocusAutoScroll = true
             };
             content.Resize += delegate
             {
@@ -1145,6 +1152,29 @@ namespace ToolboxClient
             listModeButton.BackColor = listMode ? PanelBg : PanelBg2;
         }
 
+        private void ApplyConfiguredViewMode(Dictionary<string, object> app)
+        {
+            ClientSettings settings = LoadClientSettings();
+            string localMode = NormalizeViewMode(settings.ViewMode, "");
+            string mode = String.IsNullOrWhiteSpace(localMode)
+                ? NormalizeViewMode(GetText(app, "default_view_mode", "grid"), "grid")
+                : localMode;
+            listMode = mode.Equals("list", StringComparison.OrdinalIgnoreCase);
+            UpdateModeButtons();
+        }
+
+        private void SetViewModePreference(string mode)
+        {
+            string normalized = NormalizeViewMode(mode, "grid");
+            listMode = normalized.Equals("list", StringComparison.OrdinalIgnoreCase);
+            ClientSettings settings = LoadClientSettings();
+            settings.ViewMode = normalized;
+            SaveClientSettings(settings);
+            UpdateModeButtons();
+            RenderCurrentSections();
+            if (status != null) status.Text = listMode ? "已切换为列表显示" : "已切换为宫格显示";
+        }
+
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
 
@@ -1412,6 +1442,7 @@ namespace ToolboxClient
                 Size = new Size(width, height);
                 initialSizeApplied = true;
             }
+            ApplyConfiguredViewMode(app);
 
             bool allowNav = true;
             string password = GetText(app, "password", "");
@@ -1448,6 +1479,7 @@ namespace ToolboxClient
             {
                 configApplied = true;
                 BuildNav();
+                RestorePausedDownloadTasksOnce();
             }
 
             content.ResumeLayout();
@@ -5190,12 +5222,13 @@ namespace ToolboxClient
         {
             try
             {
+                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
                 if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(customScript))
                 {
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download") DownloadFile(target);
+                if (action == "download") DownloadFile(target, name);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -5417,16 +5450,22 @@ namespace ToolboxClient
 
         private void DownloadFile(string url)
         {
+            DownloadFile(url, "");
+        }
+
+        private void DownloadFile(string url, string displayName)
+        {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
+            result.DisplayName = displayName ?? "";
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
@@ -5458,17 +5497,23 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
+                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
             DownloadRequest download = result.Download;
             if (download == null)
             {
+                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
             if (download.BrowserOnly)
             {
+                DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
+                if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
+                if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
+                if (ResumeMatchedDownloadTask(browserOnlyTask)) return;
                 Open(String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl);
                 status.Text = String.IsNullOrWhiteSpace(download.Message) ? "该链接需要在浏览器中完成下载。" : download.Message;
                 return;
@@ -5491,11 +5536,12 @@ namespace ToolboxClient
                 FillDownloadRecords();
                 return;
             }
-            if (HasActiveDownload(result.OriginalUrl, path) || HasActiveDownload(download.Url, path))
+            DownloadTask existingTask = FindActiveDownload(result.OriginalUrl, path);
+            if (existingTask == null) existingTask = FindActiveDownload(download.Url, path);
+            if (existingTask == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
+            if (existingTask != null)
             {
-                status.Text = "该文件正在下载中。";
-                UpdateDownloadBadges();
-                if (!portalVariant) ShowActiveDownloadView();
+                ResumeMatchedDownloadTask(existingTask);
                 return;
             }
             fileName = Path.GetFileName(path);
@@ -5503,6 +5549,7 @@ namespace ToolboxClient
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
             lock (activeDownloadsLock) activeDownloads.Add(task);
+            SavePausedDownloadTasks();
             status.Text = PortalText("已加入下载队列：", "Queued: ") + fileName;
             if (progressPanel != null) progressPanel.Visible = false;
             UpdateDownloadBadges();
@@ -5883,15 +5930,123 @@ namespace ToolboxClient
 
         private bool HasActiveDownload(string url, string path)
         {
+            return FindActiveDownload(url, path) != null;
+        }
+
+        private DownloadTask FindActiveDownload(string url, string path)
+        {
             lock (activeDownloadsLock)
             {
                 foreach (DownloadTask task in activeDownloads)
                 {
-                    if (String.Equals(task.OriginalUrl ?? "", url ?? "", StringComparison.OrdinalIgnoreCase)) return true;
-                    if (String.Equals(task.Url ?? "", url ?? "", StringComparison.OrdinalIgnoreCase)) return true;
-                    if (String.Equals(task.Path ?? "", path ?? "", StringComparison.OrdinalIgnoreCase)) return true;
+                    if (TaskMatchesDownload(task, url, path)) return task;
                 }
             }
+            return null;
+        }
+
+        private DownloadTask FindActiveDownloadByName(string displayName, string fileName)
+        {
+            string displayKey = NormalizeDownloadMatchText(displayName);
+            string fileKey = NormalizeDownloadMatchText(fileName);
+            DownloadTask match = null;
+            lock (activeDownloadsLock)
+            {
+                foreach (DownloadTask task in activeDownloads)
+                {
+                    if (task == null || task.Finished || task.CancelRequested) continue;
+                    string taskFileKey = NormalizeDownloadMatchText(task.FileName);
+                    string taskPathKey = NormalizeDownloadMatchText(Path.GetFileName(task.Path));
+                    bool matches =
+                        DownloadNameMatches(taskFileKey, fileKey) ||
+                        DownloadNameMatches(taskPathKey, fileKey) ||
+                        DownloadNameMatches(taskFileKey, displayKey) ||
+                        DownloadNameMatches(taskPathKey, displayKey);
+                    if (!matches) continue;
+                    if (match != null && !Object.ReferenceEquals(match, task)) return null;
+                    match = task;
+                }
+            }
+            return match;
+        }
+
+        private static bool DownloadNameMatches(string haystack, string needle)
+        {
+            if (String.IsNullOrWhiteSpace(haystack) || String.IsNullOrWhiteSpace(needle)) return false;
+            if (needle.Length < 2) return false;
+            if (String.Equals(haystack, needle, StringComparison.OrdinalIgnoreCase)) return true;
+            if (haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return haystack.Length >= 4 && needle.IndexOf(haystack, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string NormalizeDownloadMatchText(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            string value = text.Trim();
+            try
+            {
+                value = Path.GetFileNameWithoutExtension(value);
+            }
+            catch
+            {
+            }
+            value = value.ToLowerInvariant();
+            return Regex.Replace(value, @"[\s_\-\.（）()\[\]【】]+", "");
+        }
+
+        private bool ResumeMatchedDownloadTask(DownloadTask task)
+        {
+            if (task == null) return false;
+            if (ForceResumeDownloadTask(task))
+            {
+                status.Text = PortalText("继续下载：", "Resuming: ") + task.FileName;
+                SavePausedDownloadTasks();
+            }
+            else
+            {
+                status.Text = "该文件正在下载中。";
+            }
+            UpdateDownloadBadges();
+            if (!portalVariant) ShowActiveDownloadView();
+            RenderActiveDownloads();
+            return true;
+        }
+
+        private bool ForceResumeDownloadTask(DownloadTask task)
+        {
+            if (task == null || task.Finished || task.CancelRequested) return false;
+            bool paused = IsDownloadTaskPaused(task) || task.RestoredPaused || LooksPausedDownloadTask(task);
+            bool workerRunning = IsDownloadWorkerRunning(task);
+            bool hasActiveRequest = task.ActiveRequest != null;
+            if (!paused && workerRunning && hasActiveRequest) return false;
+
+            task.RestoredPaused = false;
+            task.PauseEvent.Set();
+            task.StateText = "继续下载";
+            task.Started = true;
+
+            if (workerRunning && hasActiveRequest)
+            {
+                QueueDownloadTaskRowUpdate(task);
+                return true;
+            }
+
+            task.AbortActiveRequests();
+            Interlocked.Exchange(ref task.WorkerRunning, 0);
+            if (!QueueDownloadWorker(task)) return false;
+            QueueDownloadTaskRowUpdate(task);
+            return true;
+        }
+
+        private static bool TaskMatchesDownload(DownloadTask task, string url, string path)
+        {
+            if (task == null) return false;
+            if (!String.IsNullOrWhiteSpace(url))
+            {
+                if (String.Equals(task.OriginalUrl ?? "", url ?? "", StringComparison.OrdinalIgnoreCase)) return true;
+                if (String.Equals(task.Url ?? "", url ?? "", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            if (!String.IsNullOrWhiteSpace(path) && String.Equals(task.Path ?? "", path ?? "", StringComparison.OrdinalIgnoreCase)) return true;
             return false;
         }
 
@@ -5923,7 +6078,7 @@ namespace ToolboxClient
                 foreach (DownloadTask task in activeDownloads)
                 {
                     if (running >= maxParallel) break;
-                    if (task.Started || task.Finished || task.CancelRequested) continue;
+                    if (task.Started || task.Finished || task.CancelRequested || task.RestoredPaused) continue;
                     task.Started = true;
                     task.StateText = PortalText("准备下载", "Preparing");
                     toStart.Add(task);
@@ -5932,97 +6087,592 @@ namespace ToolboxClient
             }
             foreach (DownloadTask task in toStart)
             {
-                ThreadPool.QueueUserWorkItem(delegate { DownloadFileWorker(task); });
+                QueueDownloadWorker(task);
             }
             RenderActiveDownloads();
+        }
+
+        private bool StartRestoredDownloadTask(DownloadTask task)
+        {
+            bool shouldStart = false;
+            lock (activeDownloadsLock)
+            {
+                if (task != null && activeDownloads.Contains(task) && !task.Finished && !task.CancelRequested)
+                {
+                    task.Started = true;
+                    task.RestoredPaused = false;
+                    task.PauseEvent.Set();
+                    task.StateText = PortalText("准备下载", "Preparing");
+                    shouldStart = !IsDownloadWorkerRunning(task);
+                }
+            }
+            if (!shouldStart) return task != null && !task.Finished && !task.CancelRequested;
+            if (!QueueDownloadWorker(task)) return false;
+            RenderActiveDownloads();
+            return true;
+        }
+
+        private bool ResumeExistingDownloadTask(DownloadTask task)
+        {
+            if (task == null || task.Finished || task.CancelRequested) return false;
+            bool paused = IsDownloadTaskPaused(task) || task.RestoredPaused || LooksPausedDownloadTask(task);
+            bool workerRunning = IsDownloadWorkerRunning(task);
+            task.RestoredPaused = false;
+            task.PauseEvent.Set();
+            task.StateText = paused ? "继续下载" : PortalText("下载中", "Downloading");
+
+            if (workerRunning && task.ActiveRequest == null && paused)
+            {
+                Interlocked.Exchange(ref task.WorkerRunning, 0);
+                workerRunning = false;
+            }
+            if (!task.Started || !workerRunning) return StartRestoredDownloadTask(task);
+
+            QueueDownloadTaskRowUpdate(task);
+            return true;
+        }
+
+        private bool QueueDownloadWorker(DownloadTask task)
+        {
+            if (task == null || task.Finished || task.CancelRequested) return false;
+            if (Interlocked.CompareExchange(ref task.WorkerRunning, 1, 0) != 0) return false;
+            try
+            {
+                ThreadPool.QueueUserWorkItem(delegate { DownloadFileWorker(task); });
+                return true;
+            }
+            catch
+            {
+                Interlocked.Exchange(ref task.WorkerRunning, 0);
+                return false;
+            }
         }
 
         private void DownloadFileWorker(DownloadTask task)
         {
             Exception failure = null;
-            long received = 0;
-            long total = -1;
-            for (int attempt = 1; attempt <= 3; attempt++)
+            try
             {
-                try
+                for (int attempt = 1; attempt <= 3; attempt++)
                 {
-                    task.Attempt = attempt;
-                    long resumeFrom = 0;
-                    if (File.Exists(task.Path)) resumeFrom = new FileInfo(task.Path).Length;
-                    received = resumeFrom;
-                    if (resumeFrom > 0)
+                    try
                     {
-                        task.Received = resumeFrom;
-                        task.StateText = attempt > 1 ? "重试续传 " + attempt + "/3" : "继续下载";
+                        task.Attempt = attempt;
+                        SegmentedDownloadPlan plan;
+                        if (task.Segmented && task.RestoredSegments.Count > 0)
+                            DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
+                        else if (TryCreateSegmentedDownloadPlan(task, out plan))
+                            DownloadFileSegmented(task, plan, attempt);
+                        else
+                            DownloadFileSingleConnection(task, attempt);
+                        failure = null;
+                        break;
                     }
-                    HttpWebRequest request = (HttpWebRequest)WebRequest.Create(task.Url);
-                    task.ActiveRequest = request;
-                    request.UserAgent = "Mozilla/5.0 ToolboxClient";
-                    request.Accept = "*/*";
-                    request.AllowAutoRedirect = true;
-                    request.KeepAlive = true;
-                    request.Timeout = 45000;
-                    request.ReadWriteTimeout = 120000;
-                    request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-                    if (resumeFrom > 0) request.AddRange(resumeFrom);
-                    using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                    catch (Exception ex)
                     {
-                        bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
-                        if (resumeFrom > 0 && !resumed)
+                        failure = ex;
+                        task.AbortActiveRequests();
+                        if (ex is OperationCanceledException || task.CancelRequested) break;
+                        if (attempt < 3)
                         {
-                            resumeFrom = 0;
-                            received = 0;
-                            task.Received = 0;
-                        }
-                        total = response.ContentLength;
-                        if (resumed && total > 0) total += resumeFrom;
-                        task.Total = total;
-                        using (Stream input = response.GetResponseStream())
-                        using (FileStream output = new FileStream(task.Path, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read))
-                        {
-                            byte[] buffer = new byte[128 * 1024];
-                            int read;
-                            DateTime lastUi = DateTime.MinValue;
-                            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                            {
-                                task.PauseEvent.WaitOne();
-                                if (task.CancelRequested) throw new OperationCanceledException();
-                                output.Write(buffer, 0, read);
-                                received += read;
-                                task.Received = received;
-                                task.Total = total;
-                                task.StateText = PortalText("下载中", "Downloading");
-                                task.UpdateSpeed();
-                                if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
-                                {
-                                    lastUi = DateTime.Now;
-                                    QueueDownloadTaskRowUpdate(task);
-                                }
-                            }
+                            task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
+                            QueueDownloadTaskRowUpdate(task);
+                            Thread.Sleep(900 * attempt);
                         }
                     }
-                    failure = null;
-                    break;
                 }
-                catch (Exception ex)
-                {
-                    failure = ex;
-                    task.ActiveRequest = null;
-                    if (ex is OperationCanceledException || task.CancelRequested) break;
-                    if (attempt < 3)
-                    {
-                        task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
-                        QueueDownloadTaskRowUpdate(task);
-                        Thread.Sleep(900 * attempt);
-                    }
-                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref task.WorkerRunning, 0);
             }
 
             BeginInvoke(new Action(delegate
             {
-                task.ActiveRequest = null;
+                task.AbortActiveRequests();
                 FinishControlledDownload(task, failure);
             }));
+        }
+
+        private void DownloadFileSingleConnection(DownloadTask task, int attempt)
+        {
+            task.Segmented = false;
+            task.PartPath = "";
+            long resumeFrom = 0;
+            if (File.Exists(task.Path)) resumeFrom = new FileInfo(task.Path).Length;
+            long received = resumeFrom;
+            if (resumeFrom > 0)
+            {
+                task.Received = resumeFrom;
+                task.StateText = attempt > 1 ? "重试续传 " + attempt + "/3" : "继续下载";
+            }
+
+            HttpWebRequest request = null;
+            try
+            {
+                using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, resumeFrom > 0, resumeFrom, -1, out request))
+                {
+                    bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
+                    if (resumeFrom > 0 && !resumed)
+                    {
+                        resumeFrom = 0;
+                        received = 0;
+                        task.Received = 0;
+                    }
+                    long total = response.ContentLength;
+                    if (resumed && total > 0) total += resumeFrom;
+                    task.Total = total;
+                    using (Stream input = response.GetResponseStream())
+                    using (FileStream output = new FileStream(task.Path, resumed ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read))
+                    {
+                        byte[] buffer = new byte[128 * 1024];
+                        int read;
+                        DateTime lastUi = DateTime.MinValue;
+                        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            task.PauseEvent.WaitOne();
+                            if (task.CancelRequested) throw new OperationCanceledException();
+                            output.Write(buffer, 0, read);
+                            received += read;
+                            task.Received = received;
+                            task.Total = total;
+                            task.StateText = PortalText("下载中", "Downloading");
+                            task.UpdateSpeed();
+                            if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                            {
+                                lastUi = DateTime.Now;
+                                QueueDownloadTaskRowUpdate(task);
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (request != null) task.UntrackRequest(request);
+            }
+        }
+
+        private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)
+        {
+            plan = null;
+            if (task == null || !IsHttpUrl(task.Url)) return false;
+            try
+            {
+                if (File.Exists(task.Path) && new FileInfo(task.Path).Length > 0) return false;
+            }
+            catch
+            {
+                return false;
+            }
+            RemoteDownloadInfo info = ProbeRemoteDownloadInfo(task.Url);
+            if (info == null || !info.SupportsRanges || info.TotalLength < SegmentedDownloadMinBytes) return false;
+            int segmentCount = CalculateSegmentCount(info.TotalLength);
+            if (segmentCount <= 1) return false;
+            plan = new SegmentedDownloadPlan { TotalLength = info.TotalLength, SegmentCount = segmentCount };
+            return true;
+        }
+
+        private int CalculateSegmentCount(long totalLength)
+        {
+            if (totalLength < SegmentedDownloadMinBytes) return 1;
+            long bySize = totalLength / SegmentedDownloadMinSegmentBytes;
+            if (totalLength % SegmentedDownloadMinSegmentBytes != 0) bySize++;
+            if (bySize < 2) bySize = 2;
+            if (bySize > MaxSegmentedDownloadConnections) bySize = MaxSegmentedDownloadConnections;
+            return (int)bySize;
+        }
+
+        private void DownloadFileSegmented(DownloadTask task, SegmentedDownloadPlan plan, int attempt)
+        {
+            DownloadFileSegmented(task, plan, attempt, null);
+        }
+
+        private void DownloadFileSegmented(DownloadTask task, SegmentedDownloadPlan plan, int attempt, List<DownloadSegmentState> restoredSegments)
+        {
+            string partPath = !String.IsNullOrWhiteSpace(task.PartPath) ? task.PartPath : task.Path + ".part";
+            task.Segmented = true;
+            task.PartPath = partPath;
+            bool restoring = restoredSegments != null && restoredSegments.Count > 0 && task.Total > 0;
+            List<DownloadSegment> segments = restoring ? CreateDownloadSegmentsFromState(restoredSegments, task.Total) : null;
+            restoring = restoring && segments != null && segments.Count > 0 && CanResumeSegmentPartFile(partPath, task.Total);
+
+            if (!restoring)
+            {
+                if (plan == null && !TryCreateSegmentedDownloadPlan(task, out plan))
+                {
+                    task.Segmented = false;
+                    task.PartPath = "";
+                    DownloadFileSingleConnection(task, attempt);
+                    return;
+                }
+
+                partPath = task.Path + ".part";
+                task.PartPath = partPath;
+                task.Total = plan.TotalLength;
+                task.Received = 0;
+                task.SpeedBytesPerSecond = 0;
+                task.StateText = (attempt > 1 ? "重试分片 " + attempt + "/3" : "分片加速") + " " + plan.SegmentCount + "线程";
+                QueueDownloadTaskRowUpdate(task);
+
+                try { if (File.Exists(partPath)) File.Delete(partPath); } catch { }
+                try
+                {
+                    if (File.Exists(task.Path) && new FileInfo(task.Path).Length == 0) File.Delete(task.Path);
+                }
+                catch
+                {
+                }
+
+                using (FileStream output = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    output.SetLength(plan.TotalLength);
+                }
+
+                segments = CreateDownloadSegments(plan.TotalLength, SegmentedDownloadMinSegmentBytes);
+            }
+            else
+            {
+                task.Total = Math.Max(task.Total, SumSegmentLengths(segments));
+                task.Received = SumSegmentReceived(segments);
+                task.SpeedBytesPerSecond = 0;
+                task.StateText = (attempt > 1 ? "继续重试分片 " + attempt + "/3" : "继续分片") + " " + Math.Max(1, MaxSegmentWorkerCount(segments)) + "线程";
+                QueueDownloadTaskRowUpdate(task);
+            }
+
+            int plannedWorkers = restoring ? MaxSegmentWorkerCount(segments) : plan.SegmentCount;
+            int workerCount = Math.Min(Math.Max(1, plannedWorkers), Math.Max(1, segments.Count));
+            foreach (DownloadSegment segment in segments) segment.TotalSegments = workerCount;
+            lock (task.SegmentLock)
+            {
+                task.ActiveSegments = segments;
+                task.RestoredSegments.Clear();
+            }
+            DownloadSegmentRun run = new DownloadSegmentRun();
+            run.RemainingCount = workerCount;
+            ManualResetEvent done = new ManualResetEvent(false);
+            for (int worker = 0; worker < workerCount; worker++)
+            {
+                ThreadPool.QueueUserWorkItem(delegate(object state)
+                {
+                    try
+                    {
+                        while (!task.CancelRequested && run.StopRequested == 0)
+                        {
+                            int index = Interlocked.Increment(ref run.NextSegmentIndex);
+                            if (index < 0 || index >= segments.Count) break;
+                            DownloadSegmentRange(task, segments[index], partPath, run);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!task.CancelRequested) run.Fail(ex);
+                        task.AbortActiveRequests();
+                    }
+                    finally
+                    {
+                        if (Interlocked.Decrement(ref run.RemainingCount) == 0) done.Set();
+                    }
+                });
+            }
+
+            DateTime lastUi = DateTime.MinValue;
+            while (!done.WaitOne(120))
+            {
+                if (task.CancelRequested)
+                {
+                    task.AbortActiveRequests();
+                    throw new OperationCanceledException();
+                }
+                if (run.Failure != null) task.AbortActiveRequests();
+                task.UpdateSpeed();
+                if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                {
+                    lastUi = DateTime.Now;
+                    QueueDownloadTaskRowUpdate(task);
+                }
+            }
+            done.Close();
+
+            if (task.CancelRequested) throw new OperationCanceledException();
+            if (run.Failure != null) throw run.Failure;
+            long expectedTotal = task.Total > 0 ? task.Total : (plan == null ? SumSegmentLengths(segments) : plan.TotalLength);
+            if (Interlocked.Read(ref task.Received) != expectedTotal) throw new IOException("分片下载不完整。");
+
+            if (File.Exists(task.Path)) File.Delete(task.Path);
+            File.Move(partPath, task.Path);
+            task.PartPath = "";
+            task.Total = expectedTotal;
+            task.Received = expectedTotal;
+            task.StateText = PortalText("下载完成", "Complete");
+            lock (task.SegmentLock)
+            {
+                task.ActiveSegments = new List<DownloadSegment>();
+                task.RestoredSegments.Clear();
+            }
+        }
+
+        private void DownloadSegmentRange(DownloadTask task, DownloadSegment segment, string partPath, DownloadSegmentRun run)
+        {
+            if (task.CancelRequested || run.StopRequested != 0) throw new OperationCanceledException();
+            HttpWebRequest request = null;
+            try
+            {
+                long expected = segment.End - segment.Start + 1;
+                long received = Math.Max(0, Math.Min(segment.Received, expected));
+                if (received >= expected) return;
+                long rangeStart = segment.Start + received;
+                using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, true, rangeStart, segment.End, out request))
+                {
+                    if (response.StatusCode != HttpStatusCode.PartialContent)
+                    {
+                        throw new InvalidOperationException("服务器没有按 Range 返回分片内容。");
+                    }
+                    using (Stream input = response.GetResponseStream())
+                    using (FileStream output = new FileStream(partPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                    {
+                        output.Seek(rangeStart, SeekOrigin.Begin);
+                        byte[] buffer = new byte[128 * 1024];
+                        DateTime lastUi = DateTime.MinValue;
+                        while (received < expected)
+                        {
+                            if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
+                            task.PauseEvent.WaitOne();
+                            if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
+                            int toRead = buffer.Length;
+                            long remaining = expected - received;
+                            if (remaining < toRead) toRead = (int)remaining;
+                            int read = input.Read(buffer, 0, toRead);
+                            if (read <= 0) break;
+                            output.Write(buffer, 0, read);
+                            received += read;
+                            segment.Received = received;
+                            Interlocked.Add(ref task.Received, read);
+                            task.StateText = "分片加速 " + segment.TotalSegments + "线程";
+                            task.UpdateSpeed();
+                            if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                            {
+                                lastUi = DateTime.Now;
+                                QueueDownloadTaskRowUpdate(task);
+                            }
+                        }
+                        if (received != expected) throw new IOException("分片内容长度不完整。");
+                    }
+                }
+            }
+            finally
+            {
+                if (request != null) task.UntrackRequest(request);
+            }
+        }
+
+        private List<DownloadSegment> CreateDownloadSegments(long totalLength, long chunkBytes)
+        {
+            List<DownloadSegment> segments = new List<DownloadSegment>();
+            if (chunkBytes < 512L * 1024L) chunkBytes = 512L * 1024L;
+            int index = 0;
+            for (long start = 0; start < totalLength; start += chunkBytes)
+            {
+                long end = Math.Min(totalLength - 1, start + chunkBytes - 1);
+                segments.Add(new DownloadSegment { Index = index++, Start = start, End = end });
+            }
+            return segments;
+        }
+
+        private List<DownloadSegment> CreateDownloadSegmentsFromState(List<DownloadSegmentState> states, long totalLength)
+        {
+            List<DownloadSegment> segments = new List<DownloadSegment>();
+            if (states == null) return segments;
+            foreach (DownloadSegmentState state in states)
+            {
+                if (state == null) continue;
+                if (state.Start < 0 || state.End < state.Start) continue;
+                if (totalLength > 0 && state.End >= totalLength) continue;
+                long expected = state.End - state.Start + 1;
+                long received = Math.Max(0, Math.Min(state.Received, expected));
+                segments.Add(new DownloadSegment
+                {
+                    Index = state.Index,
+                    Start = state.Start,
+                    End = state.End,
+                    Received = received,
+                    TotalSegments = state.TotalSegments
+                });
+            }
+            segments.Sort(delegate(DownloadSegment a, DownloadSegment b)
+            {
+                int byIndex = a.Index.CompareTo(b.Index);
+                return byIndex != 0 ? byIndex : a.Start.CompareTo(b.Start);
+            });
+            return segments;
+        }
+
+        private static bool CanResumeSegmentPartFile(string partPath, long totalLength)
+        {
+            try
+            {
+                return !String.IsNullOrWhiteSpace(partPath) &&
+                       totalLength > 0 &&
+                       File.Exists(partPath) &&
+                       new FileInfo(partPath).Length == totalLength;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static long SumSegmentReceived(List<DownloadSegment> segments)
+        {
+            long total = 0;
+            if (segments == null) return total;
+            foreach (DownloadSegment segment in segments)
+            {
+                if (segment == null) continue;
+                long expected = segment.End - segment.Start + 1;
+                total += Math.Max(0, Math.Min(segment.Received, expected));
+            }
+            return total;
+        }
+
+        private static long SumSegmentLengths(List<DownloadSegment> segments)
+        {
+            long total = 0;
+            if (segments == null) return total;
+            foreach (DownloadSegment segment in segments)
+            {
+                if (segment == null) continue;
+                total += Math.Max(0, segment.End - segment.Start + 1);
+            }
+            return total;
+        }
+
+        private static int MaxSegmentWorkerCount(List<DownloadSegment> segments)
+        {
+            int max = 0;
+            if (segments == null) return max;
+            foreach (DownloadSegment segment in segments)
+            {
+                if (segment != null && segment.TotalSegments > max) max = segment.TotalSegments;
+            }
+            return max <= 0 ? Math.Min(MaxSegmentedDownloadConnections, Math.Max(1, segments.Count)) : max;
+        }
+
+        private RemoteDownloadInfo ProbeRemoteDownloadInfo(string url)
+        {
+            RemoteDownloadInfo info = new RemoteDownloadInfo();
+            try
+            {
+                using (HttpWebResponse response = OpenProbeDownloadResponse(url, true, 0, 0))
+                {
+                    info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
+                    info.TotalLength = ParseContentRangeTotal(response.Headers["Content-Range"]);
+                    if (info.TotalLength <= 0 && response.StatusCode != HttpStatusCode.PartialContent) info.TotalLength = response.ContentLength;
+                }
+            }
+            catch
+            {
+            }
+            return info;
+        }
+
+        private HttpWebResponse OpenProbeDownloadResponse(string url, bool useRange, long rangeStart, long rangeEnd)
+        {
+            string current = url;
+            for (int redirect = 0; redirect < 8; redirect++)
+            {
+                HttpWebRequest request = CreateDownloadHttpRequest(current, 12000, 12000);
+                ApplyDownloadRange(request, useRange, rangeStart, rangeEnd);
+                HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+                if (!IsRedirectStatus(response.StatusCode)) return response;
+                string location = response.Headers["Location"];
+                response.Close();
+                if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
+                current = ResolveRedirectUrl(current, location);
+            }
+            throw new InvalidOperationException("下载地址重定向次数过多。");
+        }
+
+        private HttpWebResponse OpenDownloadResponse(DownloadTask task, string url, bool useRange, long rangeStart, long rangeEnd, out HttpWebRequest activeRequest)
+        {
+            activeRequest = null;
+            string current = url;
+            for (int redirect = 0; redirect < 8; redirect++)
+            {
+                HttpWebRequest request = CreateDownloadHttpRequest(current, 45000, 120000);
+                ApplyDownloadRange(request, useRange, rangeStart, rangeEnd);
+                task.TrackRequest(request);
+                try
+                {
+                    HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+                    if (!IsRedirectStatus(response.StatusCode))
+                    {
+                        activeRequest = request;
+                        return response;
+                    }
+                    string location = response.Headers["Location"];
+                    response.Close();
+                    task.UntrackRequest(request);
+                    if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
+                    current = ResolveRedirectUrl(current, location);
+                }
+                catch
+                {
+                    task.UntrackRequest(request);
+                    throw;
+                }
+            }
+            throw new InvalidOperationException("下载地址重定向次数过多。");
+        }
+
+        private static HttpWebRequest CreateDownloadHttpRequest(string url, int timeout, int readWriteTimeout)
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ToolboxClient";
+            request.Accept = "*/*";
+            request.AllowAutoRedirect = false;
+            request.KeepAlive = true;
+            request.Timeout = timeout;
+            request.ReadWriteTimeout = readWriteTimeout;
+            request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+            try { request.Headers[HttpRequestHeader.AcceptEncoding] = "identity"; } catch { }
+            return request;
+        }
+
+        private static void ApplyDownloadRange(HttpWebRequest request, bool useRange, long rangeStart, long rangeEnd)
+        {
+            if (!useRange) return;
+            if (rangeEnd >= rangeStart) request.AddRange(rangeStart, rangeEnd);
+            else request.AddRange(rangeStart);
+        }
+
+        private static bool HeaderSaysAcceptRanges(HttpWebResponse response)
+        {
+            string value = response == null ? "" : (response.Headers["Accept-Ranges"] ?? "");
+            return value.IndexOf("bytes", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static long ParseContentRangeTotal(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return -1;
+            int slash = value.LastIndexOf('/');
+            if (slash < 0 || slash >= value.Length - 1) return -1;
+            long total;
+            return Int64.TryParse(value.Substring(slash + 1).Trim(), out total) ? total : -1;
+        }
+
+        private static bool IsRedirectStatus(HttpStatusCode status)
+        {
+            int code = (int)status;
+            return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+        }
+
+        private static string ResolveRedirectUrl(string currentUrl, string location)
+        {
+            Uri current = new Uri(currentUrl);
+            Uri next;
+            if (Uri.TryCreate(location, UriKind.Absolute, out next)) return next.AbsoluteUri;
+            return new Uri(current, location).AbsoluteUri;
         }
 
         private void FinishControlledDownload(DownloadTask task, Exception failure)
@@ -6033,8 +6683,10 @@ namespace ToolboxClient
 
             if (cancelled)
             {
+                CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
-                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), "已保留未完成文件，下次点击会继续下载。");
+                string cancelMessage = task.Segmented ? "已取消分片下载，临时文件已清理，下次点击会重新开始下载。" : "已保留未完成文件，下次点击会继续下载。";
+                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), cancelMessage);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
                 StartQueuedDownloads();
@@ -6055,6 +6707,7 @@ namespace ToolboxClient
                 return;
             }
 
+            CleanupSegmentedPart(task);
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
             AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已自动重试 3 次。");
             RemoveActiveDownload(task);
@@ -6062,11 +6715,187 @@ namespace ToolboxClient
             StartQueuedDownloads();
         }
 
+        private void CleanupSegmentedPart(DownloadTask task)
+        {
+            try
+            {
+                if (task == null || String.IsNullOrWhiteSpace(task.PartPath)) return;
+                if (File.Exists(task.PartPath)) File.Delete(task.PartPath);
+            }
+            catch
+            {
+            }
+        }
+
         private void RemoveActiveDownload(DownloadTask task)
         {
             lock (activeDownloadsLock) activeDownloads.Remove(task);
             UpdateDownloadBadges();
+            SavePausedDownloadTasks();
             RenderActiveDownloads();
+        }
+
+        private string PausedDownloadsPath()
+        {
+            return Path.Combine(ClientDataDir(), "paused-downloads-" + ClientKey() + ".json");
+        }
+
+        private void SavePausedDownloadTasks()
+        {
+            try
+            {
+                List<PausedDownloadTaskState> states = new List<PausedDownloadTaskState>();
+                lock (activeDownloadsLock)
+                {
+                    foreach (DownloadTask task in activeDownloads)
+                    {
+                        if (task == null || task.CancelRequested || task.Finished) continue;
+                        states.Add(CreatePausedDownloadTaskState(task));
+                    }
+                }
+                string path = PausedDownloadsPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                if (states.Count == 0)
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                    return;
+                }
+                File.WriteAllText(path, serializer.Serialize(states), Encoding.UTF8);
+            }
+            catch
+            {
+            }
+        }
+
+        private List<PausedDownloadTaskState> LoadPausedDownloadTasks()
+        {
+            try
+            {
+                string path = PausedDownloadsPath();
+                if (!File.Exists(path)) return new List<PausedDownloadTaskState>();
+                string json = File.ReadAllText(path, Encoding.UTF8);
+                List<PausedDownloadTaskState> states = serializer.Deserialize<List<PausedDownloadTaskState>>(json);
+                return states ?? new List<PausedDownloadTaskState>();
+            }
+            catch
+            {
+                return new List<PausedDownloadTaskState>();
+            }
+        }
+
+        private void RestorePausedDownloadTasksOnce()
+        {
+            if (pausedDownloadsRestored) return;
+            pausedDownloadsRestored = true;
+
+            List<PausedDownloadTaskState> states = LoadPausedDownloadTasks();
+            if (states.Count == 0) return;
+
+            int restored = 0;
+            lock (activeDownloadsLock)
+            {
+                foreach (PausedDownloadTaskState state in states)
+                {
+                    if (state == null) continue;
+                    string url = (state.Url ?? "").Trim();
+                    string originalUrl = (state.OriginalUrl ?? "").Trim();
+                    string path = (state.Path ?? "").Trim();
+                    string fileName = SafeDownloadFileName(String.IsNullOrWhiteSpace(state.FileName) ? Path.GetFileName(path) : state.FileName);
+                    if (String.IsNullOrWhiteSpace(url) || String.IsNullOrWhiteSpace(path) || String.IsNullOrWhiteSpace(fileName)) continue;
+                    if (HasActiveDownload(originalUrl, path) || HasActiveDownload(url, path)) continue;
+                    DownloadTask task = new DownloadTask(url, fileName, path, String.IsNullOrWhiteSpace(originalUrl) ? url : originalUrl);
+                    task.Received = Math.Max(0, state.Received);
+                    task.Total = state.Total;
+                    task.Segmented = state.Segmented;
+                    task.PartPath = state.PartPath ?? "";
+                    task.RestoredPaused = true;
+                    task.StateText = PortalText("已暂停", "Paused");
+                    task.PauseEvent.Reset();
+                    task.RestoredSegments.Clear();
+                    if (state.Segments != null)
+                    {
+                        foreach (DownloadSegmentState segment in state.Segments)
+                        {
+                            if (segment == null) continue;
+                            task.RestoredSegments.Add(new DownloadSegmentState
+                            {
+                                Index = segment.Index,
+                                TotalSegments = segment.TotalSegments,
+                                Start = segment.Start,
+                                End = segment.End,
+                                Received = segment.Received
+                            });
+                        }
+                    }
+                    activeDownloads.Add(task);
+                    restored++;
+                }
+            }
+
+            if (restored > 0)
+            {
+                UpdateDownloadBadges();
+                RenderActiveDownloads();
+                status.Text = PortalText("已恢复暂停下载任务", "Restored paused download task(s)");
+            }
+            SavePausedDownloadTasks();
+        }
+
+        private static PausedDownloadTaskState CreatePausedDownloadTaskState(DownloadTask task)
+        {
+            PausedDownloadTaskState state = new PausedDownloadTaskState();
+            state.Id = task.Id;
+            state.Url = task.Url;
+            state.OriginalUrl = task.OriginalUrl;
+            state.FileName = task.FileName;
+            state.Path = task.Path;
+            state.Received = task.Received;
+            state.Total = task.Total;
+            state.StateText = task.StateText;
+            state.Segmented = task.Segmented;
+            state.PartPath = task.PartPath;
+            state.Segments = SnapshotDownloadSegments(task);
+            return state;
+        }
+
+        private static List<DownloadSegmentState> SnapshotDownloadSegments(DownloadTask task)
+        {
+            List<DownloadSegmentState> states = new List<DownloadSegmentState>();
+            if (task == null) return states;
+            lock (task.SegmentLock)
+            {
+                List<DownloadSegment> segments = task.ActiveSegments;
+                if (segments != null && segments.Count > 0)
+                {
+                    foreach (DownloadSegment segment in segments)
+                    {
+                        if (segment == null) continue;
+                        states.Add(new DownloadSegmentState
+                        {
+                            Index = segment.Index,
+                            TotalSegments = segment.TotalSegments,
+                            Start = segment.Start,
+                            End = segment.End,
+                            Received = segment.Received
+                        });
+                    }
+                    return states;
+                }
+                if (task.RestoredSegments == null) return states;
+                foreach (DownloadSegmentState segment in task.RestoredSegments)
+                {
+                    if (segment == null) continue;
+                    states.Add(new DownloadSegmentState
+                    {
+                        Index = segment.Index,
+                        TotalSegments = segment.TotalSegments,
+                        Start = segment.Start,
+                        End = segment.End,
+                        Received = segment.Received
+                    });
+                }
+            }
+            return states;
         }
 
         private string LaunchDownloadedFile(string path)
@@ -6258,6 +7087,7 @@ namespace ToolboxClient
         private void ShowDownloadRecords()
         {
             if (recordsPanel == null) BuildRecordsPanel();
+            RenderActiveDownloads();
             FillDownloadRecords();
             recordsPanel.Visible = !recordsPanel.Visible;
             if (recordsPanel.Visible)
@@ -6271,6 +7101,7 @@ namespace ToolboxClient
         private void ShowDownloadRecordsPanel()
         {
             if (recordsPanel == null) BuildRecordsPanel();
+            RenderActiveDownloads();
             FillDownloadRecords();
             if (settingsPanel != null) settingsPanel.Visible = false;
             recordsPanel.Visible = true;
@@ -7005,6 +7836,8 @@ namespace ToolboxClient
             if (activeDownloadsList == null) return;
             List<DownloadTask> tasks;
             lock (activeDownloadsLock) tasks = new List<DownloadTask>(activeDownloads);
+            Point scrollPosition = activeDownloadsList.AutoScrollPosition;
+            Point pageScrollPosition = CaptureContentScroll();
             activeDownloadsList.SuspendLayout();
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
             activeDownloadsList.AutoScroll = !studioInline || tasks.Count > 1;
@@ -7032,6 +7865,8 @@ namespace ToolboxClient
                 }
                 activeDownloadsList.Controls.Add(recordsProgressLabel);
                 activeDownloadsList.ResumeLayout();
+                RestoreActiveDownloadScroll(scrollPosition);
+                RestoreContentScrollSoon(pageScrollPosition);
                 return;
             }
 
@@ -7073,6 +7908,38 @@ namespace ToolboxClient
                 activeDownloadRows.Remove(id);
             }
             activeDownloadsList.ResumeLayout();
+            RestoreActiveDownloadScroll(scrollPosition);
+            RestoreContentScrollSoon(pageScrollPosition);
+        }
+
+        private void RestoreActiveDownloadScroll(Point scrollPosition)
+        {
+            if (activeDownloadsList == null || !activeDownloadsList.AutoScroll) return;
+            activeDownloadsList.AutoScrollPosition = new Point(Math.Abs(scrollPosition.X), Math.Abs(scrollPosition.Y));
+        }
+
+        private Point CaptureContentScroll()
+        {
+            return content == null ? Point.Empty : content.AutoScrollPosition;
+        }
+
+        private void RestoreContentScroll(Point scrollPosition)
+        {
+            if (content == null || !content.AutoScroll) return;
+            content.AutoScrollPosition = new Point(Math.Abs(scrollPosition.X), Math.Abs(scrollPosition.Y));
+        }
+
+        private void RestoreContentScrollSoon(Point scrollPosition)
+        {
+            RestoreContentScroll(scrollPosition);
+            if (IsDisposed) return;
+            try
+            {
+                BeginInvoke(new Action(delegate { RestoreContentScroll(scrollPosition); }));
+            }
+            catch
+            {
+            }
         }
 
         private Panel CreateDownloadTaskRow(DownloadTask task)
@@ -7134,19 +8001,59 @@ namespace ToolboxClient
             resume.Left = cancel.Left - buttonWidth - buttonGap;
             pause.Left = resume.Left - buttonWidth - buttonGap;
             cancel.Top = resume.Top = pause.Top = buttonTop;
-            pause.Click += delegate { task.PauseEvent.Reset(); task.StateText = PortalText("已暂停", "Paused"); UpdateDownloadTaskRow(task, row); RenderActiveDownloads(); };
-            resume.Click += delegate { task.PauseEvent.Set(); task.StateText = PortalText("下载中", "Downloading"); UpdateDownloadTaskRow(task, row); RenderActiveDownloads(); };
+            pause.Click += delegate
+            {
+                Point pageScrollPosition = CaptureContentScroll();
+                try
+                {
+                    if (!CanPauseDownloadTask(task)) return;
+                    task.PauseEvent.Reset();
+                    task.StateText = PortalText("已暂停", "Paused");
+                    UpdateDownloadTaskRow(task, row);
+                    SavePausedDownloadTasks();
+                    if (resume != null && resume.Enabled) resume.Focus();
+                }
+                finally
+                {
+                    RestoreContentScrollSoon(pageScrollPosition);
+                }
+            };
+            resume.Click += delegate
+            {
+                Point pageScrollPosition = CaptureContentScroll();
+                try
+                {
+                    if (!CanResumeDownloadTask(task)) return;
+                    if (!ResumeExistingDownloadTask(task)) StartQueuedDownloads();
+                    UpdateDownloadTaskRow(task, row);
+                    SavePausedDownloadTasks();
+                    if (pause != null && pause.Enabled) pause.Focus();
+                }
+                finally
+                {
+                    RestoreContentScrollSoon(pageScrollPosition);
+                }
+            };
             cancel.Click += delegate
             {
-                task.Cancel();
-                task.StateText = PortalText("正在取消", "Canceling");
-                if (!task.Started)
+                Point pageScrollPosition = CaptureContentScroll();
+                try
                 {
-                    FinishControlledDownload(task, new OperationCanceledException());
-                    return;
+                    task.Cancel();
+                    task.StateText = PortalText("正在取消", "Canceling");
+                    if (!task.Started)
+                    {
+                        FinishControlledDownload(task, new OperationCanceledException());
+                        return;
+                    }
+                    UpdateDownloadTaskRow(task, row);
+                    SavePausedDownloadTasks();
+                    RenderActiveDownloads();
                 }
-                UpdateDownloadTaskRow(task, row);
-                RenderActiveDownloads();
+                finally
+                {
+                    RestoreContentScrollSoon(pageScrollPosition);
+                }
             };
             row.Resize += delegate
             {
@@ -7165,8 +8072,36 @@ namespace ToolboxClient
             return row;
         }
 
+        private static bool IsDownloadTaskPaused(DownloadTask task)
+        {
+            return task != null && !task.PauseEvent.WaitOne(0);
+        }
+
+        private static bool IsDownloadWorkerRunning(DownloadTask task)
+        {
+            return task != null && Interlocked.CompareExchange(ref task.WorkerRunning, 0, 0) != 0;
+        }
+
+        private static bool LooksPausedDownloadTask(DownloadTask task)
+        {
+            if (task == null || String.IsNullOrWhiteSpace(task.StateText)) return false;
+            return task.StateText.IndexOf("暂停", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   task.StateText.IndexOf("paused", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool CanPauseDownloadTask(DownloadTask task)
+        {
+            return task != null && task.Started && !task.Finished && !task.CancelRequested && !IsDownloadTaskPaused(task);
+        }
+
+        private static bool CanResumeDownloadTask(DownloadTask task)
+        {
+            return task != null && !task.Finished && !task.CancelRequested && IsDownloadTaskPaused(task) && (task.Started || task.RestoredPaused);
+        }
+
         private void UpdateDownloadTaskRow(DownloadTask task, Panel row)
         {
+            if (task == null || row == null || row.IsDisposed) return;
             int percent = task.Total > 0 ? Math.Max(0, Math.Min(100, (int)(task.Received * 100L / task.Total))) : 0;
             Label label = row.Controls["taskFileLabel"] as Label;
             Label meta = row.Controls["taskMetaLabel"] as Label;
@@ -7190,11 +8125,11 @@ namespace ToolboxClient
                 bar.BackColor = LightTheme ? Color.FromArgb(226, 236, 246) : Color.FromArgb(31, 45, 68);
             }
             bool paused = !task.PauseEvent.WaitOne(0);
-            if (pause != null) pause.Enabled = !paused && !task.CancelRequested;
-            if (resume != null) resume.Enabled = paused && !task.CancelRequested;
-            if (pause != null) pause.Enabled = task.Started && !paused && !task.CancelRequested;
-            if (resume != null) resume.Enabled = task.Started && paused && !task.CancelRequested;
-            if (cancel != null) cancel.Enabled = !task.CancelRequested;
+            bool canChangePauseState = task.Started && !task.Finished && !task.CancelRequested;
+            bool canResumeRestoredTask = task.RestoredPaused && !task.Finished && !task.CancelRequested;
+            if (pause != null) pause.Enabled = canChangePauseState && !paused;
+            if (resume != null) resume.Enabled = (canChangePauseState && paused) || canResumeRestoredTask;
+            if (cancel != null) cancel.Enabled = !task.CancelRequested && !task.Finished;
             if (pause != null) pause.Invalidate();
             if (resume != null) resume.Invalidate();
             if (cancel != null) cancel.Invalidate();
@@ -7606,6 +8541,7 @@ namespace ToolboxClient
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            SavePausedDownloadTasks();
             CleanupDownloadedFilesOnExit();
             base.OnFormClosing(e);
         }
@@ -8631,6 +9567,14 @@ namespace ToolboxClient
             string text = Convert.ToString(value);
             if (text == "1" || text.Equals("yes", StringComparison.OrdinalIgnoreCase) || text.Equals("on", StringComparison.OrdinalIgnoreCase)) return true;
             if (text == "0" || text.Equals("no", StringComparison.OrdinalIgnoreCase) || text.Equals("off", StringComparison.OrdinalIgnoreCase)) return false;
+            return fallback;
+        }
+
+        private static string NormalizeViewMode(string value, string fallback)
+        {
+            string text = (value ?? "").Trim().ToLowerInvariant();
+            if (text == "list" || text == "列表" || text == "listmode" || text == "list_mode") return "list";
+            if (text == "grid" || text == "宫格" || text == "gongge" || text == "gridmode" || text == "grid_mode") return "grid";
             return fallback;
         }
 
@@ -9747,6 +10691,7 @@ namespace ToolboxClient
         {
             public string DownloadDirectory { get; set; }
             public string Theme { get; set; }
+            public string ViewMode { get; set; }
             public int MaxParallelDownloads { get; set; }
             public bool AutoStart { get; set; }
             public bool DeleteDownloadsOnExit { get; set; }
@@ -9793,6 +10738,30 @@ namespace ToolboxClient
             public string Message { get; set; }
         }
 
+        internal sealed class PausedDownloadTaskState
+        {
+            public string Id { get; set; }
+            public string Url { get; set; }
+            public string OriginalUrl { get; set; }
+            public string FileName { get; set; }
+            public string Path { get; set; }
+            public long Received { get; set; }
+            public long Total { get; set; }
+            public string StateText { get; set; }
+            public bool Segmented { get; set; }
+            public string PartPath { get; set; }
+            public List<DownloadSegmentState> Segments { get; set; }
+        }
+
+        internal sealed class DownloadSegmentState
+        {
+            public int Index { get; set; }
+            public int TotalSegments { get; set; }
+            public long Start { get; set; }
+            public long End { get; set; }
+            public long Received { get; set; }
+        }
+
         private sealed class DownloadRequest
         {
             public string OriginalUrl = "";
@@ -9806,6 +10775,7 @@ namespace ToolboxClient
         private sealed class DownloadPrepareResult
         {
             public string OriginalUrl = "";
+            public string DisplayName = "";
             public DownloadRequest Download;
             public string FileName = "";
             public string Path = "";
@@ -9872,11 +10842,20 @@ namespace ToolboxClient
             public volatile HttpWebRequest ActiveRequest;
             public volatile bool Started;
             public volatile bool Finished;
+            public volatile bool Segmented;
+            public volatile string PartPath = "";
+            public volatile bool RestoredPaused;
+            public int WorkerRunning;
             public long Received;
             public long Total = -1;
             public double SpeedBytesPerSecond;
             public string StateText = "准备下载";
             public int Attempt = 0;
+            public readonly object SegmentLock = new object();
+            public List<DownloadSegment> ActiveSegments = new List<DownloadSegment>();
+            public readonly List<DownloadSegmentState> RestoredSegments = new List<DownloadSegmentState>();
+            private readonly object requestLock = new object();
+            private readonly List<HttpWebRequest> activeRequests = new List<HttpWebRequest>();
             private long lastSpeedBytes;
             private DateTime lastSpeedAt = DateTime.Now;
 
@@ -9905,24 +10884,111 @@ namespace ToolboxClient
             {
                 CancelRequested = true;
                 PauseEvent.Set();
-                try
+                AbortActiveRequests();
+            }
+
+            public void TrackRequest(HttpWebRequest request)
+            {
+                if (request == null) return;
+                lock (requestLock)
                 {
-                    HttpWebRequest request = ActiveRequest;
-                    if (request != null) request.Abort();
+                    activeRequests.Add(request);
+                    ActiveRequest = request;
                 }
-                catch
+            }
+
+            public void UntrackRequest(HttpWebRequest request)
+            {
+                if (request == null) return;
+                lock (requestLock)
                 {
+                    activeRequests.Remove(request);
+                    ActiveRequest = activeRequests.Count > 0 ? activeRequests[activeRequests.Count - 1] : null;
                 }
+            }
+
+            public void AbortActiveRequests()
+            {
+                HttpWebRequest[] requests;
+                lock (requestLock)
+                {
+                    if (activeRequests.Count == 0)
+                    {
+                        ActiveRequest = null;
+                        return;
+                    }
+                    requests = activeRequests.ToArray();
+                    activeRequests.Clear();
+                    ActiveRequest = null;
+                }
+                foreach (HttpWebRequest request in requests)
+                {
+                    try
+                    {
+                        request.Abort();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
+        private sealed class RemoteDownloadInfo
+        {
+            public bool SupportsRanges;
+            public long TotalLength = -1;
+        }
+
+        private sealed class SegmentedDownloadPlan
+        {
+            public long TotalLength;
+            public int SegmentCount;
+        }
+
+        private sealed class DownloadSegment
+        {
+            public int Index;
+            public int TotalSegments;
+            public long Start;
+            public long End;
+            public long Received;
+        }
+
+        private sealed class DownloadSegmentRun
+        {
+            public int StopRequested;
+            public int RemainingCount;
+            public int NextSegmentIndex = -1;
+            public Exception Failure;
+            private readonly object failureLock = new object();
+
+            public void Fail(Exception ex)
+            {
+                if (ex == null) return;
+                lock (failureLock)
+                {
+                    if (Failure == null) Failure = ex;
+                }
+                Interlocked.Exchange(ref StopRequested, 1);
             }
         }
     }
 
     internal sealed class BufferedFlowLayoutPanel : FlowLayoutPanel
     {
+        public bool SuppressFocusAutoScroll { get; set; }
+
         public BufferedFlowLayoutPanel()
         {
             DoubleBuffered = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            if (SuppressFocusAutoScroll) return DisplayRectangle.Location;
+            return base.ScrollToControl(activeControl);
         }
     }
 

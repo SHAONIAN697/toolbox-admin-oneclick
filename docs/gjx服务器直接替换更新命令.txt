@@ -31,4 +31,4 @@ systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "withTargetUser" wwwroot/admin.js
 ! grep -q "X-Target-User" wwwroot/admin.js
-echo "OK: updated, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+echo "OK: updated, data preserved. Reopen admin EXE to load the latest backend. Browser users can Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"

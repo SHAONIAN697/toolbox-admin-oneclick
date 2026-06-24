@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026062301">
+  <link rel="stylesheet" href="/styles.css?v=2026062224">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -109,6 +109,7 @@
           <label>副标题<input id="appSubtitle"></label>
           <label>版本号<input id="appVersion"></label>
           <label>主题色<input id="appTheme" type="color"></label>
+          <label>默认显示模式<select id="appDefaultViewMode"><option value="grid">默认宫格</option><option value="list">默认列表</option></select></label>
           <label>Logo 链接<input id="appLogo"></label>
           <label>图标链接<input id="appIcon"></label>
           <label>登录页提示<input id="loginHintInput"></label>
@@ -271,6 +272,13 @@
     </section>
 
     <section class="view" id="view-dock">
+      <div class="panel super-only" id="adminDesktopPanel" hidden>
+        <div class="panel-head">
+          <h2>后台管理 EXE</h2>
+          <button id="downloadAdminDesktopBtn" type="button">下载后台 EXE</button>
+        </div>
+        <p class="note">下载后双击打开，先登录后台账号，可选择记住密码和自动登录。后台更新后关闭窗口并重新打开 EXE 即可进入最新版。</p>
+      </div>
       <div class="panel">
         <div class="panel-head">
           <h2>专属工具箱下载</h2>
@@ -439,6 +447,20 @@
     </div>
   </div>
 
-  <script src="/admin.js?v=2026062301"></script>
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var token = params.get('desktopToken') || '';
+      if (!token) return;
+      localStorage.setItem('toolbox_session_token', token);
+      params.delete('desktopToken');
+      params.delete('desktop');
+      params.delete('_t');
+      var clean = params.toString();
+      window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
+    }());
+  </script>
+  <script src="/admin.js?v=2026062224"></script>
+  <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

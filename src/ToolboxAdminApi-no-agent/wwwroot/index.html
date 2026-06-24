@@ -140,7 +140,7 @@
           <label>新密码<input id="accountNewPassword" type="password"></label>
         </div>
       </div>
-    </section>
+      </section>
 
     <section class="view" id="view-buttons">
       <div class="panel">
@@ -202,8 +202,7 @@
           <label>邮箱<input id="newUserEmail" type="email"></label>
           <label>显示名称<input id="newDisplayName"></label>
           <label>密码<input id="newUserPassword" type="password"></label>
-          <label>角色<select id="newUserRole"><option value="user">普通用户</option><option value="agent">代理</option><option value="super">总管理员</option></select></label>
-          <label>代理余额<input id="newUserBalance" type="number" min="0" step="0.01" value="0"></label>
+          <label>角色<select id="newUserRole"><option value="user">普通用户</option><option value="super">总管理员</option></select></label>
         </div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
@@ -344,18 +343,6 @@
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
-          <h2>代理与邀请码扣费</h2>
-          <button id="saveAgentSettingsBtn" type="button">保存</button>
-        </div>
-        <div class="form-grid compact">
-          <label>每个邀请码扣费<input id="agentInvitePrice" type="number" min="0" step="0.01"></label>
-          <label>币种<input id="agentCurrency" value="CNY"></label>
-          <label>订单冷却分钟<input id="agentOrderCooldown" type="number" min="0" step="1"></label>
-          <label class="toggle-line">允许负余额<span><input id="agentAllowNegative" type="checkbox"> 允许</span></label>
-        </div>
-      </div>
-      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
-        <div class="panel-head">
           <h2>支付通道</h2>
           <button id="savePaySettingsBtn" type="button">保存</button>
         </div>
@@ -378,19 +365,7 @@
           <button id="resetTemplateBtn" class="danger" type="button">恢复默认模板</button>
         </div>
       </div>
-      <div class="panel collapsible-panel" data-collapsible-panel>
-        <div class="panel-head">
-          <h2>代理订单</h2>
-          <button id="refreshOrdersBtn" type="button">刷新</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>订单号</th><th>代理</th><th>金额</th><th>状态</th><th>内容</th><th></th></tr></thead>
-            <tbody id="orderRows"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+      </section>
   </main>
 
   <div id="noticeComposer" class="modal-overlay" hidden>
@@ -428,3 +403,5 @@
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>
+
+

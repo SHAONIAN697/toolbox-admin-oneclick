@@ -15,6 +15,7 @@
   buttons: [],
   inviteCurrency: 'CNY',
   noticePopupShownIds: new Set(),
+  activeView: localStorage.getItem('toolbox_active_view') || 'overview',
   clientDownloading: false,
   clientBuildTimer: null,
   clientBuildStartedAt: 0,
@@ -22,6 +23,22 @@
   inviteRefreshBusy: false,
   inviteSnapshot: ''
 };
+
+function applyDesktopTokenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('desktopToken') || '';
+  if (!token) return;
+  state.token = token;
+  localStorage.setItem('toolbox_session_token', token);
+  params.delete('desktopToken');
+  params.delete('desktop');
+  params.delete('_t');
+  const query = params.toString();
+  const cleanUrl = window.location.pathname + (query ? `?${query}` : '') + window.location.hash;
+  window.history.replaceState(null, document.title, cleanUrl);
+}
+
+applyDesktopTokenFromUrl();
 
 const $ = (id) => document.getElementById(id);
 
@@ -233,13 +250,18 @@ function setupCollapsiblePanels() {
       panel.classList.toggle('is-collapsed', collapsed);
       toggle.textContent = collapsed ? '展开' : '收起';
       toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      if (panel.id) {
+        localStorage.setItem(`toolbox_panel_${panel.id}`, collapsed ? '1' : '0');
+      }
       [...panel.children].filter((child) => child !== head).forEach((child) => {
         child.classList.add('collapsible-body');
         child.hidden = collapsed || child.dataset.keepHidden === '1';
       });
     };
 
-    setCollapsed(panel.dataset.defaultCollapsed === '1');
+    const savedCollapsed = panel.id ? localStorage.getItem(`toolbox_panel_${panel.id}`) : '';
+    const shouldCollapse = savedCollapsed === '1' || (savedCollapsed !== '0' && panel.dataset.defaultCollapsed === '1');
+    setCollapsed(shouldCollapse);
     toggle.onclick = (event) => {
       event.stopPropagation();
       setCollapsed(!panel.classList.contains('is-collapsed'));
@@ -426,11 +448,11 @@ function isSuper() {
 }
 
 function isAgent() {
-  return state.currentUser?.role === 'agent';
+  return false;
 }
 
 function isManager() {
-  return isSuper() || isAgent();
+  return isSuper();
 }
 
 function isTemplateMode() {
@@ -497,6 +519,15 @@ async function api(path, options = {}) {
   return text;
 }
 
+async function loadOptional(label, loader) {
+  try {
+    return await loader();
+  } catch (error) {
+    console.warn(`${label}读取失败：`, error);
+    return null;
+  }
+}
+
 function setLoginMessage(message, type = 'error') {
   $('loginError').textContent = message || '';
   if (message) showToast(message, type);
@@ -509,6 +540,7 @@ async function loadAll() {
   }
 
   showToast('正在读取配置...', 'warn');
+  const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
   let me;
   try {
     me = await api('/api/admin/me');
@@ -524,8 +556,8 @@ async function loadAll() {
     if (isManager()) {
       await loadUsers();
       if (isSuper()) {
-        await loadMailSettings();
-        await loadSystemSettings();
+        await loadOptional('邮件设置', loadMailSettings);
+        await loadOptional('系统设置', loadSystemSettings);
       }
       if (!state.targetUserId) {
         state.targetUserId = state.currentUser.id;
@@ -535,11 +567,12 @@ async function loadAll() {
       state.targetUserId = state.currentUser.id;
       state.users = [];
     }
-    await loadNotices();
+    await loadOptional('通知', loadNotices);
 
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
     renderAll();
+    if (viewToRestore) switchView(viewToRestore);
     showUnreadNoticePopup();
     showToast('配置读取成功。', 'success');
   } catch (error) {
@@ -558,9 +591,11 @@ function handleLoadFailure(error) {
   state.users = [];
   state.invites = [];
   state.inviteSnapshot = '';
+  state.activeView = 'overview';
   stopInviteAutoRefresh();
   localStorage.removeItem('toolbox_session_token');
   localStorage.removeItem('toolbox_target_user');
+  localStorage.removeItem('toolbox_active_view');
   showLogin();
   showToast(`读取配置失败：${error.message}`, 'error');
 }
@@ -755,7 +790,7 @@ function inviteSnapshot(invites) {
     usedCount: Number(invite.usedCount || 0),
     maxUses: Number(invite.maxUses || 1),
     usedBy: invite.usedBy || [],
-    ownerAgentId: invite.ownerAgentId || '',
+    registerRole: invite.registerRole || 'user',
     createdAt: invite.createdAt || ''
   })));
 }
@@ -818,8 +853,6 @@ async function loadMailSettings() {
 async function loadSystemSettings() {
   if (!isSuper()) return;
   state.system = await api('/api/super/system');
-  const result = await api('/api/super/orders');
-  state.orders = result.orders || [];
 }
 
 async function loadNotices() {
@@ -845,15 +878,12 @@ function renderUserContext() {
     switchView('overview');
   }
 
-  const roleText = state.currentUser ? (state.currentUser.roleLabel || (superMode ? '总管理员' : (isAgent() ? '代理' : '普通用户'))) : '';
+  const roleText = state.currentUser ? (state.currentUser.roleLabel || (superMode ? '总管理员' : '普通用户')) : '';
   let userText = state.currentUser
     ? `${displayNameOf(state.currentUser)}（${roleText}）`
     : '未登录';
   if (isTemplateMode()) {
     userText += ' · 新用户模板';
-  }
-  if (isAgent()) {
-    userText += ` · 余额：${formatMoney(state.currentUser.balance, state.inviteCurrency)}`;
   }
   $('currentUserLabel').textContent = userText;
 
@@ -891,6 +921,8 @@ function switchView(view) {
     setStatus('当前账号没有 JSON 管理权限。', true);
     view = 'overview';
   }
+  state.activeView = view;
+  localStorage.setItem('toolbox_active_view', view);
   document.querySelectorAll('.nav').forEach((x) => x.classList.remove('active'));
   document.querySelectorAll('.view').forEach((x) => x.classList.remove('show'));
   const nav = document.querySelector(`.nav[data-view="${view}"]`);
@@ -1347,16 +1379,9 @@ function renderUsers() {
           <span>${escapeHtml(user.username || '')} · ${escapeHtml(user.email || '未填写邮箱')}</span>
           <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}</small>
         </div>
-        <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</span>
+        <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : '普通用户'))}</span>
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
         <span class="pill ${user.canViewJson === false ? 'muted-pill' : ''}">JSON ${user.canViewJson === false ? '不可见' : '可见'}</span>
-        ${user.role === 'agent' ? `
-          <label class="inline-balance">
-            <span>代理余额</span>
-            <input data-field="balance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() ? 'disabled' : ''}>
-            <button data-action="save-balance" type="button" ${!isSuper() ? 'disabled' : ''}>保存余额</button>
-          </label>
-        ` : ''}
       </div>
       <div class="user-card-detail" hidden>
         <div class="form-grid">
@@ -1366,12 +1391,10 @@ function renderUsers() {
           <label>角色
             <select data-field="role" ${!isSuper() ? 'disabled' : ''}>
               <option value="user" ${user.role === 'user' ? 'selected' : ''}>普通用户</option>
-              <option value="agent" ${user.role === 'agent' ? 'selected' : ''}>代理</option>
               <option value="super" ${user.role === 'super' ? 'selected' : ''}>总管理员</option>
             </select>
           </label>
           <label>新密码<input data-field="password" type="password" placeholder="留空不修改" ${!isSuper() ? 'disabled' : ''}></label>
-          <label>代理余额<input data-field="detailBalance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() || user.role !== 'agent' ? 'disabled' : ''}></label>
           <label class="toggle-line">JSON 管理<span><input data-field="canViewJson" type="checkbox" ${user.canViewJson !== false ? 'checked' : ''} ${user.role === 'super' || !isSuper() ? 'disabled' : ''}> 可查看</span></label>
           <label class="wide">工具箱对接地址<input class="user-endpoint" readonly value="${escapeAttr(endpoint)}"></label>
         </div>
@@ -1392,8 +1415,6 @@ function renderUsers() {
     };
     card.querySelector('[data-action="download"]').onclick = () => downloadClient(user.id);
     card.querySelector('[data-action="save"]').onclick = () => saveUser(user.id, card);
-    const saveBalanceBtn = card.querySelector('[data-action="save-balance"]');
-    if (saveBalanceBtn) saveBalanceBtn.onclick = () => saveUser(user.id, card);
     card.querySelector('[data-action="toggle-active"]').onclick = () => toggleUserActive(user.id, user.active !== false);
     card.querySelector('[data-action="reset-key"]').onclick = () => resetUserApiKey(user.id);
     card.querySelector('[data-action="delete"]').onclick = () => deleteUser(user.id, user.username);
@@ -1469,7 +1490,7 @@ function renderInvites() {
 
   if (!visibleInvites.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="8" class="empty-cell">当前筛选下没有邀请码。</td>`;
+    tr.innerHTML = `<td colspan="11" class="empty-cell">当前筛选下没有邀请码。</td>`;
     tbody.appendChild(tr);
   }
 
@@ -1488,7 +1509,7 @@ function renderInvites() {
       <td><span class="invite-badge ${invite.active ? 'is-active' : 'is-inactive'}">${invite.active ? '可用' : '已停用'}</span></td>
       <td><span class="invite-badge ${inviteUsed ? 'is-used' : 'is-unused'}">${inviteUsed ? '已使用' : '未使用'}</span></td>
       <td>${usedCount} / ${maxUses}</td>
-      <td>${escapeHtml(usedBy || '暂无')}${invite.ownerAgentId ? '<br><small>代理邀请码</small>' : ''}</td>
+      <td>${escapeHtml(usedBy || '暂无')}</td>
       <td class="actions">
         <button data-invite-action="copy">复制</button>
         <button data-invite-action="toggle">${invite.active ? '停用' : '启用'}</button>
@@ -1524,15 +1545,16 @@ function renderNotices() {
   const title = $('noticeAreaTitle');
   if (title) title.textContent = state.system?.locations?.noticeAreaTitle || '全部未读';
   const unread = state.notices.filter((item) => !item.read).length;
+  const totalUnread = unread;
   const badge = $('noticeUnreadBadge');
   if (badge) {
-    badge.textContent = String(unread);
-    badge.hidden = unread <= 0;
+    badge.textContent = String(totalUnread);
+    badge.hidden = totalUnread <= 0;
   }
   const bell = $('noticeBellBtn');
   if (bell) {
-    bell.classList.toggle('has-unread', unread > 0);
-    bell.title = unread > 0 ? `通知：${unread} 条未读` : '通知';
+    bell.classList.toggle('has-unread', totalUnread > 0);
+    bell.title = totalUnread > 0 ? `通知：${totalUnread} 条提醒` : '通知';
   }
   if (!state.notices.length) {
     list.textContent = '暂无通知';
@@ -1657,7 +1679,6 @@ function showUnreadNoticePopup() {
 function renderSystemSettings() {
   if (!isSuper() || !state.system) return;
   const locations = state.system.locations || {};
-  const agent = state.system.agent || {};
   const pay = state.system.pay || {};
   const integrity = state.system.integrity || {};
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
@@ -1667,16 +1688,11 @@ function renderSystemSettings() {
   if ($('integrityEnabled')) $('integrityEnabled').checked = integrity.enabled !== false;
   if ($('integrityTokenTtl')) $('integrityTokenTtl').value = Number(integrity.tokenTtlMinutes || 10080);
   if ($('integrityRotateSecret')) $('integrityRotateSecret').checked = false;
-  if ($('agentInvitePrice')) $('agentInvitePrice').value = Number(agent.invitePrice || 0);
-  if ($('agentCurrency')) $('agentCurrency').value = agent.currency || 'CNY';
-  if ($('agentOrderCooldown')) $('agentOrderCooldown').value = Number(agent.orderCooldownMinutes ?? 30);
-  if ($('agentAllowNegative')) $('agentAllowNegative').checked = !!agent.allowNegativeBalance;
   if ($('payWechatChannel')) $('payWechatChannel').value = pay.wechatChannel || 'disabled';
   if ($('payAlipayChannel')) $('payAlipayChannel').value = pay.alipayChannel || 'disabled';
   if ($('payWechatOrder')) $('payWechatOrder').value = Number(pay.wechatOrder || 10);
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
   renderPayGatewayCards();
-  renderOrders();
 }
 
 function renderPopupSettings() {
@@ -2019,9 +2035,9 @@ function renderOrders() {
   const paymentLabels = { balance: '余额支付', manual: '人工审核', interface: '接口支付' };
   const orderStatusLabels = { pending: '待处理', paid: '已支付', done: '已处理', cancelled: '已取消' };
   tbody.innerHTML = orders.map((order) => `
-    <tr data-order-id="${escapeAttr(order.id || '')}">
+    <tr data-order-id="${escapeAttr(order.id || '')}" data-order-user-id="${escapeAttr(order.userId || '')}">
       <td>${escapeHtml(order.id || '')}<br><small>${escapeHtml(formatDateTime(order.createdAt))}</small></td>
-      <td>${escapeHtml(order.agentDisplayName || userNameFromId(order.agentId, order.agentUsername || ''))}</td>
+      <td>${escapeHtml(order.displayName || userNameFromId(order.userId, order.username || ''))}</td>
       <td>${Number(order.amount || 0).toFixed(2)} ${escapeHtml(order.currency || 'CNY')}</td>
       <td>${escapeHtml(orderStatusLabels[order.status] || order.status || '待处理')}</td>
       <td>
@@ -3113,7 +3129,6 @@ async function addUser() {
   const displayName = $('newDisplayName').value.trim();
   const password = $('newUserPassword').value.trim();
   const role = $('newUserRole').value;
-  const balance = Number($('newUserBalance')?.value || 0);
 
   if (!username || !password) {
     setStatus('用户名和初始密码不能为空。', true);
@@ -3122,7 +3137,7 @@ async function addUser() {
 
   await api('/api/super/users', {
     method: 'POST',
-    body: JSON.stringify({ username, email, displayName, password, role, balance })
+    body: JSON.stringify({ username, email, displayName, password, role })
   });
 
   $('newUsername').value = '';
@@ -3150,126 +3165,28 @@ function resetInviteForm() {
   $('newInviteMaxUses').value = '1';
 }
 
-function closeInvitePaymentDialog(choice = null) {
-  const overlay = $('invitePaymentOverlay');
-  if (!overlay) return;
-  overlay.hidden = true;
-  if (overlay._resolve) {
-    overlay._resolve(choice);
-    overlay._resolve = null;
-  }
-}
-
-function ensureInvitePaymentDialog() {
-  let overlay = $('invitePaymentOverlay');
-  if (overlay) return overlay;
-  overlay = document.createElement('div');
-  overlay.id = 'invitePaymentOverlay';
-  overlay.className = 'modal-overlay';
-  overlay.hidden = true;
-  overlay.innerHTML = `
-    <div class="modal-card invite-payment-card" role="dialog" aria-modal="true" aria-labelledby="invitePaymentTitle">
-      <div class="modal-head">
-        <h2 id="invitePaymentTitle">邀请码付款</h2>
-        <button id="closeInvitePaymentBtn" type="button" aria-label="关闭">×</button>
-      </div>
-      <div id="invitePaymentSummary" class="invite-payment-summary"></div>
-      <div id="invitePaymentActions" class="invite-payment-actions"></div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  overlay.onclick = (event) => {
-    if (event.target === overlay) closeInvitePaymentDialog();
-  };
-  $('closeInvitePaymentBtn').onclick = () => closeInvitePaymentDialog();
-  return overlay;
-}
-
-function showInvitePaymentDialog(quote) {
-  const overlay = ensureInvitePaymentDialog();
-  const currency = quote.currency || 'CNY';
-  const channels = quote.channels || [];
-  const canPayBalance = quote.balanceEnough || quote.allowNegativeBalance;
-  $('invitePaymentSummary').innerHTML = `
-    <div class="invite-pay-grid">
-      <div><span>账户余额</span><strong>${escapeHtml(formatMoney(quote.balance, currency))}</strong></div>
-      <div><span>本次需付</span><strong>${escapeHtml(formatMoney(quote.total, currency))}</strong></div>
-      <div><span>单个价格</span><strong>${escapeHtml(formatMoney(quote.price, currency))}</strong></div>
-      <div><span>生成数量</span><strong>${Number(quote.request?.count || 1)} 个</strong></div>
-    </div>
-    <p class="invite-pay-note">请选择付款方式提交订单，必须总管理员通过后才会生成邀请码。</p>
-  `;
-  const actions = $('invitePaymentActions');
-  actions.innerHTML = '';
-  const balanceBtn = document.createElement('button');
-  balanceBtn.type = 'button';
-  balanceBtn.textContent = canPayBalance ? '余额支付，提交审核' : '余额不足';
-  balanceBtn.disabled = !canPayBalance;
-  balanceBtn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'balance' });
-  actions.appendChild(balanceBtn);
-
-  channels.forEach((channel) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = `${channel.label || channel.key}支付，提交审核`;
-    btn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'interface', paymentChannel: channel.key });
-    actions.appendChild(btn);
-  });
-
-  const manualBtn = document.createElement('button');
-  manualBtn.type = 'button';
-  manualBtn.textContent = '提交总管理审核';
-  manualBtn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'manual' });
-  actions.appendChild(manualBtn);
-
-  if (!channels.length) {
-    const tip = document.createElement('p');
-    tip.className = 'invite-pay-note';
-    tip.textContent = '当前未配置支付接口，可提交订单等待总管理员后台通过。';
-    actions.appendChild(tip);
-  }
-
-  overlay.hidden = false;
-  return new Promise((resolve) => {
-    overlay._resolve = resolve;
-  });
-}
-
 async function createInvite() {
   const payload = invitePayloadFromForm();
-  let payment = {};
 
-  if (isAgent()) {
-    const quote = await api('/api/super/invites/quote', {
+  try {
+    const result = await api('/api/super/invites', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    state.inviteCurrency = quote.currency || state.inviteCurrency || 'CNY';
-    if (state.currentUser) state.currentUser.balance = quote.balance;
+
+    resetInviteForm();
+    try {
+      await loadInvites();
+    } catch (error) {
+      console.warn('刷新邀请码失败：', error);
+    }
     renderUserContext();
-    const choice = await showInvitePaymentDialog(quote);
-    if (!choice) return;
-    payment = choice;
+    const createdCount = (result.invites || []).length || Math.max(1, payload.count);
+    openInviteResultDialog(result.invites || [], createdCount);
+    setStatus(`邀请码已生成 ${createdCount} 个。`);
+  } catch (error) {
+    setStatus(error.message || '生成邀请码失败。', true);
   }
-
-  const result = await api('/api/super/invites', {
-    method: 'POST',
-    body: JSON.stringify({ ...payload, ...payment })
-  });
-
-  if (typeof result.balance !== 'undefined' && state.currentUser) {
-    state.currentUser.balance = result.balance;
-  }
-  resetInviteForm();
-  await loadInvites();
-  renderUserContext();
-  if (result.order) {
-    setStatus(result.message || '订单已提交，必须总管理员通过后才会生成邀请码。');
-    return;
-  }
-  const createdCount = (result.invites || []).length || Math.max(1, payload.count);
-  openInviteResultDialog(result.invites || [], createdCount);
-  setStatus(`邀请码已生成 ${createdCount} 个。`);
 }
 
 function ensureInviteTools() {
@@ -3314,7 +3231,6 @@ function ensureInviteTools() {
       table.dataset.inviteUsedHeadReady = '1';
     }
   }
-
   const prefixInput = $('newInviteCode');
   if (prefixInput && !prefixInput.dataset.prefixReady) {
     prefixInput.placeholder = '例如：YQ，系统自动补随机码';
@@ -3527,8 +3443,7 @@ async function saveUser(userId, row) {
     email: row.querySelector('[data-field="email"]').value.trim(),
     displayName: row.querySelector('[data-field="displayName"]').value.trim(),
     role: row.querySelector('[data-field="role"]').value,
-    canViewJson: row.querySelector('[data-field="canViewJson"]')?.checked !== false,
-    balance: Number(row.querySelector('[data-field="balance"]')?.value || 0)
+    canViewJson: row.querySelector('[data-field="canViewJson"]')?.checked !== false
   };
   const password = row.querySelector('[data-field="password"]').value.trim();
   if (password) body.password = password;
@@ -3686,14 +3601,6 @@ async function saveSystemSettings(section) {
       frontendShowGroupCount: $('systemFrontendGroupCount').checked
     };
   }
-  if (section === 'agent') {
-    body.agent = {
-      invitePrice: Number($('agentInvitePrice').value || 0),
-      currency: $('agentCurrency').value.trim() || 'CNY',
-      orderCooldownMinutes: Number($('agentOrderCooldown')?.value || 0),
-      allowNegativeBalance: $('agentAllowNegative').checked
-    };
-  }
   if (section === 'pay') {
     syncPayRoutesFromCards();
     body.pay = {
@@ -3787,11 +3694,11 @@ async function resetTemplate() {
   setStatus('新用户模板已恢复默认。');
 }
 
-async function refreshOrders() {
+async function refreshOrders(showMessage = true) {
   const result = await api('/api/super/orders');
   state.orders = result.orders || [];
   renderOrders();
-  setStatus('订单列表已刷新。');
+  if (showMessage) setStatus('订单列表已刷新。');
 }
 
 async function updateOrderStatus(id, status) {
@@ -4237,12 +4144,10 @@ if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAll
 if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
-if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));
 if ($('savePaySettingsBtn')) $('savePaySettingsBtn').onclick = () => saveSystemSettings('pay').catch((error) => setStatus(error.message, true));
 if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMode().catch((error) => setStatus(error.message, true));
 if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () => copyCurrentToTemplate().catch((error) => setStatus(error.message, true));
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
-if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
 
 loadAll().catch((error) => handleLoadFailure(error));
 updateAddTargetState();

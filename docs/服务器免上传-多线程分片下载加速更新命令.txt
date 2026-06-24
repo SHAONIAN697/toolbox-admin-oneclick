@@ -1,3 +1,19 @@
+﻿# 不走 GitHub / 不用上传：复制本文件全部内容到宝塔终端执行
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-multithread-download-20260623-$TS.tar.gz"
+B64="$PKG.b64"
+TMP="/tmp/toolbox-multithread-download-20260623-$TS"
+BACKUP="/www/backup/toolbox-multithread-download-20260623-$TS"
+SHA="9a202021a56132cba869f9a921ce8cfc4b849b9802eac0458d440dcfe3785cbd"
+
+mkdir -p "$TMP" "$BACKUP"
+[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
+
+cat > "$B64" <<'TOOLBOX_MULTITHREAD_DOWNLOAD_20260623_B64'
 H4sIAG9tOmoAA+y9eXdbx5EoPn/rHH0HGO/lGIhBkFqsOJwwc2iJtploeyJtjx/NgwMClyQiEECw
 iOLw8RwpsWx5kWUn3i2P98RxJpKTeGxZi/VhhgDJf375Cr+upfe+wCVFJc5MmFgA7q2urq6urq6u
 rq6erterc/Wz4+WlSm28URmq16JStVI6PfxPu/c3MjLygx/8IAWf4s/9pB/7Hty/79DBQ4cefPBQ
@@ -3836,4 +3852,39 @@ B7j1xpUMBDvD21LQGzhVMhbhHmx7DcKdG7S5stCdLh36kPt06NJ6Qmrz51BTHyKbhOCWx/U4drGa
 BCS8+ggxhZqhpM0J2z+2lqRPQYFDENQfKq5VcW/DLiN6dxP1+zCGTSAw2qlJ/e5OyWDkjEX8SpPE
 7APKXfpiMHYIGkx8JBw5LbZIHeu9PGwa71giccCwM1bH4k2W947FY8t4bvEL/vGMipFr5Bq5Rq6R
 6+t1VVT8/1VWOI0AFBAA
+TOOLBOX_MULTITHREAD_DOWNLOAD_20260623_B64
 
+if command -v base64 >/dev/null 2>&1; then
+  base64 -d "$B64" > "$PKG"
+else
+  python3 -c 'import base64,pathlib,sys; pathlib.Path(sys.argv[2]).write_bytes(base64.b64decode(pathlib.Path(sys.argv[1]).read_text()))' "$B64" "$PKG"
+fi
+
+echo "$SHA  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$TMP"
+python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"
+
+cd "$APP"
+cp -a app.py wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
+rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs
+\cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/admin-desktop-template" "$APP/admin-desktop-template"
+if [ -d "$BACKUP/wwwroot/uploads" ]; then
+  mkdir -p "$APP/wwwroot"
+  rm -rf "$APP/wwwroot/uploads"
+  \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"
+fi
+
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
+grep -q "MaxSegmentedDownloadConnections = 16" client-template/ToolboxClient.cs
+grep -q "OpenProbeDownloadResponse" client-template/ToolboxClient.cs
+grep -q "DefaultConnectionLimit = 96" client-template/ToolboxClient.cs
+test ! -d data/client-cache || [ -z "$(ls -A data/client-cache 2>/dev/null)" ]
+echo "OK: multi-thread segmented downloader updated. Re-download all three client EXEs in the admin backend. Backup: $BACKUP"

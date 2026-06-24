@@ -2,11 +2,11 @@ set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="private-local-tested-preserve-data-20260620"
-PKG_NAME="toolbox-admin-baota-oneclick-clean-20260622.tar.gz"
+PKG_NAME="toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="98521d9d883ba948317d3b85aa087d7ef14546462bd28cd81ddd5484e13291fd"
+SHA="9116b55d87bd5372b34ee99ed2c0a11aeae5732ad916748422e31501ffbd9642"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-local-tested-$TS"
@@ -57,13 +57,14 @@ tar -xzf "$PKG" -C "$TMP"
 python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"
 
 cd "$APP"
-cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true
-rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs
+cp -a app.py wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
+rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs
 \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"
 \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"
 \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"
 \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"
 \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"
+\cp -a "$TMP/ToolboxAdminApi-oneclick/admin-desktop-template" "$APP/admin-desktop-template"
 if [ -d "$BACKUP/wwwroot/uploads" ]; then
   mkdir -p "$APP/wwwroot"
   rm -rf "$APP/wwwroot/uploads"
@@ -84,4 +85,8 @@ grep -Fq 'public_popup_config(user["id"], self.base_url())' app.py
 grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs
 grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs
 grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs; grep -q "RenderPortalLoadingState" client-template/ToolboxClient.cs; grep -q "IsPortalDemoPlaceholderConfig" client-template/ToolboxClient.cs
-echo "OK: updated to 20260622 local-tested build, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+grep -q "/api/admin/desktop/download" app.py
+grep -q "admin-desktop.js" wwwroot/index.html
+grep -q "downloadAdminDesktopBtn" wwwroot/index.html
+test -f admin-desktop-template/ToolboxAdminDesktop.cs
+echo "OK: updated to 20260623 admin-desktop build, data preserved. Reopen admin EXE to load the latest backend. Browser users can Ctrl+F5. Backup: $BACKUP"

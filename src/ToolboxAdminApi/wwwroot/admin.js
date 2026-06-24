@@ -961,6 +961,7 @@ function renderApp() {
   $('appTheme').value = app.theme || '午夜靛蓝';
   $('appThemeCount').value = app.theme_count || 19;
   $('appAllowClientTheme').checked = app.allow_client_theme !== false;
+  if ($('appDefaultViewMode')) $('appDefaultViewMode').value = app.default_view_mode === 'list' ? 'list' : 'grid';
   $('appLogo').value = app.logo_text || '';
   $('appIcon').value = app.icon || app.icon_url || '';
   ensureExeIconField();
@@ -2751,6 +2752,7 @@ async function saveAppBasicSettings() {
     theme: $('appTheme').value.trim(),
     theme_count: Math.max(1, Math.min(19, Number($('appThemeCount')?.value || 19))),
     allow_client_theme: $('appAllowClientTheme')?.checked !== false,
+    default_view_mode: $('appDefaultViewMode')?.value === 'list' ? 'list' : 'grid',
     logo_text: $('appLogo').value.trim(),
     icon: $('appIcon').value.trim(),
     exe_icon: $('appExeIcon')?.value.trim() || '',

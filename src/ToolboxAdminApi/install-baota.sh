@@ -89,6 +89,7 @@ copy_source() {
   cp -a "$src_dir/assets" "$app_dir/"
   cp -a "$src_dir/client-template" "$app_dir/"
   cp -a "$src_dir/wwwroot" "$app_dir/"
+  cp -a "$src_dir/admin-desktop-template" "$app_dir/" 2>/dev/null || true
   cp -a "$src_dir/deploy" "$app_dir/" 2>/dev/null || true
   cp -a "$src_dir/README.md" "$app_dir/" 2>/dev/null || true
   cp -a "$src_dir/DOCKING.md" "$app_dir/" 2>/dev/null || true

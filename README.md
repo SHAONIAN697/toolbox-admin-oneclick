@@ -28,6 +28,7 @@
 - 三个客户端都新增“软件大全”页面，支持内置目录、Winget 搜索和常用软件/游戏检索下载。
 - 软件大全可在后台开启或关闭；页面访问锁可按页面单独设置，也支持多个页面不同密码。
 - 客户端默认同时最多下载 5 个，并在三个版本里加入并发下载数量下拉选择。
+- 客户端下载器新增 Range 分片加速：支持 `206 Partial Content` 的云盘直链会自动启用最多 16 线程分片下载，绕开单连接限速；不支持 Range 的站点自动回退单连接。
 - 总管理后台的邀请码列表新增“全部 / 已使用 / 未使用”筛选，导出未勾选时会按当前筛选导出。
 - 后台总览页改为多个独立保存卡片，页面权限移到启动密码下方并默认收缩；按钮页“页面与分组”和“新增按钮”也默认收缩。
 - 第一个客户端版本恢复全部主题选项，页面锁提示改为页面访问密码。
@@ -59,7 +60,7 @@ cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz t
 已经部署过的宝塔服务器不要重新跑首次部署命令。更新时直接使用下面这条命令，它只覆盖程序文件，保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
 
 ```bash
-set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz"; SHA="98521d9d883ba948317d3b85aa087d7ef14546462bd28cd81ddd5484e13291fd"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "software_catalog_enabled" app.py; grep -q "ensureButtonsPagePanels" wwwroot/admin.js; grep -q "inviteUseFilter" wwwroot/admin.js; grep -q "/api/admin/popup" app.py; grep -q "savePopupAllBtn" wwwroot/admin.js; ! grep -q "popup_sources" app.py; grep -Fq 'public_popup_config(user["id"], self.base_url())' app.py; grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs; grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs; grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs; grep -q "RenderPortalLoadingState" client-template/ToolboxClient.cs; grep -q "IsPortalDemoPlaceholderConfig" client-template/ToolboxClient.cs; echo "OK: updated to 20260622 local-tested build, data preserved. Refresh admin with Ctrl+F5, then download original/studio/portal EXE again. Backup: $BACKUP"
+set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz"; SHA="9116b55d87bd5372b34ee99ed2c0a11aeae5732ad916748422e31501ffbd9642"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; \cp -a "$TMP/ToolboxAdminApi-oneclick/admin-desktop-template" "$APP/admin-desktop-template"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "software_catalog_enabled" app.py; grep -q "ensureButtonsPagePanels" wwwroot/admin.js; grep -q "inviteUseFilter" wwwroot/admin.js; grep -q "/api/admin/popup" app.py; grep -q "savePopupAllBtn" wwwroot/admin.js; ! grep -q "popup_sources" app.py; grep -Fq 'public_popup_config(user["id"], self.base_url())' app.py; grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs; grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs; grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs; grep -q "RenderPortalLoadingState" client-template/ToolboxClient.cs; grep -q "IsPortalDemoPlaceholderConfig" client-template/ToolboxClient.cs; grep -q "/api/admin/desktop/download" app.py; grep -q "admin-desktop.js" wwwroot/index.html; grep -q "downloadAdminDesktopBtn" wwwroot/index.html; test -f admin-desktop-template/ToolboxAdminDesktop.cs; echo "OK: updated to 20260623 admin-desktop build, data preserved. Reopen admin EXE to load the latest backend. Browser users can Ctrl+F5. Backup: $BACKUP"
 ```
 
 这条更新命令会：
@@ -70,7 +71,7 @@ set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="privat
 - 清理 `data/client-cache` 和 `data/client-jobs`，避免旧的三个客户端 EXE 缓存继续生效。
 - 重启 `toolbox-admin` 服务。
 
-更新完成后需要在浏览器中按 `Ctrl+F5` 强制刷新后台页面，然后在后台三版本下载区重新下载并分发三个客户端 EXE。
+更新完成后，后台 EXE 关闭后重新打开即可进入新版；仍用浏览器访问后台的用户可以按 `Ctrl+F5` 强制刷新。然后在后台重新下载需要分发的客户端 EXE。
 
 ## 目录说明
 
@@ -80,7 +81,8 @@ src/
   ToolboxAdminApi-oneclick/     一键部署版源码
   ToolboxAdminApi-baota-source/ 宝塔源码版
 packages/
-  toolbox-admin-baota-oneclick-clean-20260622.tar.gz
+  toolbox-multithread-download-hotfix-20260623.tar.gz
+  toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz
   toolbox-gjx-target-user-header-hotfix-preserve-data.tar.gz
   toolbox-gjx-8uid-download-compat-hotfix-preserve-data.tar.gz
   toolbox-gjx-title-slash-hotfix-preserve-data.tar.gz

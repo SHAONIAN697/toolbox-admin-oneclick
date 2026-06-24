@@ -33,6 +33,7 @@ USER_TEMPLATE_PATH = DATA / "user-template.json"
 USER_DATA = DATA / "users"
 CONFIG_SHARES_PATH = DATA / "config-shares.json"
 CLIENT_TEMPLATE = ROOT / "client-template" / "ToolboxClient.cs"
+ADMIN_DESKTOP_TEMPLATE = ROOT / "admin-desktop-template" / "ToolboxAdminDesktop.cs"
 CLIENT_ICON = ROOT / "assets" / "toolbox-default.ico"
 CLIENT_CACHE = DATA / "client-cache"
 CLIENT_JOBS = DATA / "client-jobs"
@@ -247,6 +248,7 @@ def default_config():
             "theme": "鍗堝闈涜摑",
             "theme_count": 19,
             "allow_client_theme": True,
+            "default_view_mode": "grid",
             "bg_path": "",
             "output_dir": "",
         },
@@ -271,6 +273,15 @@ def config_bool(value, default=False):
         return True
     if text in ("0", "false", "no", "off", "disabled", "disable", "停用", "禁用", "关闭"):
         return False
+    return default
+
+
+def normalize_view_mode(value, default="grid"):
+    text = str(value or "").strip().lower()
+    if text in ("list", "列表", "listmode", "list_mode"):
+        return "list"
+    if text in ("grid", "宫格", "gongge", "gridmode", "grid_mode"):
+        return "grid"
     return default
 
 
@@ -473,6 +484,10 @@ def ensure_config_defaults(config):
         changed = True
     if app.get("password_enabled") is False and app.get("password"):
         app["password"] = ""
+        changed = True
+    default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
+    if app.get("default_view_mode") != default_view_mode:
+        app["default_view_mode"] = default_view_mode
         changed = True
     if normalize_feature_settings(config):
         changed = True
@@ -842,6 +857,8 @@ def apply_app_patch(config, patch):
             app["password_enabled"] = True
         elif key == "password" and value:
             app["password"] = stored_password(str(value))
+        elif key == "default_view_mode":
+            app[key] = normalize_view_mode(value, "grid")
         else:
             app[key] = value
     ensure_config_defaults(config)
@@ -896,6 +913,23 @@ def can_manage_users(user):
 
 def role_label(role):
     return {"super": "总管理员", "agent": "代理", "user": "普通用户"}.get(role, "普通用户")
+
+
+def is_login_api_path(path):
+    normalized = "/" + str(path or "").strip("/")
+    return normalized == "/api/login" or normalized.endswith("/api/login")
+
+
+def handle_desktop_login(handler):
+    body = handler.read_body()
+    user = find_user_by_username((body.get("username") or "").strip())
+    if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
+        return handler.send_json({"error": "用户名或密码错误。"}, 401)
+    token = random_hex(32)
+    user = mark_user_login(user["id"])
+    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
+    save_sessions()
+    return handler.send_json({"token": token, "user": public_user(user)})
 
 
 def default_system_settings():
@@ -2653,6 +2687,70 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
         return file_name, data
 
 
+def admin_desktop_exe_filename(timestamp=None):
+    return f"toolbox-admin-desktop-{int(timestamp or time.time())}.exe"
+
+
+def make_admin_desktop_exe(base_url):
+    if not ADMIN_DESKTOP_TEMPLATE.exists():
+        raise RuntimeError("后台 EXE 模板缺失，无法生成。")
+    compiler = find_csharp_compiler()
+    if not compiler:
+        raise RuntimeError("服务器未安装 Mono/C# 编译器，无法在线生成后台 EXE。请安装 mono-devel 后重启 toolbox-admin。")
+    if not CLIENT_ICON.exists():
+        raise RuntimeError("后台默认图标缺失，请上传 assets/toolbox-default.ico 后再生成 EXE。")
+    base_url = normalize_public_base_url(base_url)
+    source = ADMIN_DESKTOP_TEMPLATE.read_text(encoding="utf-8")
+    app_config = read_config("").get("app", {})
+    exe_title = app_config.get("admin_desktop_title") or app_config.get("admin_title") or DEFAULT_ADMIN_TITLE
+    exe_description = app_config.get("admin_desktop_description") or "工具箱后台桌面登录器"
+    exe_product = app_config.get("admin_desktop_product") or exe_title
+    exe_company = app_config.get("exe_company") or ""
+    exe_copyright = app_config.get("exe_copyright") or ""
+    exe_version = assembly_version(app_config.get("admin_desktop_version") or app_config.get("exe_version") or app_config.get("version") or "1.0.0.0")
+    file_name = admin_desktop_exe_filename()
+    source = source.replace('"__ADMIN_URL__"', csharp_literal(base_url))
+    source = source.replace('"__APP_TITLE__"', csharp_literal(exe_title))
+    source = source.replace('"__LOGIN_HINT__"', csharp_literal(app_config.get("login_hint") or DEFAULT_LOGIN_HINT))
+    source = source.replace('"__EXE_TITLE__"', csharp_literal(exe_title))
+    source = source.replace('"__EXE_DESCRIPTION__"', csharp_literal(exe_description))
+    source = source.replace('"__EXE_COMPANY__"', csharp_literal(exe_company))
+    source = source.replace('"__EXE_PRODUCT__"', csharp_literal(exe_product))
+    source = source.replace('"__EXE_COPYRIGHT__"', csharp_literal(exe_copyright))
+    source = source.replace('"__EXE_VERSION__"', csharp_literal(exe_version))
+    source = source.replace('"__EXE_FILE_VERSION__"', csharp_literal(exe_version))
+    with tempfile.TemporaryDirectory() as td:
+        icon_file = custom_client_icon(app_config, td)
+        src = Path(td) / "ToolboxAdminDesktop.cs"
+        exe = Path(td) / file_name
+        src.write_text(source, encoding="utf-8")
+        compile_args = [
+            "-target:winexe",
+            "-optimize+",
+            f"-out:{exe}",
+            f"-win32icon:{icon_file}",
+            "-r:System.dll",
+            "-r:System.Core.dll",
+            "-r:System.Windows.Forms.dll",
+            "-r:System.Drawing.dll",
+            "-r:System.Web.Extensions.dll",
+            "-r:System.Security.dll",
+            str(src),
+        ]
+        args = csharp_compile_command(compiler, compile_args)
+        result = subprocess.run(args, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if result.returncode != 0 or not exe.exists():
+            raise RuntimeError("后台 EXE 编译失败：" + (result.stderr or result.stdout))
+        data = exe.read_bytes()
+        if not is_windows_exe(data):
+            raise RuntimeError(
+                "后台 EXE 编译完成但输出不是 Windows EXE。"
+                f"检测到的编译器：{compiler}；文件头：{binary_header_preview(data)}。"
+                "请安装 mono-devel 后重启 toolbox-admin，再重试。"
+            )
+        return file_name, data
+
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
@@ -2732,16 +2830,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
-            if path == "/api/login" and method == "POST":
-                body = self.read_body()
-                user = find_user_by_username((body.get("username") or "").strip())
-                if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
-                    return self.send_json({"error": "用户名或密码错误。"}, 401)
-                token = random_hex(32)
-                user = mark_user_login(user["id"])
-                SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
-                save_sessions()
-                return self.send_json({"token": token, "user": public_user(user)})
+            if (path == "/desktop/login" or is_login_api_path(path)) and method == "POST":
+                return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()
                 code = (body.get("inviteCode") or "").strip()
@@ -3123,6 +3213,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "当前密码不正确。"}, 400)
             user = update_user_account(auth["user"]["id"], b, False)
             return self.send_json({"user": public_user(user)})
+        if path == "/api/admin/desktop/download" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以下载后台 EXE。"}, 403)
+            name, data = make_admin_desktop_exe(self.base_url())
+            if not is_windows_exe(data):
+                return self.send_json({"error": "后台 EXE 生成结果无效，请检查服务器编译环境。"}, 500)
+            return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/variants" and method == "GET":
             return self.send_json(public_client_variants())
         if path == "/api/admin/client/download" and method == "GET":
