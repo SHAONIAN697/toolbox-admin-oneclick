@@ -4,9 +4,10 @@
 
 ## 当前最新版
 
-- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz`
-- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz.b64`
-- 无代理源码包：`packages/toolbox-admin-source-no-agent-forced32-20260624.tar.gz`
+- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz`
+- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz.b64`
+- 无代理源码包：`packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz`
+- 无代理源码包 Base64：`packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz.b64`
 - 无代理源码目录：`src/ToolboxAdminApi-no-agent`
 - SHA256 清单：`docs/更新包SHA256清单.txt`
 - 已部署服务器保留数据更新命令：`docs/GitHub无代理版-已部署服务器保留数据更新命令.txt`
@@ -15,6 +16,9 @@
 
 ## 更新重点
 
+- 后台右上角新增深色/浅色主题切换，选择会保存在当前浏览器。
+- 后台主题已和用户工具箱客户端主题解耦，避免不同用户配置导致后台颜色错乱。
+- 修复主版后台脚本漏括号导致解析失败的问题。
 - 移除业务代理功能入口和代理申请接口。
 - 修复无代理版后台登录后前端脚本解析失败的问题。
 - 修复读取附加接口失败时阻断主配置加载的问题，旧服务入口返回 `Not found` 时不再卡死后台。
@@ -29,7 +33,7 @@
 新服务器第一次安装可使用一键包。首次部署会初始化新的 `data/` 数据目录。
 
 ```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
 ```
 
 执行后按提示填写域名、安装目录、端口和管理员密码。新服务器没有旧数据时才使用这条命令。
@@ -44,11 +48,11 @@ SERVICE="toolbox-admin"
 APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
 [ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="main"
-PKG_NAME="toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz"
+PKG_NAME="toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83"
+SHA="d18aa0936ea9c059e27ed021300b53d65547dfdd0958fb0b59c23ab54e3fcd3f"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-no-agent-$TS.tar.gz"
 TMP="/tmp/toolbox-no-agent-$TS"
@@ -118,8 +122,10 @@ sleep 2
 systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "function loadOptional" "$APP/wwwroot/admin.js"
+grep -q "adminThemeToggle" "$APP/wwwroot/index.html"
+grep -q "ADMIN_THEME_STORAGE_KEY" "$APP/wwwroot/admin.js"
 ! grep -q "/api/admin/agent-application" "$APP/app.py"
-echo "OK: no-agent forced32 build updated, existing data preserved. Backup: $BACKUP"
+echo "OK: no-agent theme-toggle build updated, existing data preserved. Backup: $BACKUP"
 ```
 
 这条更新命令会：

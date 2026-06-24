@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026062224">
+  <link rel="stylesheet" href="/styles.css?v=2026062401">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -92,6 +92,10 @@
           <div id="noticeList" class="notice-list"></div>
         </div>
       </div>
+      <button id="adminThemeToggle" class="theme-toggle" type="button" aria-pressed="false">
+        <span class="theme-toggle-icon" aria-hidden="true">☾</span>
+        <span id="adminThemeToggleText">深色</span>
+      </button>
       <div class="user-chip" id="currentUserLabel"></div>
       <button id="logoutBtn" type="button">退出</button>
     </header>
@@ -399,7 +403,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026062224"></script>
+  <script src="/admin.js?v=2026062401"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

@@ -12,6 +12,14 @@ ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83  packages/toolb
 
 4c381d4522e890c6047c23038624d04ad31dcae0aedc3868ccc15b1a28376d63  packages/toolbox-admin-source-no-agent-forced32-20260624.tar.gz
 
+d18aa0936ea9c059e27ed021300b53d65547dfdd0958fb0b59c23ab54e3fcd3f  packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz
+
+827ce243f3eaa1265b786376e1f288b5e5dfb875eed6c9e906421539012249a9  packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz.b64
+
+4514ede392f225c0cb8a3354bfabea71b02010e07232b57fb7b61915f7f8c4ca  packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz
+
+56f8abeb36c036025c1be6e9369edbac05a3d57219516e515df171ef8a9927a5  packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz.b64
+
 74f36e1f8eb65080c0432aacbb08b0035cd0c99ce5837ca0b5239019a4090295  packages/toolbox-baota-config-exchange-update.tar.gz
 
 f2315470aa348c9ef62217ea7b44d284900a3bf91ccf7f194219a836a4c46d74  packages/toolbox-baota-full-local-tested-update.tar.gz

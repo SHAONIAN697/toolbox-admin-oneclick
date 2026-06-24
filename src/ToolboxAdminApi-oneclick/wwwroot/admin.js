@@ -40,6 +40,9 @@ function applyDesktopTokenFromUrl() {
 applyDesktopTokenFromUrl();
 
 const $ = (id) => document.getElementById(id);
+const ADMIN_THEME_STORAGE_KEY = 'toolbox_admin_theme';
+
+applyAdminTheme();
 
 const ACTIONS = [
   ['link', '打开网页'],
@@ -970,7 +973,6 @@ function renderApp() {
   ensureLoginBrandFields();
   organizeOverviewCards();
   const app = state.config.app || {};
-  applyAdminTheme(app.theme || '');
   $('appTitle').value = app.title || '';
   $('appSubtitle').value = app.subtitle || '';
   $('appVersion').value = app.version || '';
@@ -1004,16 +1006,31 @@ function renderApp() {
   $('appExeVersion').value = app.exe_version || app.version || '1.0.0.0';
 }
 
-function applyAdminTheme(theme) {
-  const value = String(theme || '').toLowerCase();
-  const dayBlueThemes = ['dayblue', '晴空蓝白', '海雾蓝湖', '钻蓝冷辉'];
-  const lightThemes = ['light', '浅色', '冰川浅蓝', '银光素白', '极光青碧', '玫瑰粉雾', '樱雾浅粉', '沙丘金黄', 'ice_blue', 'iceblue', 'ice_white', 'icewhite'];
-  document.body.classList.remove('theme-light', 'theme-dayblue');
-  if (dayBlueThemes.some((name) => value === String(name).toLowerCase()) || value === '日间蓝' || value.includes('日间蓝')) {
-    document.body.classList.add('theme-dayblue');
-  } else if (lightThemes.some((name) => value === String(name).toLowerCase()) || value.includes('浅色') || value.includes('白色')) {
-    document.body.classList.add('theme-light');
+function normalizeAdminTheme(value) {
+  return String(value || '').toLowerCase() === 'light' ? 'light' : 'dark';
+}
+
+function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) {
+  const mode = normalizeAdminTheme(theme);
+  const light = mode === 'light';
+  document.body.classList.remove('theme-dark', 'theme-light', 'theme-dayblue');
+  document.body.classList.add(light ? 'theme-light' : 'theme-dark');
+  const toggle = $('adminThemeToggle');
+  const text = $('adminThemeToggleText');
+  const icon = toggle?.querySelector('.theme-toggle-icon');
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', light ? 'true' : 'false');
+    toggle.title = light ? '切换深色主题' : '切换浅色主题';
   }
+  if (text) text.textContent = light ? '浅色' : '深色';
+  if (icon) icon.textContent = light ? '☀' : '☾';
+}
+
+function toggleAdminTheme() {
+  const current = normalizeAdminTheme(localStorage.getItem(ADMIN_THEME_STORAGE_KEY));
+  const next = current === 'light' ? 'dark' : 'light';
+  localStorage.setItem(ADMIN_THEME_STORAGE_KEY, next);
+  applyAdminTheme(next);
 }
 
 function organizeOverviewCards() {
@@ -4186,6 +4203,7 @@ $('registerInviteCode').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') register();
 });
 $('logoutBtn').onclick = () => logout();
+if ($('adminThemeToggle')) $('adminThemeToggle').onclick = () => toggleAdminTheme();
 $('targetUserSelect').onchange = async () => {
   state.templateMode = false;
   state.targetUserId = $('targetUserSelect').value;

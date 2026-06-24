@@ -2,11 +2,11 @@ set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="main"
-PKG_NAME="toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz"
+PKG_NAME="toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83"
+SHA="d18aa0936ea9c059e27ed021300b53d65547dfdd0958fb0b59c23ab54e3fcd3f"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-private-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-private-local-tested-$TS"
@@ -89,5 +89,7 @@ grep -q "return MaxSegmentedDownloadConnections;" client-template/ToolboxClient.
 grep -q "/api/admin/desktop/download" app.py
 grep -q "admin-desktop.js" wwwroot/index.html
 grep -q "downloadAdminDesktopBtn" wwwroot/index.html
+grep -q "adminThemeToggle" wwwroot/index.html
+grep -q "ADMIN_THEME_STORAGE_KEY" wwwroot/admin.js
 test -f admin-desktop-template/ToolboxAdminDesktop.cs
-echo "OK: no-agent forced32 build updated from private GitHub, data preserved. Rebuild/download client EXE. Backup: $BACKUP"
+echo "OK: no-agent theme-toggle build updated from private GitHub, data preserved. Rebuild/download client EXE. Backup: $BACKUP"
