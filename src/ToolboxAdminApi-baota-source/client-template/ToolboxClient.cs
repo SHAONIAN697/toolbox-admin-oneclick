@@ -114,9 +114,22 @@ namespace ToolboxClient
         private FlowLayoutPanel softwareResultsPanel;
         private Label softwareCatalogStatus;
         private System.Windows.Forms.Timer softwareSearchTimer;
+        private System.Windows.Forms.Timer softwareRenderTimer;
+        private System.Windows.Forms.Timer pageSwitchTimer;
+        private System.Windows.Forms.Timer contentResizeTimer;
         private string softwareCatalogQuery = "";
         private string softwareCatalogCategory = "全部";
         private bool softwareCatalogLayoutUpdating = false;
+        private bool contentRendering = false;
+        private bool contentResizeRenderPending = false;
+        private string lastResizeRenderPage = "";
+        private int lastResizeRenderWidth = -1;
+        private int lastResizeRenderHeight = -1;
+        private List<SoftwareCatalogEntry> softwareRenderEntries = new List<SoftwareCatalogEntry>();
+        private int softwareRenderIndex = 0;
+        private int softwareRenderCardWidth = 286;
+        private int softwareRenderCardHeight = 150;
+        private string pendingPageId = "";
         private List<SoftwareCatalogEntry> softwareCatalogCache;
         private List<SoftwareCatalogEntry> wingetCatalogResults = new List<SoftwareCatalogEntry>();
         private string wingetCatalogQuery = "";
@@ -153,6 +166,7 @@ namespace ToolboxClient
         private readonly Dictionary<string, Control> navButtons = new Dictionary<string, Control>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object iconCacheLock = new object();
         private Icon runtimeIcon;
         private ContactPopupConfig popupConfig;
         private DateTime popupCacheLoadedAt = DateTime.MinValue;
@@ -266,11 +280,35 @@ namespace ToolboxClient
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (runtimeIcon != null) runtimeIcon.Dispose();
+            if (refreshTimer != null)
+            {
+                refreshTimer.Stop();
+                refreshTimer.Dispose();
+                refreshTimer = null;
+            }
             if (softwareSearchTimer != null)
             {
                 softwareSearchTimer.Stop();
                 softwareSearchTimer.Dispose();
                 softwareSearchTimer = null;
+            }
+            CancelSoftwareCatalogRender();
+            if (softwareRenderTimer != null)
+            {
+                softwareRenderTimer.Dispose();
+                softwareRenderTimer = null;
+            }
+            if (pageSwitchTimer != null)
+            {
+                pageSwitchTimer.Stop();
+                pageSwitchTimer.Dispose();
+                pageSwitchTimer = null;
+            }
+            if (contentResizeTimer != null)
+            {
+                contentResizeTimer.Stop();
+                contentResizeTimer.Dispose();
+                contentResizeTimer = null;
             }
             if (contactPopupWindow != null && !contactPopupWindow.IsDisposed) contactPopupWindow.Dispose();
             base.OnFormClosed(e);
@@ -504,11 +542,7 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
-                }
-                else RenderCurrentSections();
+                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
             };
             mainLayout.Controls.Add(content, 0, 2);
             BuildRecordsPanel();
@@ -682,12 +716,7 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase)) RenderStudioSettingsPage();
-                else if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
-                }
-                else RenderCurrentSections();
+                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
             };
             main.Controls.Add(content);
 
@@ -876,8 +905,7 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && softwareCatalogLayoutUpdating) return;
-                RenderCurrentPortalView();
+                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
             };
             mainLayout.Controls.Add(content, 0, 1);
 
@@ -2014,6 +2042,20 @@ namespace ToolboxClient
             return BoolValue(features, "software_catalog_enabled", true);
         }
 
+        private bool SoftwareCatalogAutoWingetEnabled()
+        {
+            Dictionary<string, object> features = AsDict(Get(config, "features"));
+            return BoolValue(features, "software_catalog_auto_winget", false);
+        }
+
+        private int SoftwareCatalogDisplayLimit(bool hasQuery, string category)
+        {
+            Dictionary<string, object> features = AsDict(Get(config, "features"));
+            int fallback = hasQuery ? 120 : 96;
+            int limit = IntValue(features, "software_catalog_display_limit", fallback);
+            return Math.Max(24, Math.Min(240, limit));
+        }
+
         private Dictionary<string, object> PageLockConfig(string id)
         {
             Dictionary<string, object> locks = AsDict(Get(config, "page_locks"));
@@ -2058,9 +2100,20 @@ namespace ToolboxClient
             }
         }
 
+        private static void ClearChildControls(Control parent)
+        {
+            if (parent == null) return;
+            while (parent.Controls.Count > 0)
+            {
+                Control child = parent.Controls[0];
+                parent.Controls.RemoveAt(0);
+                child.Dispose();
+            }
+        }
+
         private void BuildNav()
         {
-            nav.Controls.Clear();
+            ClearChildControls(nav);
             navButtons.Clear();
 
             HashSet<string> added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2101,7 +2154,8 @@ namespace ToolboxClient
             if (navButtons.Count == 0)
             {
                 title.Text = portalVariant ? PortalText("暂无内容", "No Content") : "暂无内容";
-                content.Controls.Clear();
+                ClearChildControls(content);
+                currentPage = "";
                 return;
             }
 
@@ -2113,7 +2167,7 @@ namespace ToolboxClient
 
             if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
             {
-                ShowPage(currentPage);
+                MarkNavButtonActive(currentPage);
                 return;
             }
 
@@ -2139,7 +2193,7 @@ namespace ToolboxClient
                     StudioMode = studioVariant,
                     Tag = id
                 };
-                templateButton.Click += delegate { ShowPage((string)templateButton.Tag); };
+                templateButton.Click += delegate { QueueShowPage((string)templateButton.Tag); };
                 nav.Controls.Add(templateButton);
                 navButtons[id] = templateButton;
                 return;
@@ -2153,9 +2207,161 @@ namespace ToolboxClient
                 Caption = portalVariant ? PortalLabel(label, id) : label,
                 Tag = id
             };
-            button.Click += delegate { ShowPage((string)button.Tag); };
+            button.Click += delegate { QueueShowPage((string)button.Tag); };
             nav.Controls.Add(button);
             navButtons[id] = button;
+        }
+
+        private void QueueShowPage(string id)
+        {
+            if (String.IsNullOrWhiteSpace(id)) return;
+            if (id.Equals(currentPage, StringComparison.OrdinalIgnoreCase) && String.IsNullOrWhiteSpace(pendingPageId)) return;
+            pendingPageId = id;
+            if (pageSwitchTimer == null)
+            {
+                pageSwitchTimer = new System.Windows.Forms.Timer();
+                pageSwitchTimer.Interval = 35;
+                pageSwitchTimer.Tick += delegate
+                {
+                    pageSwitchTimer.Stop();
+                    string next = pendingPageId;
+                    pendingPageId = "";
+                    if (!String.IsNullOrWhiteSpace(next))
+                    {
+                        if (contentRendering)
+                        {
+                            pendingPageId = next;
+                            pageSwitchTimer.Start();
+                        }
+                        else
+                        {
+                            ShowPage(next);
+                        }
+                    }
+                };
+            }
+            pageSwitchTimer.Stop();
+            pageSwitchTimer.Start();
+        }
+
+        private void QueueContentResizeRender()
+        {
+            if (content == null || content.IsDisposed) return;
+            if (String.IsNullOrWhiteSpace(currentPage)) return;
+
+            int width = content.ClientSize.Width;
+            int height = content.ClientSize.Height;
+            if (currentPage.Equals(lastResizeRenderPage, StringComparison.OrdinalIgnoreCase) &&
+                Math.Abs(width - lastResizeRenderWidth) < 8 &&
+                Math.Abs(height - lastResizeRenderHeight) < 8)
+            {
+                return;
+            }
+            lastResizeRenderPage = currentPage;
+            lastResizeRenderWidth = width;
+            lastResizeRenderHeight = height;
+
+            if (softwareCatalogLayoutUpdating || contentRendering)
+            {
+                contentResizeRenderPending = true;
+                return;
+            }
+
+            contentResizeRenderPending = true;
+            EnsureContentResizeTimer();
+            contentResizeTimer.Stop();
+            contentResizeTimer.Start();
+        }
+
+        private void EnsureContentResizeTimer()
+        {
+            if (contentResizeTimer == null)
+            {
+                contentResizeTimer = new System.Windows.Forms.Timer();
+                contentResizeTimer.Interval = 120;
+                contentResizeTimer.Tick += delegate
+                {
+                    contentResizeTimer.Stop();
+                    if (!contentResizeRenderPending) return;
+                    contentResizeRenderPending = false;
+                    RenderCurrentVisiblePage();
+                };
+            }
+        }
+
+        private void RenderCurrentVisiblePage()
+        {
+            if (content == null || content.IsDisposed) return;
+            if (contentRendering)
+            {
+                contentResizeRenderPending = true;
+                return;
+            }
+            if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase))
+            {
+                if (studioVariant) RenderStudioSettingsPage();
+                else if (portalVariant) RenderPortalSettingsPage();
+                else ShowClientSettings();
+                return;
+            }
+            if (currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                if (portalVariant) RenderPortalDownloadsPage();
+                else ShowDownloadRecords();
+                return;
+            }
+            if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
+                return;
+            }
+            RenderCurrentSections();
+        }
+
+        private bool BeginContentRender()
+        {
+            if (contentRendering) return false;
+            contentRendering = true;
+            if (contentResizeTimer != null) contentResizeTimer.Stop();
+            contentResizeRenderPending = false;
+            return true;
+        }
+
+        private void EndContentRender()
+        {
+            contentRendering = false;
+            if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
+            {
+                pageSwitchTimer.Stop();
+                pageSwitchTimer.Start();
+            }
+            else if (!String.IsNullOrWhiteSpace(pendingPageId))
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    string next = pendingPageId;
+                    pendingPageId = "";
+                    ShowPage(next);
+                }));
+            }
+            if (contentResizeRenderPending)
+            {
+                EnsureContentResizeTimer();
+                contentResizeTimer.Stop();
+                contentResizeTimer.Start();
+            }
+        }
+
+        private void MarkNavButtonActive(string id)
+        {
+            foreach (KeyValuePair<string, Control> pair in navButtons)
+            {
+                bool active = pair.Key.Equals(id, StringComparison.OrdinalIgnoreCase);
+                NavItemControl navItem = pair.Value as NavItemControl;
+                TemplateNavButton templateItem = pair.Value as TemplateNavButton;
+                if (navItem != null) navItem.Active = active;
+                if (templateItem != null) templateItem.Active = active;
+            }
         }
 
         private string TemplateNavIcon(string label, string id)
@@ -2172,6 +2378,18 @@ namespace ToolboxClient
         private void ShowPage(string id)
         {
             if (String.IsNullOrWhiteSpace(id)) return;
+            if (contentRendering)
+            {
+                pendingPageId = id;
+                if (pageSwitchTimer != null)
+                {
+                    pageSwitchTimer.Stop();
+                    pageSwitchTimer.Start();
+                }
+                return;
+            }
+            bool showSoftwareCatalog = id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase);
+            if (!showSoftwareCatalog) CancelSoftwareCatalogRender();
             if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled())
             {
                 status.Text = "软件大全已在后台关闭。";
@@ -2184,19 +2402,12 @@ namespace ToolboxClient
                     currentPage = "";
                     DeactivateNavButtons();
                     title.Text = portalVariant ? PortalText("页面已锁定", "Locked") : "页面已锁定";
-                    content.Controls.Clear();
+                    ClearChildControls(content);
                 }
                 return;
             }
             currentPage = id;
-            foreach (KeyValuePair<string, Control> pair in navButtons)
-            {
-                bool active = pair.Key.Equals(id, StringComparison.OrdinalIgnoreCase);
-                NavItemControl navItem = pair.Value as NavItemControl;
-                TemplateNavButton templateItem = pair.Value as TemplateNavButton;
-                if (navItem != null) navItem.Active = active;
-                if (templateItem != null) templateItem.Active = active;
-            }
+            MarkNavButtonActive(id);
 
             if (id.Equals("toolbox", StringComparison.OrdinalIgnoreCase))
             {
@@ -2213,7 +2424,7 @@ namespace ToolboxClient
             if (!pages.ContainsKey(id))
             {
                 title.Text = portalVariant ? PortalLabel(FriendlyId(id), id) : FriendlyId(id);
-                content.Controls.Clear();
+                ClearChildControls(content);
                 return;
             }
 
@@ -2272,111 +2483,142 @@ namespace ToolboxClient
         private void RenderCurrentSections()
         {
             if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
             if (studioVariant)
             {
-                RenderStudioSections();
+                try
+                {
+                    RenderStudioSections();
+                }
+                finally
+                {
+                    EndContentRender();
+                }
                 return;
             }
             if (portalVariant)
             {
-                if (!configApplied)
+                try
                 {
-                    RenderPortalLoadingState("正在同步配置...");
+                    if (!configApplied)
+                    {
+                        RenderPortalLoadingState("正在同步配置...");
+                        return;
+                    }
+                    RenderPortalSections();
                     return;
                 }
-                RenderPortalSections();
-                return;
-            }
-            content.SuspendLayout();
-            content.Controls.Clear();
-            content.FlowDirection = listMode ? FlowDirection.TopDown : FlowDirection.LeftToRight;
-            content.WrapContents = !listMode;
-
-            List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-            buttons.Sort((a, b) =>
-            {
-                int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                if (result != 0) return result;
-                return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-            });
-            if (buttons.Count == 0)
-            {
-                AddEmptyMessage("这里还没有按钮。");
-                content.ResumeLayout();
-                return;
-            }
-
-            int available = Math.Max(360, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
-            if (portalVariant && !listMode)
-            {
-                Dictionary<string, object> app = AsDict(Get(config, "app"));
-                content.Controls.Add(new PortalHeroControl
+                finally
                 {
-                    Width = available,
-                    Height = 132,
-                    Margin = new Padding(0, 0, 0, 16),
-                    TitleText = GetText(app, "title", "工具箱"),
-                    SubtitleText = GetText(app, "subtitle", Program.ClientVariantLabel),
-                    AccentColor = Accent
-                });
-            }
-            int columns = (portalVariant || studioVariant) ? 3 : 4;
-            const int gap = 12;
-            int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 150);
-            int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * (columns - 1)) / columns);
-            int cardHeight = listMode ? 52 : (portalVariant ? 118 : (studioVariant ? 42 : 52));
-            for (int i = 0; i < buttons.Count; i++)
-            {
-                Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
-                content.Controls.Add(card);
-            }
-
-            content.ResumeLayout();
-        }
-
-        private void RenderStudioSections()
-        {
-            content.SuspendLayout();
-            content.Controls.Clear();
-            content.FlowDirection = FlowDirection.TopDown;
-            content.WrapContents = false;
-            content.BackColor = Bg;
-
-            List<Dictionary<string, object>> sections = new List<Dictionary<string, object>>();
-            foreach (object sectionObj in currentSections)
-            {
-                sections.Add(AsDict(sectionObj));
-            }
-            if (sections.Count == 0)
-            {
-                AddTemplateEmptyMessage("这里还没有按钮。");
-                content.ResumeLayout();
-                return;
-            }
-
-            int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
-            for (int i = 0; i < sections.Count; i++)
-            {
-                Dictionary<string, object> section = sections[i];
-                List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
-                foreach (object buttonObj in AsList(Get(section, "buttons")))
-                {
-                    buttons.Add(AsDict(buttonObj));
+                    EndContentRender();
                 }
-                if (buttons.Count == 0) continue;
+            }
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = listMode ? FlowDirection.TopDown : FlowDirection.LeftToRight;
+                content.WrapContents = !listMode;
+
+                List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
                 buttons.Sort((a, b) =>
                 {
                     int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
                     if (result != 0) return result;
                     return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
                 });
+                if (buttons.Count == 0)
+                {
+                    AddEmptyMessage("这里还没有按钮。");
+                    return;
+                }
 
-                Panel group = CreateStudioGroup(section, buttons, available, i);
-                content.Controls.Add(group);
+                int available = Math.Max(360, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+                if (portalVariant && !listMode)
+                {
+                    Dictionary<string, object> app = AsDict(Get(config, "app"));
+                    content.Controls.Add(new PortalHeroControl
+                    {
+                        Width = available,
+                        Height = 132,
+                        Margin = new Padding(0, 0, 0, 16),
+                        TitleText = GetText(app, "title", "工具箱"),
+                        SubtitleText = GetText(app, "subtitle", Program.ClientVariantLabel),
+                        AccentColor = Accent
+                    });
+                }
+                int columns = (portalVariant || studioVariant) ? 3 : 4;
+                const int gap = 12;
+                int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 150);
+                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * (columns - 1)) / columns);
+                int cardHeight = listMode ? 52 : (portalVariant ? 118 : (studioVariant ? 42 : 52));
+                for (int i = 0; i < buttons.Count; i++)
+                {
+                    Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
+                    content.Controls.Add(card);
+                }
             }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
 
-            if (content.Controls.Count == 0) AddTemplateEmptyMessage("这里还没有按钮。");
-            content.ResumeLayout();
+        private void RenderStudioSections()
+        {
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+
+                List<Dictionary<string, object>> sections = new List<Dictionary<string, object>>();
+                foreach (object sectionObj in currentSections)
+                {
+                    sections.Add(AsDict(sectionObj));
+                }
+                if (sections.Count == 0)
+                {
+                    AddTemplateEmptyMessage("这里还没有按钮。");
+                    return;
+                }
+
+                int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+                for (int i = 0; i < sections.Count; i++)
+                {
+                    Dictionary<string, object> section = sections[i];
+                    List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
+                    foreach (object buttonObj in AsList(Get(section, "buttons")))
+                    {
+                        buttons.Add(AsDict(buttonObj));
+                    }
+                    if (buttons.Count == 0) continue;
+                    buttons.Sort((a, b) =>
+                    {
+                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
+                        if (result != 0) return result;
+                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
+                    });
+
+                    Panel group = CreateStudioGroup(section, buttons, available, i);
+                    content.Controls.Add(group);
+                }
+
+                if (content.Controls.Count == 0) AddTemplateEmptyMessage("这里还没有按钮。");
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+            }
         }
 
         private void ShowStudioSettingsPage()
@@ -2400,18 +2642,29 @@ namespace ToolboxClient
         private void RenderStudioSettingsPage()
         {
             if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
             content.SuspendLayout();
-            content.Controls.Clear();
-            content.FlowDirection = FlowDirection.TopDown;
-            content.WrapContents = false;
-            content.BackColor = Bg;
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
 
-            int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
-            ClientSettings currentSettings = LoadClientSettings();
+                int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+                ClientSettings currentSettings = LoadClientSettings();
 
-            content.Controls.Add(CreateStudioSettingsCard(available, currentSettings));
-            content.Controls.Add(CreateStudioDownloadRecordsPanel(available));
-            content.ResumeLayout();
+                content.Controls.Add(CreateStudioSettingsCard(available, currentSettings));
+                content.Controls.Add(CreateStudioDownloadRecordsPanel(available));
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
             RenderActiveDownloads();
             FillDownloadRecords();
         }
@@ -2773,7 +3026,7 @@ namespace ToolboxClient
         private void RenderPortalSections()
         {
             content.SuspendLayout();
-            content.Controls.Clear();
+            ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
@@ -2862,7 +3115,7 @@ namespace ToolboxClient
         {
             if (!portalVariant || content == null) return;
             content.SuspendLayout();
-            content.Controls.Clear();
+            ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
@@ -3011,7 +3264,7 @@ namespace ToolboxClient
         private void RenderPortalDownloadsPage()
         {
             content.SuspendLayout();
-            content.Controls.Clear();
+            ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
@@ -3041,7 +3294,7 @@ namespace ToolboxClient
         private void RenderPortalSettingsPage()
         {
             content.SuspendLayout();
-            content.Controls.Clear();
+            ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
@@ -3687,7 +3940,7 @@ namespace ToolboxClient
             content.SuspendLayout();
             try
             {
-                content.Controls.Clear();
+                ClearChildControls(content);
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
@@ -3885,7 +4138,7 @@ namespace ToolboxClient
             if (softwareSearchTimer == null)
             {
                 softwareSearchTimer = new System.Windows.Forms.Timer();
-                softwareSearchTimer.Interval = 220;
+                softwareSearchTimer.Interval = 320;
                 softwareSearchTimer.Tick += delegate
                 {
                     softwareSearchTimer.Stop();
@@ -3905,7 +4158,9 @@ namespace ToolboxClient
 
         private void RefreshSoftwareCatalogResults()
         {
-            if (softwareResultsPanel == null) return;
+            if (!currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) return;
+            if (softwareResultsPanel == null || softwareResultsPanel.IsDisposed) return;
+            CancelSoftwareCatalogRender();
             string query = (softwareCatalogQuery ?? "").Trim();
             string category = String.IsNullOrWhiteSpace(softwareCatalogCategory) ? "全部" : softwareCatalogCategory;
             bool hasQuery = !String.IsNullOrWhiteSpace(query);
@@ -3926,18 +4181,22 @@ namespace ToolboxClient
                 return categoryCompare != 0 ? categoryCompare : String.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
             });
 
-            if (hasQuery) QueueWingetCatalogSearch(query);
+            if (hasQuery && SoftwareCatalogAutoWingetEnabled()) QueueWingetCatalogSearch(query);
 
             List<SoftwareCatalogEntry> results = new List<SoftwareCatalogEntry>();
             foreach (SoftwareCatalogEntry entry in localResults) results.Add(entry);
             AppendWingetCatalogResults(results, query, category);
             AppendSoftwareDirectorySearchEntries(results, query, category);
+            int totalResults = results.Count;
+            int displayLimit = SoftwareCatalogDisplayLimit(hasQuery, category);
+            if (results.Count > displayLimit) results = results.GetRange(0, displayLimit);
 
             if (softwareCatalogStatus != null)
             {
                 string prefix = String.IsNullOrWhiteSpace(query) ? "当前目录" : "搜索结果";
                 string wingetText = wingetCatalogSearching && hasQuery ? "，Winget 正在搜索" : "";
-                softwareCatalogStatus.Text = prefix + "：" + results.Count + " 个，内置目录 " + source.Count + " 个" + wingetText + "；点“安装”会优先解析安装包加入下载。";
+                string countText = totalResults == results.Count ? results.Count.ToString() : results.Count + "/" + totalResults;
+                softwareCatalogStatus.Text = prefix + "：" + countText + " 个，内置目录 " + source.Count + " 个" + wingetText + "；点“安装”会优先解析安装包加入下载。";
             }
 
             int available = SoftwareCatalogContentWidth();
@@ -3947,7 +4206,7 @@ namespace ToolboxClient
             int columns = available >= 980 ? 3 : (available >= 640 ? 2 : 1);
             while (columns > 1 && ((available - gap * columns - 2) / columns) < minCardWidth) columns--;
             int cardWidth = Math.Max(minCardWidth, (available - gap * columns - 2) / columns);
-            int cardHeight = portalVariant ? 134 : (studioVariant ? 126 : 132);
+            int cardHeight = portalVariant ? 150 : (studioVariant ? 142 : 148);
             int countForHeight = Math.Max(1, results.Count == 0 ? 1 : results.Count);
             int rows = (int)Math.Ceiling(countForHeight / (double)columns);
 
@@ -3956,23 +4215,74 @@ namespace ToolboxClient
             try
             {
                 softwareResultsPanel.Height = Math.Max(188, rows * (cardHeight + gap) + 6);
-                softwareResultsPanel.Controls.Clear();
+                ClearChildControls(softwareResultsPanel);
                 if (results.Count == 0)
                 {
                     softwareResultsPanel.Controls.Add(CreateSoftwareNoResultCard(cardWidth, cardHeight + 28, query));
                 }
                 else
                 {
-                    for (int i = 0; i < results.Count; i++)
-                    {
-                        softwareResultsPanel.Controls.Add(CreateSoftwareCatalogCard(results[i], cardWidth, cardHeight, i));
-                    }
+                    softwareRenderEntries = results;
+                    softwareRenderIndex = 0;
+                    softwareRenderCardWidth = cardWidth;
+                    softwareRenderCardHeight = cardHeight;
+                    AppendSoftwareCatalogRenderBatch(8);
+                    if (softwareRenderIndex < softwareRenderEntries.Count) StartSoftwareCatalogRenderTimer();
                 }
             }
             finally
             {
                 softwareResultsPanel.ResumeLayout();
                 softwareCatalogLayoutUpdating = false;
+            }
+        }
+
+        private void CancelSoftwareCatalogRender()
+        {
+            if (softwareRenderTimer != null) softwareRenderTimer.Stop();
+            softwareRenderEntries = new List<SoftwareCatalogEntry>();
+            softwareRenderIndex = 0;
+        }
+
+        private void StartSoftwareCatalogRenderTimer()
+        {
+            if (softwareRenderTimer == null)
+            {
+                softwareRenderTimer = new System.Windows.Forms.Timer();
+                softwareRenderTimer.Interval = 16;
+                softwareRenderTimer.Tick += delegate
+                {
+                    if (softwareResultsPanel == null ||
+                        !currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) ||
+                        softwareRenderIndex >= softwareRenderEntries.Count)
+                    {
+                        CancelSoftwareCatalogRender();
+                        return;
+                    }
+                    AppendSoftwareCatalogRenderBatch(8);
+                    if (softwareRenderIndex >= softwareRenderEntries.Count) CancelSoftwareCatalogRender();
+                };
+            }
+            softwareRenderTimer.Stop();
+            softwareRenderTimer.Start();
+        }
+
+        private void AppendSoftwareCatalogRenderBatch(int batchSize)
+        {
+            if (softwareResultsPanel == null || softwareRenderEntries == null) return;
+            int end = Math.Min(softwareRenderEntries.Count, softwareRenderIndex + Math.Max(1, batchSize));
+            softwareResultsPanel.SuspendLayout();
+            try
+            {
+                for (int i = softwareRenderIndex; i < end; i++)
+                {
+                    softwareResultsPanel.Controls.Add(CreateSoftwareCatalogCard(softwareRenderEntries[i], softwareRenderCardWidth, softwareRenderCardHeight, i));
+                }
+                softwareRenderIndex = end;
+            }
+            finally
+            {
+                softwareResultsPanel.ResumeLayout();
             }
         }
 
@@ -4049,15 +4359,24 @@ namespace ToolboxClient
                 catch
                 {
                 }
-                BeginInvoke(new Action(delegate
+                if (IsDisposed || !IsHandleCreated) return;
+                try
                 {
-                    if (version != wingetCatalogSearchVersion) return;
-                    wingetCatalogQuery = uiQuery;
-                    wingetCatalogPendingQuery = "";
-                    wingetCatalogResults = results;
-                    wingetCatalogSearching = false;
-                    RefreshSoftwareCatalogResults();
-                }));
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (IsDisposed) return;
+                        if (version != wingetCatalogSearchVersion) return;
+                        wingetCatalogQuery = uiQuery;
+                        wingetCatalogPendingQuery = "";
+                        wingetCatalogResults = results;
+                        wingetCatalogSearching = false;
+                        if (!currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) || softwareResultsPanel == null) return;
+                        RefreshSoftwareCatalogResults();
+                    }));
+                }
+                catch
+                {
+                }
             });
         }
 
@@ -4163,18 +4482,21 @@ namespace ToolboxClient
             foreach (string rawLine in lines)
             {
                 if (results.Count >= 16) break;
-                string line = rawLine.Trim();
+                string line = CleanWingetOutputLine(rawLine);
                 if (line.Length == 0) continue;
+                if (IsWingetNoiseLine(line)) continue;
                 if (line.StartsWith("-", StringComparison.Ordinal) || line.StartsWith("|", StringComparison.Ordinal) || line.StartsWith("\\", StringComparison.Ordinal) || line.StartsWith("/", StringComparison.Ordinal)) continue;
                 if (line.IndexOf("找不到", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("No package found", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 if (line.IndexOf("名称", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("ID", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 if (line.IndexOf("Name", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("Id", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
-                Match match = Regex.Match(line, @"\s([A-Za-z0-9][A-Za-z0-9_.-]*\.[A-Za-z0-9][A-Za-z0-9_.-]*)\s");
+                Match match = Regex.Match(line, @"\s([A-Za-z0-9][A-Za-z0-9_.+\-]*\.[A-Za-z0-9][A-Za-z0-9_.+\-]*)\s");
                 if (!match.Success) continue;
                 string packageId = match.Groups[1].Value.Trim();
+                if (!IsPlausibleWingetPackageId(packageId)) continue;
                 string name = line.Substring(0, match.Groups[1].Index).Trim();
                 if (String.IsNullOrWhiteSpace(name)) name = packageId;
+                if (IsWingetNoiseLine(name) || !ContainsReadableText(name)) continue;
                 if (name.Length > 46) name = name.Substring(0, 46).Trim() + "...";
                 string category = GuessSoftwareCategory(name + " " + packageId + " " + originalQuery);
                 SoftwareCatalogEntry entry = new SoftwareCatalogEntry
@@ -4191,6 +4513,60 @@ namespace ToolboxClient
                 if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
             }
             return results;
+        }
+
+        private static string CleanWingetOutputLine(string value)
+        {
+            string line = value ?? "";
+            line = Regex.Replace(line, @"\x1B\[[0-?]*[ -/]*[@-~]", "");
+            line = line.Replace("\b", "").Replace("\0", "").Trim();
+            return line;
+        }
+
+        private static bool IsWingetNoiseLine(string value)
+        {
+            string line = (value ?? "").Trim();
+            if (line.Length == 0) return true;
+            if (line.IndexOf("█", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▓", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▒", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("░", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▌", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▍", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▎", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("▏", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+            if (Regex.IsMatch(line, @"^[\s\.\-=|/\\_]+$")) return true;
+            if (Regex.IsMatch(line, @"(?i)^\s*(?:searching|downloading|installing|found|verifying|hash|下载|正在|已找到|正在搜索|正在下载)")) return true;
+            return false;
+        }
+
+        private static bool IsPlausibleWingetPackageId(string packageId)
+        {
+            string value = (packageId ?? "").Trim();
+            if (value.Length < 5 || value.IndexOf('.') < 0) return false;
+            if (Regex.IsMatch(value, @"^\d+(?:\.\d+)+$")) return false;
+            bool hasLetter = false;
+            foreach (char ch in value)
+            {
+                if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))
+                {
+                    hasLetter = true;
+                    break;
+                }
+            }
+            return hasLetter;
+        }
+
+        private static bool ContainsReadableText(string value)
+        {
+            foreach (char ch in value ?? "")
+            {
+                if (Char.IsLetterOrDigit(ch) || (ch >= '\u4e00' && ch <= '\u9fff')) return true;
+            }
+            return false;
         }
 
         private static string WingetLookupKeyword(string query)
@@ -4241,6 +4617,12 @@ namespace ToolboxClient
                 SizeMode = PictureBoxSizeMode.CenterImage,
                 Image = CreateSoftwareCatalogIconImage(entry, accent, 34)
             };
+            icon.Disposed += delegate
+            {
+                Image image = icon.Image;
+                icon.Image = null;
+                if (image != null) image.Dispose();
+            };
             Label name = new Label
             {
                 Left = 60,
@@ -4283,20 +4665,21 @@ namespace ToolboxClient
 
             bool openOnly = entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId);
             bool canInstall = !String.IsNullOrWhiteSpace(entry.DownloadUrl) || !String.IsNullOrWhiteSpace(entry.PackageId) || !String.IsNullOrWhiteSpace(entry.Website);
+            int buttonTop = Math.Max(102, height - 42);
             Button install = MakeCatalogButton(openOnly ? "打开" : (canInstall ? "安装" : "搜索"), 72, true);
             install.Left = 16;
-            install.Top = height - 44;
+            install.Top = buttonTop;
             install.Click += delegate
             {
                 InstallSoftwareCatalogEntry(entry);
             };
             Button website = MakeCatalogButton("官网", 66, false);
             website.Left = 96;
-            website.Top = height - 44;
+            website.Top = buttonTop;
             website.Click += delegate { OpenSoftwareCatalogWebsite(entry); };
             Button search = MakeCatalogButton("搜索", 66, false);
             search.Left = 170;
-            search.Top = height - 44;
+            search.Top = buttonTop;
             search.Click += delegate { OpenSoftwareWebSearch(entry.Name); };
 
             panel.Controls.Add(icon);
@@ -4361,6 +4744,7 @@ namespace ToolboxClient
                 Font = new Font(Font.FontFamily, 8.5F, FontStyle.Bold)
             };
             button.FlatAppearance.BorderSize = 0;
+            button.Padding = new Padding(0, 0, 0, 2);
             return button;
         }
 
@@ -4642,6 +5026,60 @@ namespace ToolboxClient
                    value.IndexOf(".zip", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    value.IndexOf("download", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    value.IndexOf("installer", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeDirectDownloadFile(string value)
+        {
+            return !String.IsNullOrWhiteSpace(DirectDownloadFileNameFromText(value));
+        }
+
+        private static string DirectDownloadFileNameFromText(string value)
+        {
+            string text = (value ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            try { text = Uri.UnescapeDataString(text); } catch { }
+
+            try
+            {
+                Uri uri;
+                if (Uri.TryCreate(text, UriKind.Absolute, out uri))
+                {
+                    string pathName = Path.GetFileName(uri.LocalPath);
+                    if (HasDirectDownloadExtension(pathName)) return pathName;
+                }
+            }
+            catch
+            {
+            }
+
+            string[] parts = text.Split(new char[] { '/', '\\', '?', '&', '=', '#', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = parts.Length - 1; i >= 0; i--)
+            {
+                string part = parts[i].Trim().Trim(new char[] { '"', '\'', ' ', '\t', '\r', '\n' });
+                if (HasDirectDownloadExtension(part)) return part;
+            }
+
+            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
+            return match.Success ? match.Groups[1].Value : "";
+        }
+
+        private static bool HasDirectDownloadExtension(string fileName)
+        {
+            string value = (fileName ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(value)) return false;
+            try { value = Uri.UnescapeDataString(value); } catch { }
+            value = value.Split(new char[] { '?', '#', '&' }, 2)[0].Trim().Trim(new char[] { '"', '\'' });
+            string ext = "";
+            try { ext = Path.GetExtension(value); } catch { }
+            if (String.IsNullOrWhiteSpace(ext)) return false;
+            ext = ext.ToLowerInvariant();
+            return ext == ".exe" || ext == ".msi" || ext == ".msix" || ext == ".appx" ||
+                   ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".tar" ||
+                   ext == ".gz" || ext == ".tgz" || ext == ".bz2" || ext == ".xz" ||
+                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" ||
+                   ext == ".apk" || ext == ".deb" || ext == ".rpm" || ext == ".msu" ||
+                   ext == ".cab" || ext == ".dll" || ext == ".vst3" || ext == ".vst" ||
+                   ext == ".aax" || ext == ".component" || ext == ".pdf" || ext == ".bin";
         }
 
         private void SearchSoftwareWithWinget(string keyword)
@@ -5003,7 +5441,7 @@ namespace ToolboxClient
             string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
             string description = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
-            Image icon = LoadButtonIcon(iconUrl);
+            Image icon = GetCachedButtonIcon(iconUrl);
             TemplateActionButton button = new TemplateActionButton
             {
                 Title = portalVariant ? PortalLabel(GetText(item, "name", "未命名"), GetText(item, "id", "")) : GetText(item, "name", "未命名"),
@@ -5020,6 +5458,7 @@ namespace ToolboxClient
                 ActionInfo info = button.ActionInfo;
                 RunAction(info.Action, info.Target, info.CustomScript, info.Name);
             };
+            QueueButtonIconLoad(iconUrl, button);
             return button;
         }
 
@@ -5104,7 +5543,7 @@ namespace ToolboxClient
             string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
             string description = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
-            Image icon = LoadButtonIcon(iconUrl);
+            Image icon = GetCachedButtonIcon(iconUrl);
             ActionCard card = new ActionCard
             {
                 Width = width,
@@ -5125,6 +5564,7 @@ namespace ToolboxClient
                 ActionInfo info = card.ActionInfo;
                 RunAction(info.Action, info.Target, info.CustomScript, info.Name);
             };
+            QueueButtonIconLoad(iconUrl, card);
             return card;
         }
 
@@ -5142,31 +5582,76 @@ namespace ToolboxClient
             return LoadRemoteImage(url, 24, 24);
         }
 
+        private Image GetCachedButtonIcon(string url)
+        {
+            if (String.IsNullOrWhiteSpace(url)) return null;
+            string resolved = ResolveAssetUrl(url);
+            string cacheKey = "24x24|" + resolved;
+            lock (iconCacheLock)
+            {
+                Image cached;
+                if (iconCache.TryGetValue(cacheKey, out cached)) return cached;
+                return null;
+            }
+        }
+
+        private void QueueButtonIconLoad(string url, Control target)
+        {
+            if (String.IsNullOrWhiteSpace(url) || target == null) return;
+            string resolved = ResolveAssetUrl(url);
+            string cacheKey = "24x24|" + resolved;
+            lock (iconCacheLock)
+            {
+                if (iconCache.ContainsKey(cacheKey) || failedIcons.Contains(cacheKey)) return;
+                failedIcons.Add(cacheKey);
+            }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Image image = LoadRemoteImage(resolved, 24, 24);
+                if (image == null) return;
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (target == null || target.IsDisposed) return;
+                        TemplateActionButton templateButton = target as TemplateActionButton;
+                        ActionCard actionCard = target as ActionCard;
+                        if (templateButton != null) templateButton.IconImage = image;
+                        if (actionCard != null) actionCard.IconImage = image;
+                        target.Invalidate();
+                    }));
+                }
+                catch { }
+            });
+        }
+
         private Image LoadRemoteImage(string url, int maxWidth, int maxHeight)
         {
             if (String.IsNullOrWhiteSpace(url)) return null;
             url = ResolveAssetUrl(url);
             string cacheKey = maxWidth + "x" + maxHeight + "|" + url;
-            if (iconCache.ContainsKey(cacheKey)) return iconCache[cacheKey];
-            if (failedIcons.Contains(cacheKey)) return null;
+            lock (iconCacheLock)
+            {
+                Image cached;
+                if (iconCache.TryGetValue(cacheKey, out cached)) return cached;
+            }
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Timeout = 3000;
-                request.ReadWriteTimeout = 3000;
+                request.Timeout = 1500;
+                request.ReadWriteTimeout = 1500;
                 request.UserAgent = "ToolboxClient";
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
                 using (Image original = Image.FromStream(stream))
                 {
                     Image resized = ResizeImage(original, maxWidth, maxHeight);
-                    iconCache[cacheKey] = resized;
+                    lock (iconCacheLock) iconCache[cacheKey] = resized;
                     return resized;
                 }
             }
             catch
             {
-                failedIcons.Add(cacheKey);
                 return null;
             }
         }
@@ -5546,6 +6031,8 @@ namespace ToolboxClient
             }
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
+            task.BrowserUrl = download.BrowserUrl;
+            task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
             lock (activeDownloadsLock) activeDownloads.Add(task);
@@ -5574,6 +6061,13 @@ namespace ToolboxClient
             }
             if (!request.BrowserOnly)
             {
+                if (ShouldFastStartDownload(request))
+                {
+                    request.FastStartDirectDownload = true;
+                    request.FileName = SafeDownloadFileName(request.FileName);
+                    return request;
+                }
+
                 string remoteName = ProbeRemoteFileName(request.Url);
                 if (IsUsefulDownloadFileName(remoteName)) request.FileName = remoteName;
                 else if (!LooksLikeInstallerDownloadUrl(request.Url) && RemoteUrlLooksLikeWebPage(request.Url))
@@ -5585,6 +6079,24 @@ namespace ToolboxClient
             }
             request.FileName = SafeDownloadFileName(request.FileName);
             return request;
+        }
+
+        private static bool ShouldFastStartDownload(DownloadRequest request)
+        {
+            if (request == null || request.BrowserOnly) return false;
+
+            string directName = DirectDownloadFileNameFromText(request.Url);
+            if (String.IsNullOrWhiteSpace(directName)) directName = DirectDownloadFileNameFromText(request.OriginalUrl);
+            if (!String.IsNullOrWhiteSpace(directName))
+            {
+                if (!LooksLikeDirectDownloadFile(request.FileName) || !IsUsefulDownloadFileName(request.FileName))
+                {
+                    request.FileName = directName;
+                }
+                return true;
+            }
+
+            return LooksLikeDirectDownloadFile(request.FileName);
         }
 
         private DownloadRequest ResolveCloud189ClientDownloadRequest(string url)
@@ -5721,14 +6233,7 @@ namespace ToolboxClient
         {
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.AllowAutoRedirect = true;
-                request.UserAgent = "Mozilla/5.0 ToolboxClient";
-                request.Timeout = 6000;
-                request.ReadWriteTimeout = 6000;
-                request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
-                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (HttpWebResponse response = OpenProbeDownloadResponse(url, false, 0, -1, 6000, 6000))
                 {
                     if (ResponseLooksLikeWebPage(response)) return "";
                     string dispositionName = FileNameFromContentDisposition(response.Headers["Content-Disposition"]);
@@ -5746,14 +6251,7 @@ namespace ToolboxClient
         {
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.AllowAutoRedirect = true;
-                request.UserAgent = "Mozilla/5.0 ToolboxClient";
-                request.Timeout = 5000;
-                request.ReadWriteTimeout = 5000;
-                request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
-                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (HttpWebResponse response = OpenProbeDownloadResponse(url, false, 0, -1, 5000, 5000))
                 {
                     return ResponseLooksLikeWebPage(response);
                 }
@@ -5911,12 +6409,7 @@ namespace ToolboxClient
                 if (String.IsNullOrWhiteSpace(url) || String.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
                 long localSize = new FileInfo(path).Length;
                 if (localSize <= 0) return false;
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.UserAgent = "Mozilla/5.0 ToolboxClient";
-                request.Timeout = 4000;
-                request.ReadWriteTimeout = 4000;
-                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (HttpWebResponse response = OpenProbeDownloadResponse(url, false, 0, -1, 4000, 4000))
                 {
                     long remoteSize = response.ContentLength;
                     return remoteSize > 0 && localSize == remoteSize;
@@ -6158,13 +6651,7 @@ namespace ToolboxClient
                     try
                     {
                         task.Attempt = attempt;
-                        SegmentedDownloadPlan plan;
-                        if (task.Segmented && task.RestoredSegments.Count > 0)
-                            DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
-                        else if (TryCreateSegmentedDownloadPlan(task, out plan))
-                            DownloadFileSegmented(task, plan, attempt);
-                        else
-                            DownloadFileSingleConnection(task, attempt);
+                        DownloadFileAttempt(task, attempt);
                         failure = null;
                         break;
                     }
@@ -6173,6 +6660,7 @@ namespace ToolboxClient
                         failure = ex;
                         task.AbortActiveRequests();
                         if (ex is OperationCanceledException || task.CancelRequested) break;
+                        if (task.DisableSegmentedDownload && attempt < 3) CleanupSegmentedPart(task);
                         if (attempt < 3)
                         {
                             task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
@@ -6210,7 +6698,7 @@ namespace ToolboxClient
             HttpWebRequest request = null;
             try
             {
-                using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, resumeFrom > 0, resumeFrom, -1, out request))
+                using (HttpWebResponse response = OpenSingleDownloadResponse(task, resumeFrom, out request))
                 {
                     bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
                     if (resumeFrom > 0 && !resumed)
@@ -6253,20 +6741,64 @@ namespace ToolboxClient
             }
         }
 
+        private HttpWebResponse OpenSingleDownloadResponse(DownloadTask task, long resumeFrom, out HttpWebRequest request)
+        {
+            request = null;
+            if (resumeFrom <= 0) return OpenDownloadResponse(task, task.Url, false, 0, -1, out request);
+            try
+            {
+                return OpenDownloadResponse(task, task.Url, true, resumeFrom, -1, out request);
+            }
+            catch (Exception ex)
+            {
+                if (ex is OperationCanceledException || task.CancelRequested) throw;
+                if (!ShouldFallbackToSingleConnection(ex)) throw;
+                try { if (File.Exists(task.Path)) File.Delete(task.Path); } catch { }
+                task.Received = 0;
+                task.Total = -1;
+                task.StateText = "服务器不支持续传，重新下载";
+                QueueDownloadTaskRowUpdate(task);
+                return OpenDownloadResponse(task, task.Url, false, 0, -1, out request);
+            }
+        }
+
+        private void DownloadFileAttempt(DownloadTask task, int attempt)
+        {
+            if (task == null) return;
+            if (task.Segmented && task.RestoredSegments.Count > 0)
+            {
+                try
+                {
+                    DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (ex is OperationCanceledException || task.CancelRequested) throw;
+                    task.RestoredSegments.Clear();
+                    CleanupSegmentedPart(task);
+                    task.StateText = "分片失败，重新尝试32线程";
+                    QueueDownloadTaskRowUpdate(task);
+                }
+            }
+
+            SegmentedDownloadPlan plan;
+            if (!TryCreateSegmentedDownloadPlan(task, out plan))
+            {
+                task.StateText = "服务器不支持32线程分片";
+                QueueDownloadTaskRowUpdate(task);
+                throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
+            }
+
+            DownloadFileSegmented(task, plan, attempt);
+        }
+
         private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)
         {
             plan = null;
             if (task == null || !IsHttpUrl(task.Url)) return false;
-            try
-            {
-                if (File.Exists(task.Path) && new FileInfo(task.Path).Length > 0) return false;
-            }
-            catch
-            {
-                return false;
-            }
-            RemoteDownloadInfo info = ProbeRemoteDownloadInfo(task.Url);
-            if (info == null || !info.SupportsRanges || info.TotalLength < SegmentedDownloadMinBytes) return false;
+            RemoteDownloadInfo info = ProbeRemoteDownloadInfo(task);
+            if (info == null || !info.SupportsRanges || info.TotalLength <= 0) return false;
             int segmentCount = CalculateSegmentCount(info.TotalLength);
             if (segmentCount <= 1) return false;
             plan = new SegmentedDownloadPlan { TotalLength = info.TotalLength, SegmentCount = segmentCount };
@@ -6275,12 +6807,8 @@ namespace ToolboxClient
 
         private int CalculateSegmentCount(long totalLength)
         {
-            if (totalLength < SegmentedDownloadMinBytes) return 1;
-            long bySize = totalLength / SegmentedDownloadMinSegmentBytes;
-            if (totalLength % SegmentedDownloadMinSegmentBytes != 0) bySize++;
-            if (bySize < 2) bySize = 2;
-            if (bySize > MaxSegmentedDownloadConnections) bySize = MaxSegmentedDownloadConnections;
-            return (int)bySize;
+            if (totalLength <= 1) return 1;
+            return MaxSegmentedDownloadConnections;
         }
 
         private void DownloadFileSegmented(DownloadTask task, SegmentedDownloadPlan plan, int attempt)
@@ -6303,8 +6831,7 @@ namespace ToolboxClient
                 {
                     task.Segmented = false;
                     task.PartPath = "";
-                    DownloadFileSingleConnection(task, attempt);
-                    return;
+                    throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
                 }
 
                 partPath = task.Path + ".part";
@@ -6329,7 +6856,7 @@ namespace ToolboxClient
                     output.SetLength(plan.TotalLength);
                 }
 
-                segments = CreateDownloadSegments(plan.TotalLength, SegmentedDownloadMinSegmentBytes);
+                segments = CreateDownloadSegments(plan.TotalLength, plan.SegmentCount);
             }
             else
             {
@@ -6479,6 +7006,25 @@ namespace ToolboxClient
             return segments;
         }
 
+        private List<DownloadSegment> CreateDownloadSegments(long totalLength, int segmentCount)
+        {
+            List<DownloadSegment> segments = new List<DownloadSegment>();
+            if (totalLength <= 0) return segments;
+            int count = Math.Max(1, Math.Min(MaxSegmentedDownloadConnections, segmentCount));
+            if (totalLength < count) count = (int)Math.Max(1, totalLength);
+            long baseSize = totalLength / count;
+            long remainder = totalLength % count;
+            long start = 0;
+            for (int index = 0; index < count; index++)
+            {
+                long size = baseSize + (index < remainder ? 1 : 0);
+                long end = start + size - 1;
+                segments.Add(new DownloadSegment { Index = index, Start = start, End = end });
+                start = end + 1;
+            }
+            return segments;
+        }
+
         private List<DownloadSegment> CreateDownloadSegmentsFromState(List<DownloadSegmentState> states, long totalLength)
         {
             List<DownloadSegment> segments = new List<DownloadSegment>();
@@ -6558,12 +7104,14 @@ namespace ToolboxClient
             return max <= 0 ? Math.Min(MaxSegmentedDownloadConnections, Math.Max(1, segments.Count)) : max;
         }
 
-        private RemoteDownloadInfo ProbeRemoteDownloadInfo(string url)
+        private RemoteDownloadInfo ProbeRemoteDownloadInfo(DownloadTask task)
         {
             RemoteDownloadInfo info = new RemoteDownloadInfo();
+            if (task == null) return info;
             try
             {
-                using (HttpWebResponse response = OpenProbeDownloadResponse(url, true, 0, 0))
+                int timeout = task.FastStartDirectDownload ? 4000 : 12000;
+                using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, timeout, timeout))
                 {
                     info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
                     info.TotalLength = ParseContentRangeTotal(response.Headers["Content-Range"]);
@@ -6578,17 +7126,44 @@ namespace ToolboxClient
 
         private HttpWebResponse OpenProbeDownloadResponse(string url, bool useRange, long rangeStart, long rangeEnd)
         {
-            string current = url;
+            return OpenProbeDownloadResponse(url, useRange, rangeStart, rangeEnd, 12000, 12000);
+        }
+
+        private HttpWebResponse OpenProbeDownloadResponse(string url, bool useRange, long rangeStart, long rangeEnd, int timeout, int readWriteTimeout)
+        {
+            DownloadTask probeTask = new DownloadTask(url, "", "", url);
+            return OpenProbeDownloadResponse(probeTask, useRange, rangeStart, rangeEnd, timeout, readWriteTimeout);
+        }
+
+        private HttpWebResponse OpenProbeDownloadResponse(DownloadTask task, bool useRange, long rangeStart, long rangeEnd, int timeout, int readWriteTimeout)
+        {
+            string current = task == null ? "" : task.Url;
             for (int redirect = 0; redirect < 8; redirect++)
             {
-                HttpWebRequest request = CreateDownloadHttpRequest(current, 12000, 12000);
+                HttpWebRequest request = CreateDownloadHttpRequest(task, current, timeout, readWriteTimeout);
                 ApplyDownloadRange(request, useRange, rangeStart, rangeEnd);
-                HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+                HttpWebResponse response;
+                try
+                {
+                    response = (HttpWebResponse)request.GetResponse();
+                }
+                catch (WebException ex)
+                {
+                    HttpWebResponse errorResponse = ex.Response as HttpWebResponse;
+                    if (errorResponse != null && useRange && IsRangeRejectedStatus(errorResponse.StatusCode))
+                    {
+                        errorResponse.Close();
+                        return OpenProbeDownloadResponse(task, false, 0, -1, timeout, readWriteTimeout);
+                    }
+                    throw;
+                }
+                CaptureDownloadSession(task, current, response);
                 if (!IsRedirectStatus(response.StatusCode)) return response;
                 string location = response.Headers["Location"];
                 response.Close();
                 if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
                 current = ResolveRedirectUrl(current, location);
+                if (task != null) task.LastResolvedUrl = current;
             }
             throw new InvalidOperationException("下载地址重定向次数过多。");
         }
@@ -6599,12 +7174,13 @@ namespace ToolboxClient
             string current = url;
             for (int redirect = 0; redirect < 8; redirect++)
             {
-                HttpWebRequest request = CreateDownloadHttpRequest(current, 45000, 120000);
+                HttpWebRequest request = CreateDownloadHttpRequest(task, current, 45000, 120000);
                 ApplyDownloadRange(request, useRange, rangeStart, rangeEnd);
                 task.TrackRequest(request);
                 try
                 {
                     HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+                    CaptureDownloadSession(task, current, response);
                     if (!IsRedirectStatus(response.StatusCode))
                     {
                         activeRequest = request;
@@ -6615,6 +7191,18 @@ namespace ToolboxClient
                     task.UntrackRequest(request);
                     if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
                     current = ResolveRedirectUrl(current, location);
+                    task.LastResolvedUrl = current;
+                }
+                catch (WebException ex)
+                {
+                    task.UntrackRequest(request);
+                    HttpWebResponse errorResponse = ex.Response as HttpWebResponse;
+                    if (errorResponse != null && useRange && IsRangeRejectedStatus(errorResponse.StatusCode))
+                    {
+                        errorResponse.Close();
+                        throw new InvalidOperationException("服务器不兼容 Range 分片下载。", ex);
+                    }
+                    throw;
                 }
                 catch
                 {
@@ -6627,16 +7215,59 @@ namespace ToolboxClient
 
         private static HttpWebRequest CreateDownloadHttpRequest(string url, int timeout, int readWriteTimeout)
         {
+            return CreateDownloadHttpRequest(null, url, timeout, readWriteTimeout);
+        }
+
+        private static HttpWebRequest CreateDownloadHttpRequest(DownloadTask task, string url, int timeout, int readWriteTimeout)
+        {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ToolboxClient";
             request.Accept = "*/*";
             request.AllowAutoRedirect = false;
             request.KeepAlive = true;
+            request.CookieContainer = task == null ? new CookieContainer() : task.Cookies;
             request.Timeout = timeout;
             request.ReadWriteTimeout = readWriteTimeout;
             request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
             try { request.Headers[HttpRequestHeader.AcceptEncoding] = "identity"; } catch { }
+            string referer = task == null ? "" : task.Referer;
+            if (String.IsNullOrWhiteSpace(referer) && task != null && !String.IsNullOrWhiteSpace(task.OriginalUrl) && !String.Equals(task.OriginalUrl, url, StringComparison.OrdinalIgnoreCase))
+            {
+                referer = task.OriginalUrl;
+            }
+            if (String.IsNullOrWhiteSpace(referer) && task != null && !String.IsNullOrWhiteSpace(task.BrowserUrl) && !String.Equals(task.BrowserUrl, url, StringComparison.OrdinalIgnoreCase))
+            {
+                referer = task.BrowserUrl;
+            }
+            if (!String.IsNullOrWhiteSpace(referer)) TrySetReferer(request, referer);
             return request;
+        }
+
+        private static void TrySetReferer(HttpWebRequest request, string referer)
+        {
+            try
+            {
+                Uri uri;
+                if (request == null || !Uri.TryCreate(referer, UriKind.Absolute, out uri)) return;
+                request.Referer = uri.AbsoluteUri;
+            }
+            catch
+            {
+            }
+        }
+
+        private static void CaptureDownloadSession(DownloadTask task, string requestUrl, HttpWebResponse response)
+        {
+            if (task == null || response == null) return;
+            try { task.Cookies.Add(response.Cookies); } catch { }
+            try
+            {
+                if (response.ResponseUri != null) task.LastResolvedUrl = response.ResponseUri.AbsoluteUri;
+                if (!String.IsNullOrWhiteSpace(requestUrl)) task.Referer = requestUrl;
+            }
+            catch
+            {
+            }
         }
 
         private static void ApplyDownloadRange(HttpWebRequest request, bool useRange, long rangeStart, long rangeEnd)
@@ -6665,6 +7296,29 @@ namespace ToolboxClient
         {
             int code = (int)status;
             return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+        }
+
+        private static bool IsRangeRejectedStatus(HttpStatusCode status)
+        {
+            int code = (int)status;
+            return code == 200 || code == 400 || code == 403 || code == 404 || code == 405 || code == 416;
+        }
+
+        private static bool ShouldFallbackToSingleConnection(Exception ex)
+        {
+            if (ex == null) return false;
+            if (ex is InvalidOperationException || ex is IOException) return true;
+            WebException web = ex as WebException;
+            if (web != null)
+            {
+                HttpWebResponse response = web.Response as HttpWebResponse;
+                if (response != null && IsRangeRejectedStatus(response.StatusCode)) return true;
+                return web.Status == WebExceptionStatus.ProtocolError ||
+                       web.Status == WebExceptionStatus.ReceiveFailure ||
+                       web.Status == WebExceptionStatus.ConnectionClosed ||
+                       web.Status == WebExceptionStatus.KeepAliveFailure;
+            }
+            return false;
         }
 
         private static string ResolveRedirectUrl(string currentUrl, string location)
@@ -6807,6 +7461,8 @@ namespace ToolboxClient
                     task.Received = Math.Max(0, state.Received);
                     task.Total = state.Total;
                     task.Segmented = state.Segmented;
+                    task.DisableSegmentedDownload = state.DisableSegmentedDownload;
+                    task.FastStartDirectDownload = state.FastStartDirectDownload;
                     task.PartPath = state.PartPath ?? "";
                     task.RestoredPaused = true;
                     task.StateText = PortalText("已暂停", "Paused");
@@ -6853,6 +7509,8 @@ namespace ToolboxClient
             state.Total = task.Total;
             state.StateText = task.StateText;
             state.Segmented = task.Segmented;
+            state.DisableSegmentedDownload = task.DisableSegmentedDownload;
+            state.FastStartDirectDownload = task.FastStartDirectDownload;
             state.PartPath = task.PartPath;
             state.Segments = SnapshotDownloadSegments(task);
             return state;
@@ -7153,6 +7811,7 @@ namespace ToolboxClient
             ApplyStudioThemeToShell();
             BuildNav();
             if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase)) RenderStudioSettingsPage();
+            else if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) RenderSoftwareCatalogPage();
             else RenderCurrentSections();
             UpdateStudioChromeButtons();
             status.Text = nextDark ? "已切换深色模式" : "已切换浅色模式";
@@ -9693,9 +10352,11 @@ namespace ToolboxClient
                 get { return active; }
                 set
                 {
+                    if (active == value) return;
                     active = value;
-                    targetGlow = active ? 1.0 : (hovered ? 0.45 : 0.0);
-                    timer.Start();
+                    targetGlow = active ? 1.0 : 0.0;
+                    glow = targetGlow;
+                    timer.Stop();
                     Invalidate();
                 }
             }
@@ -9722,16 +10383,12 @@ namespace ToolboxClient
             protected override void OnMouseEnter(EventArgs e)
             {
                 hovered = true;
-                targetGlow = active ? 1.0 : 0.45;
-                timer.Start();
                 base.OnMouseEnter(e);
             }
 
             protected override void OnMouseLeave(EventArgs e)
             {
                 hovered = false;
-                targetGlow = active ? 1.0 : 0.0;
-                timer.Start();
                 base.OnMouseLeave(e);
             }
 
@@ -9790,7 +10447,7 @@ namespace ToolboxClient
             public bool Active
             {
                 get { return active; }
-                set { active = value; Invalidate(); }
+                set { if (active == value) return; active = value; Invalidate(); }
             }
 
             public TemplateNavButton()
@@ -9803,14 +10460,12 @@ namespace ToolboxClient
             protected override void OnMouseEnter(EventArgs e)
             {
                 hovered = true;
-                Invalidate();
                 base.OnMouseEnter(e);
             }
 
             protected override void OnMouseLeave(EventArgs e)
             {
                 hovered = false;
-                Invalidate();
                 base.OnMouseLeave(e);
             }
 
@@ -10749,6 +11404,8 @@ namespace ToolboxClient
             public long Total { get; set; }
             public string StateText { get; set; }
             public bool Segmented { get; set; }
+            public bool DisableSegmentedDownload { get; set; }
+            public bool FastStartDirectDownload { get; set; }
             public string PartPath { get; set; }
             public List<DownloadSegmentState> Segments { get; set; }
         }
@@ -10769,6 +11426,7 @@ namespace ToolboxClient
             public string FileName = "";
             public string BrowserUrl = "";
             public bool BrowserOnly;
+            public bool FastStartDirectDownload;
             public string Message = "";
         }
 
@@ -10837,13 +11495,19 @@ namespace ToolboxClient
             public readonly string OriginalUrl;
             public readonly string FileName;
             public readonly string Path;
+            public string BrowserUrl = "";
+            public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
             public volatile bool CancelRequested;
             public volatile HttpWebRequest ActiveRequest;
             public volatile bool Started;
             public volatile bool Finished;
             public volatile bool Segmented;
+            public volatile bool DisableSegmentedDownload;
+            public volatile bool FastStartDirectDownload;
             public volatile string PartPath = "";
+            public volatile string LastResolvedUrl = "";
+            public volatile string Referer = "";
             public volatile bool RestoredPaused;
             public int WorkerRunning;
             public long Received;

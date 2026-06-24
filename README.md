@@ -1,14 +1,15 @@
 ﻿# 工具箱后台无代理版
 
-本分支保存的是最新无代理版工具箱后台源码和宝塔一键更新包。无代理版已移除业务代理/代理申请/代理订单相关入口，保留后台管理、用户配置、邀请码、通知、客户端生成、三套客户端版本、软件大全、配置导入导出和云端配置链接等功能。
+本仓库保存最新无代理版工具箱后台源码和宝塔一键更新包。无代理版已移除业务代理/代理申请/代理订单相关入口，保留后台管理、用户配置、邀请码、通知、客户端生成、三套客户端版本、软件大全、配置导入导出和云端配置链接等功能。
 
 ## 当前最新版
 
-- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz`
-- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz.b64`
-- 无代理源码包：`packages/toolbox-admin-source-no-agent-fixed2-20260624.tar.gz`
+- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz`
+- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz.b64`
+- 无代理源码包：`packages/toolbox-admin-source-no-agent-forced32-20260624.tar.gz`
 - 无代理源码目录：`src/ToolboxAdminApi-no-agent`
 - SHA256 清单：`docs/更新包SHA256清单.txt`
+- 已部署服务器保留数据更新命令：`docs/GitHub无代理版-已部署服务器保留数据更新命令.txt`
 
 本仓库不提交服务器运行数据目录 `data/`，避免覆盖已部署服务器上的账号、密码、用户配置、通知、订单、系统设置和客户端生成记录。
 
@@ -17,6 +18,8 @@
 - 移除业务代理功能入口和代理申请接口。
 - 修复无代理版后台登录后前端脚本解析失败的问题。
 - 修复读取附加接口失败时阻断主配置加载的问题，旧服务入口返回 `Not found` 时不再卡死后台。
+- 插件包按钮已改为直链下载，客户端识别通用直链后快速入队，不再长时间停在准备下载。
+- 客户端 HTTP 下载强制使用 32 线程 Range 分片；不支持 Range 的服务器会提示不支持 32 线程分片，不会降级为普通下载。
 - 已部署服务器更新时保留原 `data/`，只替换程序文件。
 - 保留三套客户端生成：默认版、工作台版、门户版。
 - 保留软件大全、页面访问密码、配置导入导出、云端配置链接、通知、邀请码、后台桌面 EXE 等功能。
@@ -26,7 +29,7 @@
 新服务器第一次安装可使用一键包。首次部署会初始化新的 `data/` 数据目录。
 
 ```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/private-local-tested-preserve-data-20260620/packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
 ```
 
 执行后按提示填写域名、安装目录、端口和管理员密码。新服务器没有旧数据时才使用这条命令。
@@ -40,12 +43,12 @@ set -e
 SERVICE="toolbox-admin"
 APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
 [ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
-BRANCH="private-local-tested-preserve-data-20260620"
-PKG_NAME="toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz"
+BRANCH="main"
+PKG_NAME="toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="7790f841e311fd4989c90d5f957198038d988491d0e7d4eaa0851a89b97d611b"
+SHA="ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-no-agent-$TS.tar.gz"
 TMP="/tmp/toolbox-no-agent-$TS"
@@ -116,7 +119,7 @@ systemctl is-active --quiet "$SERVICE"
 curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
 grep -q "function loadOptional" "$APP/wwwroot/admin.js"
 ! grep -q "/api/admin/agent-application" "$APP/app.py"
-echo "OK: no-agent build updated, existing data preserved. Backup: $BACKUP"
+echo "OK: no-agent forced32 build updated, existing data preserved. Backup: $BACKUP"
 ```
 
 这条更新命令会：
@@ -147,6 +150,7 @@ echo "OK: no-agent build updated, existing data preserved. Backup: $BACKUP"
 src/ToolboxAdminApi-no-agent/          无代理版源码
 packages/                              一键包、源码包和热修复包
 docs/GitHub无代理版-已部署服务器保留数据更新命令.txt
+docs/服务器免上传-通用直链下载兼容修复命令.txt
 docs/更新包SHA256清单.txt
 ```
 

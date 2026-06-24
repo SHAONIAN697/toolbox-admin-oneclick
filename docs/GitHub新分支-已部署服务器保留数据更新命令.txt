@@ -1,7 +1,7 @@
 set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
-BRANCH="private-local-tested-preserve-data-20260620"
+BRANCH="main"
 PKG_NAME="toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"

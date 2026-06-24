@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -32,9 +33,27 @@ namespace ToolboxAdminDesktop
         private static void Main()
         {
             ConfigureNetworkSecurity();
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                ShowFriendlyError(e.Exception);
+                Application.Exit();
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+            {
+                Exception ex = e.ExceptionObject as Exception;
+                if (ex != null) ShowFriendlyError(ex);
+            };
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new LoginForm());
+            try
+            {
+                Application.Run(new LoginForm());
+            }
+            catch (Exception ex)
+            {
+                ShowFriendlyError(ex);
+            }
         }
 
         private static void ConfigureNetworkSecurity()
@@ -80,17 +99,39 @@ namespace ToolboxAdminDesktop
             }
             return value;
         }
+
+        internal static void ShowFriendlyError(Exception ex)
+        {
+            string message = FriendlyExceptionMessage(ex);
+            try { MessageBox.Show(message, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+        }
+
+        internal static string FriendlyExceptionMessage(Exception ex)
+        {
+            string message = ex == null ? "" : (ex.Message ?? "");
+            if (message.IndexOf("Process has exited", StringComparison.OrdinalIgnoreCase) >= 0 || message.IndexOf("进程已退出", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "后台窗口启动失败，请关闭旧的后台 EXE 后重新打开。";
+            }
+            if (String.IsNullOrWhiteSpace(message))
+            {
+                return "程序遇到异常，请重新打开后台 EXE。";
+            }
+            return message;
+        }
     }
 
     internal sealed class LoginForm : Form
     {
         private readonly TextBox usernameBox;
         private readonly TextBox passwordBox;
+        private readonly Button passwordToggleButton;
         private readonly CheckBox rememberBox;
         private readonly CheckBox autoLoginBox;
         private readonly Label messageLabel;
         private readonly Button loginButton;
         private bool launching;
+        private bool passwordVisible;
 
         public LoginForm()
         {
@@ -136,8 +177,40 @@ namespace ToolboxAdminDesktop
 
             Label passLabel = MakeLabel("密码", 32, 174);
             Controls.Add(passLabel);
-            passwordBox = MakeTextBox(32, 196, true);
-            Controls.Add(passwordBox);
+            Panel passwordPanel = new Panel
+            {
+                Left = 32,
+                Top = 196,
+                Width = 356,
+                Height = 28,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Color.FromArgb(13, 16, 18)
+            };
+            passwordPanel.Click += delegate { passwordBox.Focus(); };
+
+            passwordBox = MakeTextBox(8, 5, true);
+            passwordBox.Width = 300;
+            passwordBox.Height = 20;
+            passwordBox.BorderStyle = BorderStyle.None;
+            passwordPanel.Controls.Add(passwordBox);
+
+            passwordToggleButton = new Button
+            {
+                Left = 318,
+                Top = 1,
+                Width = 34,
+                Height = 24,
+                Text = "◎",
+                BackColor = Color.FromArgb(13, 16, 18),
+                ForeColor = Color.FromArgb(156, 168, 174),
+                FlatStyle = FlatStyle.Flat,
+                TabStop = false,
+                Font = new Font("Segoe UI Symbol", 10F, FontStyle.Regular, GraphicsUnit.Point)
+            };
+            passwordToggleButton.FlatAppearance.BorderSize = 0;
+            passwordToggleButton.Click += delegate { TogglePasswordVisibility(); };
+            passwordPanel.Controls.Add(passwordToggleButton);
+            Controls.Add(passwordPanel);
 
             rememberBox = new CheckBox
             {
@@ -215,6 +288,15 @@ namespace ToolboxAdminDesktop
             };
         }
 
+        private void TogglePasswordVisibility()
+        {
+            passwordVisible = !passwordVisible;
+            passwordBox.UseSystemPasswordChar = !passwordVisible;
+            passwordToggleButton.Text = passwordVisible ? "○" : "◎";
+            passwordBox.Focus();
+            passwordBox.SelectionStart = passwordBox.TextLength;
+        }
+
         private void LoadSavedCredential()
         {
             Credential credential = Credential.Load();
@@ -259,7 +341,7 @@ namespace ToolboxAdminDesktop
                 }
                 launching = true;
                 AdminLauncher.OpenAdmin(result.Token);
-                Close();
+                Hide();
             }
             catch (Exception ex)
             {
@@ -275,9 +357,13 @@ namespace ToolboxAdminDesktop
     {
         internal static LoginResult Login(string username, string password)
         {
-            string url = Program.AdminBaseUrl() + "/desktop/login";
             string body = new JavaScriptSerializer().Serialize(new { username = username, password = password });
             byte[] payload = Encoding.UTF8.GetBytes(body);
+            return PostLogin(Program.AdminBaseUrl() + "/api/login", payload);
+        }
+
+        private static LoginResult PostLogin(string url, byte[] payload)
+        {
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = "POST";
             req.ContentType = "application/json; charset=utf-8";
@@ -325,20 +411,9 @@ namespace ToolboxAdminDesktop
             }
 
             string url = BuildAdminUrl(token);
-            ProcessStartInfo psi = new ProcessStartInfo();
-            psi.FileName = browser;
-            psi.UseShellExecute = false;
-            psi.Arguments = String.Join(" ", new string[]
-            {
-                "--app=" + QuoteArg(url),
-                "--user-data-dir=" + QuoteArg(Program.BrowserDataDir()),
-                "--no-first-run",
-                "--disable-background-networking",
-                "--disable-features=TranslateUI",
-                "--disk-cache-size=1",
-                "--media-cache-size=1"
-            });
-            Process.Start(psi);
+            BrowserHostForm form = new BrowserHostForm(browser, url);
+            form.FormClosed += delegate { Application.Exit(); };
+            form.Show();
         }
 
         private static string BuildAdminUrl(string token)
@@ -366,10 +441,282 @@ namespace ToolboxAdminDesktop
             return "";
         }
 
-        private static string QuoteArg(string value)
+        internal static string QuoteArg(string value)
         {
             return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
+    }
+
+    internal sealed class BrowserHostForm : Form
+    {
+        private const int GWL_STYLE = -16;
+        private const int WS_CHILD = 0x40000000;
+        private const int WS_VISIBLE = 0x10000000;
+        private const int WS_CAPTION = 0x00C00000;
+        private const int WS_THICKFRAME = 0x00040000;
+        private const int WS_SYSMENU = 0x00080000;
+        private const int WS_MINIMIZEBOX = 0x00020000;
+        private const int WS_MAXIMIZEBOX = 0x00010000;
+        private const int WS_POPUP = unchecked((int)0x80000000);
+        private const int SW_SHOW = 5;
+        private const int WM_CLOSE = 0x0010;
+
+        private readonly string browserPath;
+        private readonly string adminUrl;
+        private readonly Panel hostPanel;
+        private Process browserProcess;
+        private IntPtr browserWindow;
+        private int browserProcessId;
+        private string profileDir;
+
+        public BrowserHostForm(string browserPath, string adminUrl)
+        {
+            this.browserPath = browserPath;
+            this.adminUrl = adminUrl;
+            Text = String.IsNullOrWhiteSpace(Program.AppTitle) ? "工具箱后台" : Program.AppTitle;
+            StartPosition = FormStartPosition.CenterScreen;
+            MinimumSize = new Size(900, 600);
+            WindowState = FormWindowState.Maximized;
+            BackColor = Color.FromArgb(17, 20, 22);
+
+            hostPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Black
+            };
+            Controls.Add(hostPanel);
+
+            Shown += delegate { StartBrowser(); };
+            Resize += delegate { ResizeBrowser(); };
+            FormClosed += delegate { CleanupBrowser(); };
+        }
+
+        private void StartBrowser()
+        {
+            try
+            {
+                profileDir = Path.Combine(Program.BrowserDataDir(), "hosted-" + Process.GetCurrentProcess().Id.ToString());
+                Directory.CreateDirectory(profileDir);
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = browserPath;
+                psi.UseShellExecute = false;
+                DateTime launchedAt = DateTime.Now;
+                psi.Arguments = String.Join(" ", new string[]
+                {
+                    "--app=" + AdminLauncher.QuoteArg(adminUrl),
+                    "--new-window",
+                    "--user-data-dir=" + AdminLauncher.QuoteArg(profileDir),
+                    "--no-first-run",
+                    "--disable-background-networking",
+                    "--disable-features=TranslateUI",
+                    "--disk-cache-size=1",
+                    "--media-cache-size=1"
+                });
+                browserProcess = Process.Start(psi);
+                if (browserProcess == null) throw new Exception("后台窗口启动失败，请确认 Edge 或 Chrome 可以正常启动。");
+                browserProcessId = SafeProcessId(browserProcess);
+                browserWindow = WaitForBrowserWindow(browserProcess, browserProcessId, launchedAt, 20000);
+                if (browserWindow == IntPtr.Zero) throw new Exception("后台窗口启动失败，请关闭已打开的后台 EXE 后重试。");
+                EmbedBrowserWindow();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, Program.AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Application.Exit();
+            }
+        }
+
+        private IntPtr WaitForBrowserWindow(Process process, int launchedProcessId, DateTime launchedAt, int timeoutMs)
+        {
+            DateTime end = DateTime.Now.AddMilliseconds(timeoutMs);
+            string processName = Path.GetFileNameWithoutExtension(browserPath);
+            while (DateTime.Now < end)
+            {
+                if (process != null)
+                {
+                    IntPtr mainWindow = SafeMainWindowHandle(process);
+                    if (mainWindow != IntPtr.Zero) return mainWindow;
+                }
+
+                if (launchedProcessId > 0)
+                {
+                    IntPtr ownWindow = FindWindowForProcess(launchedProcessId);
+                    if (ownWindow != IntPtr.Zero) return ownWindow;
+                }
+
+                try
+                {
+                    IntPtr found = FindRecentBrowserWindow(processName, launchedAt);
+                    if (found != IntPtr.Zero) return found;
+                }
+                catch { }
+                Thread.Sleep(100);
+            }
+            return IntPtr.Zero;
+        }
+
+        private static int SafeProcessId(Process process)
+        {
+            try { return process == null ? 0 : process.Id; } catch { return 0; }
+        }
+
+        private static bool SafeHasExited(Process process)
+        {
+            try { return process == null || process.HasExited; } catch { return true; }
+        }
+
+        private static IntPtr SafeMainWindowHandle(Process process)
+        {
+            try
+            {
+                if (process == null) return IntPtr.Zero;
+                process.Refresh();
+                if (SafeHasExited(process)) return IntPtr.Zero;
+                return process.MainWindowHandle;
+            }
+            catch { return IntPtr.Zero; }
+        }
+
+        private static DateTime SafeStartTime(Process process)
+        {
+            try { return process == null ? DateTime.MinValue : process.StartTime; } catch { return DateTime.MinValue; }
+        }
+
+        private static IntPtr FindRecentBrowserWindow(string processName, DateTime launchedAt)
+        {
+            if (String.IsNullOrWhiteSpace(processName)) return IntPtr.Zero;
+            Process[] processes = Process.GetProcessesByName(processName);
+            foreach (Process process in processes)
+            {
+                try
+                {
+                    int id = SafeProcessId(process);
+                    if (id <= 0) continue;
+                    DateTime started = SafeStartTime(process);
+                    if (started != DateTime.MinValue && started < launchedAt.AddSeconds(-3)) continue;
+                    IntPtr mainWindow = SafeMainWindowHandle(process);
+                    if (mainWindow != IntPtr.Zero) return mainWindow;
+                    IntPtr found = FindWindowForProcess(id);
+                    if (found != IntPtr.Zero) return found;
+                }
+                catch { }
+                finally
+                {
+                    try { process.Dispose(); } catch { }
+                }
+            }
+            return IntPtr.Zero;
+        }
+
+        private static IntPtr FindWindowForProcess(int processId)
+        {
+            IntPtr found = IntPtr.Zero;
+            EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+            {
+                try
+                {
+                    int windowProcessId;
+                    GetWindowThreadProcessId(hWnd, out windowProcessId);
+                    if (windowProcessId == processId && IsWindowVisible(hWnd))
+                    {
+                        found = hWnd;
+                        return false;
+                    }
+                }
+                catch { }
+                return true;
+            }, IntPtr.Zero);
+            return found;
+        }
+
+        private void EmbedBrowserWindow()
+        {
+            if (browserWindow == IntPtr.Zero || !IsWindow(browserWindow)) throw new Exception("后台窗口启动失败，请重新打开后台 EXE。");
+            SetParent(browserWindow, hostPanel.Handle);
+            int style = GetWindowLong(browserWindow, GWL_STYLE);
+            style = (style | WS_CHILD | WS_VISIBLE) & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME & ~WS_SYSMENU & ~WS_MINIMIZEBOX & ~WS_MAXIMIZEBOX;
+            SetWindowLong(browserWindow, GWL_STYLE, style);
+            ShowWindow(browserWindow, SW_SHOW);
+            ResizeBrowser();
+        }
+
+        private void ResizeBrowser()
+        {
+            if (browserWindow == IntPtr.Zero) return;
+            if (!IsWindow(browserWindow))
+            {
+                browserWindow = IntPtr.Zero;
+                return;
+            }
+            MoveWindow(browserWindow, 0, 0, hostPanel.ClientSize.Width, hostPanel.ClientSize.Height, true);
+        }
+
+        private void CleanupBrowser()
+        {
+            int windowProcessId = 0;
+            try
+            {
+                if (browserWindow != IntPtr.Zero && IsWindow(browserWindow))
+                {
+                    GetWindowThreadProcessId(browserWindow, out windowProcessId);
+                    PostMessage(browserWindow, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                    Thread.Sleep(150);
+                }
+            }
+            catch { }
+            try
+            {
+                if (browserProcess != null && !SafeHasExited(browserProcess)) browserProcess.Kill();
+            }
+            catch { }
+            try
+            {
+                if (windowProcessId > 0 && windowProcessId != browserProcessId)
+                {
+                    Process process = Process.GetProcessById(windowProcessId);
+                    if (!SafeHasExited(process)) process.Kill();
+                    process.Dispose();
+                }
+            }
+            catch { }
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(profileDir) && Directory.Exists(profileDir)) Directory.Delete(profileDir, true);
+            }
+            catch { }
+        }
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll")]
+        private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     }
 
     internal sealed class Credential

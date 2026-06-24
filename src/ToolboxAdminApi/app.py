@@ -27,6 +27,8 @@ MAIL_PATH = DATA / "mail.json"
 SYSTEM_PATH = DATA / "system.json"
 NOTICES_PATH = DATA / "notices.json"
 ORDERS_PATH = DATA / "orders.json"
+AGENT_APPLICATIONS_PATH = DATA / "agent-applications.json"
+AGENT_LOGS_PATH = DATA / "agent-logs.json"
 SESSIONS_PATH = DATA / "sessions.json"
 USER_TEMPLATE_PATH = DATA / "user-template.json"
 USER_DATA = DATA / "users"
@@ -928,8 +930,8 @@ def role_label(role):
 
 
 def is_login_api_path(path):
-    normalized = "/" + str(path or "").strip("/")
-    return normalized == "/api/login" or normalized.endswith("/api/login")
+    normalized = "/" + str(path or "").strip("/").lower()
+    return normalized in ("/api/login", "/desktop/login") or normalized.endswith("/api/login") or normalized.endswith("/desktop/login")
 
 
 def handle_desktop_login(handler):
@@ -957,6 +959,10 @@ def default_system_settings():
             "currency": "CNY",
             "allowNegativeBalance": False,
             "orderCooldownMinutes": 30,
+            "allowApply": False,
+            "applyReviewMode": "manual",
+            "defaultBalance": 0,
+            "applyDescription": "",
         },
         "pay": {
             "wechatChannel": "disabled",
@@ -1150,6 +1156,7 @@ def public_system_settings():
     data = read_system_settings()
     public = json.loads(json.dumps(data, ensure_ascii=False))
     public.pop("popup", None)
+    public.setdefault("agent", {})["pendingApplyCount"] = agent_pending_application_count()
     if isinstance(public.get("integrity"), dict):
         public["integrity"]["secret"] = ""
         public["integrity"]["secretConfigured"] = True
@@ -1212,6 +1219,15 @@ def write_system_settings(body):
         current["agent"]["orderCooldownMinutes"] = max(0, int(current.get("agent", {}).get("orderCooldownMinutes") or 0))
     except Exception:
         current["agent"]["orderCooldownMinutes"] = 30
+    current.setdefault("agent", {})
+    current["agent"]["allowApply"] = current["agent"].get("allowApply") is True
+    current["agent"]["applyReviewMode"] = "auto" if current["agent"].get("applyReviewMode") == "auto" else "manual"
+    try:
+        current["agent"]["defaultBalance"] = max(0, float(current["agent"].get("defaultBalance") or 0))
+    except Exception:
+        current["agent"]["defaultBalance"] = 0
+    current["agent"]["applyDescription"] = str(current["agent"].get("applyDescription") or "").strip()
+    current["agent"]["currency"] = str(current["agent"].get("currency") or "CNY").strip()[:12] or "CNY"
     pay = current.setdefault("pay", {})
     for selected_key in (pay.get("wechatChannel"), pay.get("alipayChannel")):
         if selected_key and selected_key != "disabled" and isinstance(pay.get(selected_key), dict):
@@ -1242,6 +1258,235 @@ def read_orders():
 def write_orders(data):
     data.setdefault("orders", [])
     write_json(ORDERS_PATH, data)
+
+
+def read_agent_applications():
+    data = read_json(AGENT_APPLICATIONS_PATH, {"applications": []})
+    data.setdefault("applications", [])
+    return data
+
+
+def write_agent_applications(data):
+    data.setdefault("applications", [])
+    write_json(AGENT_APPLICATIONS_PATH, data)
+
+
+def read_agent_logs():
+    data = read_json(AGENT_LOGS_PATH, {"logs": []})
+    data.setdefault("logs", [])
+    return data
+
+
+def write_agent_logs(data):
+    data.setdefault("logs", [])
+    write_json(AGENT_LOGS_PATH, data)
+
+
+def log_agent_action(action, user, actor=None, detail=""):
+    try:
+        data = read_agent_logs()
+        data["logs"].insert(0, {
+            "id": new_id("agentlog"),
+            "action": action,
+            "userId": user.get("id") if user else "",
+            "username": user.get("username") if user else "",
+            "displayName": user_display_name(user),
+            "actorId": actor.get("id") if actor else "system",
+            "actorName": user_display_name(actor) if actor else "系统",
+            "detail": detail,
+            "createdAt": now_iso(),
+        })
+        data["logs"] = data["logs"][:1000]
+        write_agent_logs(data)
+    except Exception:
+        pass
+
+
+def agent_application_status_label(status):
+    return {"pending": "待审核", "approved": "已通过", "rejected": "已拒绝"}.get(status, "待审核")
+
+
+def public_agent_application(row):
+    user = find_user_by_id(row.get("userId", "")) if row.get("userId") else None
+    reviewer = find_user_by_id(row.get("reviewerId", "")) if row.get("reviewerId") else None
+    return {
+        "id": row.get("id"),
+        "userId": row.get("userId", ""),
+        "username": row.get("username") or (user or {}).get("username", ""),
+        "displayName": row.get("displayName") or user_display_name(user),
+        "contact": row.get("contact", ""),
+        "reason": row.get("reason", ""),
+        "status": row.get("status", "pending"),
+        "statusLabel": agent_application_status_label(row.get("status", "pending")),
+        "rejectReason": row.get("rejectReason", ""),
+        "reviewerId": row.get("reviewerId", ""),
+        "reviewerName": row.get("reviewerName") or user_display_name(reviewer),
+        "reviewedAt": row.get("reviewedAt", ""),
+        "createdAt": row.get("createdAt", ""),
+        "updatedAt": row.get("updatedAt", ""),
+    }
+
+
+def agent_pending_application_count():
+    try:
+        return sum(1 for row in read_agent_applications().get("applications", []) if row.get("status") == "pending")
+    except Exception:
+        return 0
+
+
+def latest_agent_application_for_user(user_id):
+    rows = [
+        row for row in read_agent_applications().get("applications", [])
+        if row.get("userId") == user_id
+    ]
+    rows.sort(key=lambda item: item.get("createdAt", ""), reverse=True)
+    return rows[0] if rows else None
+
+
+def agent_stats_from_store(store, agent_id):
+    invites = store.get("inviteCodes", [])
+    users = store.get("users", [])
+    return {
+        "agentInviteCount": sum(1 for invite in invites if invite.get("ownerAgentId") == agent_id or invite.get("boundAgentId") == agent_id),
+        "promotedUserCount": sum(1 for user in users if user.get("parentAgentId") == agent_id),
+    }
+
+
+def promote_user_to_agent(user_id, actor=None, use_default_balance=True, balance=None, detail=""):
+    store = read_users()
+    user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
+    if not user:
+        raise ValueError("用户不存在。")
+    if user.get("role") == "super":
+        raise ValueError("总管理员不需要设置为代理。")
+    settings = read_system_settings()
+    agent_settings = settings.get("agent") or {}
+    user["role"] = "agent"
+    user["parentAgentId"] = ""
+    if balance is not None:
+        user["balance"] = float(balance or 0)
+    elif use_default_balance:
+        user["balance"] = float(agent_settings.get("defaultBalance") or 0)
+    else:
+        user["balance"] = float(user.get("balance") or 0)
+    user["updatedAt"] = now_iso()
+    write_users(store)
+    log_agent_action("promote", user, actor, detail or "设置为代理")
+    return user
+
+
+def cancel_user_agent(user_id, actor=None, detail=""):
+    store = read_users()
+    user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
+    if not user:
+        raise ValueError("用户不存在。")
+    if user.get("role") != "agent":
+        raise ValueError("该用户当前不是代理。")
+    user["role"] = "user"
+    user["updatedAt"] = now_iso()
+    write_users(store)
+    log_agent_action("cancel", user, actor, detail or "取消代理身份")
+    return user
+
+
+def public_agent_apply_state(user):
+    settings = read_system_settings()
+    agent_settings = settings.get("agent") or {}
+    latest = latest_agent_application_for_user(user.get("id"))
+    return {
+        "allowApply": agent_settings.get("allowApply") is True,
+        "reviewMode": agent_settings.get("applyReviewMode") or "manual",
+        "description": agent_settings.get("applyDescription") or "",
+        "defaultBalance": agent_settings.get("defaultBalance") or 0,
+        "currency": agent_settings.get("currency") or "CNY",
+        "isAgent": is_agent(user),
+        "balance": user.get("balance", 0),
+        "application": public_agent_application(latest) if latest else None,
+    }
+
+
+def submit_agent_application(user, body):
+    if is_super(user):
+        raise ValueError("总管理员不需要申请代理。")
+    if is_agent(user):
+        raise ValueError("你已经是代理，不能重复申请。")
+    settings = read_system_settings()
+    agent_settings = settings.get("agent") or {}
+    if agent_settings.get("allowApply") is not True:
+        raise ValueError("当前未开放代理申请。")
+    latest = latest_agent_application_for_user(user.get("id"))
+    if latest and latest.get("status") == "pending":
+        raise ValueError("已有待审核申请，请等待审核。")
+    contact = str(body.get("contact") or "").strip()
+    reason = str(body.get("reason") or "").strip()
+    if not contact:
+        raise ValueError("请填写联系方式。")
+    if not reason:
+        raise ValueError("请填写申请理由。")
+
+    data = read_agent_applications()
+    row = {
+        "id": new_id("agentapply"),
+        "userId": user.get("id"),
+        "username": user.get("username"),
+        "displayName": user_display_name(user),
+        "contact": contact,
+        "reason": reason,
+        "status": "pending",
+        "rejectReason": "",
+        "reviewerId": "",
+        "reviewerName": "",
+        "reviewedAt": "",
+        "createdAt": now_iso(),
+        "updatedAt": now_iso(),
+    }
+
+    if agent_settings.get("applyReviewMode") == "auto":
+        promoted = promote_user_to_agent(user.get("id"), None, True, None, "代理申请自动通过")
+        row["status"] = "approved"
+        row["reviewerId"] = "system"
+        row["reviewerName"] = "系统"
+        row["reviewedAt"] = now_iso()
+        row["updatedAt"] = row["reviewedAt"]
+        data["applications"].insert(0, row)
+        write_agent_applications(data)
+        return public_agent_application(row), public_user(promoted), True
+
+    data["applications"].insert(0, row)
+    write_agent_applications(data)
+    try:
+        send_admin_event_email("代理申请待审核", f"用户 {user_display_name(user)} 提交了代理申请。联系方式：{contact}\n申请理由：{reason}")
+    except Exception:
+        pass
+    return public_agent_application(row), public_user(user), False
+
+
+def review_agent_application(application_id, status, reviewer, reject_reason=""):
+    if status not in ("approved", "rejected"):
+        raise ValueError("不支持的审核状态。")
+    data = read_agent_applications()
+    row = next((x for x in data.get("applications", []) if x.get("id") == application_id), None)
+    if not row:
+        raise ValueError("代理申请不存在。")
+    if row.get("status") != "pending":
+        raise ValueError("该申请已经审核过，不能重复审核。")
+    user = find_user_by_id(row.get("userId"))
+    if not user:
+        raise ValueError("申请用户不存在。")
+    row["status"] = status
+    row["reviewerId"] = reviewer.get("id")
+    row["reviewerName"] = user_display_name(reviewer)
+    row["reviewedAt"] = now_iso()
+    row["updatedAt"] = row["reviewedAt"]
+    if status == "rejected":
+        row["rejectReason"] = str(reject_reason or "").strip()
+    else:
+        promoted = promote_user_to_agent(user.get("id"), reviewer, True, None, f"通过代理申请 {application_id}")
+        row["username"] = promoted.get("username")
+        row["displayName"] = user_display_name(promoted)
+    write_agent_applications(data)
+    close_agent_application_notice(application_id)
+    return public_agent_application(row)
 
 
 def public_order(order):
@@ -1336,6 +1581,8 @@ def public_notice(notice, user_id=""):
         "createdByUsername": "" if created_by == "system" else created_by,
         "createdById": notice.get("createdById", ""),
         "read": user_id in set(notice.get("readBy") or []),
+        "refType": notice.get("refType", ""),
+        "refId": notice.get("refId", ""),
     }
 
 
@@ -1345,7 +1592,7 @@ def notice_visible_to_user(notice, user):
     return notice.get("active", True) is not False
 
 
-def add_system_notice(title, content, level="info", target_role=""):
+def add_system_notice(title, content, level="info", target_role="", ref_type="", ref_id=""):
     data = read_notices()
     notice = {
         "id": new_id("notice"),
@@ -1358,10 +1605,28 @@ def add_system_notice(title, content, level="info", target_role=""):
         "createdBy": "system",
         "createdById": "system",
         "readBy": [],
+        "refType": ref_type,
+        "refId": ref_id,
     }
     data["notices"].insert(0, notice)
     write_notices(data)
     return notice
+
+
+def close_agent_application_notice(application_id):
+    if not application_id:
+        return
+    try:
+        data = read_notices()
+        changed = False
+        for notice in data.get("notices", []):
+            if notice.get("refType") == "agentApplication" and notice.get("refId") == application_id and notice.get("title") == "代理申请待审核":
+                notice["active"] = False
+                changed = True
+        if changed:
+            write_notices(data)
+    except Exception:
+        pass
 
 
 def scoped_users(store, actor):
@@ -1450,8 +1715,10 @@ def write_mail_settings(body):
     return current
 
 
-def public_user(user):
-    return {
+def public_user(user, store=None):
+    if not user:
+        return None
+    data = {
         "id": user.get("id"),
         "username": user.get("username"),
         "email": user.get("email", ""),
@@ -1466,6 +1733,16 @@ def public_user(user):
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
     }
+    if user.get("parentAgentId"):
+        parent = find_user_by_id(user.get("parentAgentId"))
+        data["parentAgentName"] = user.get("parentAgentName") or user_display_name(parent)
+    if user.get("role") == "agent":
+        stats = agent_stats_from_store(store or read_users(), user.get("id"))
+        data.update(stats)
+    latest_apply = latest_agent_application_for_user(user.get("id"))
+    if latest_apply:
+        data["agentApplication"] = public_agent_application(latest_apply)
+    return data
 
 
 def find_user_by_id(user_id):
@@ -1520,6 +1797,7 @@ def create_user(username, password, display_name="", role="user", template_user=
     user_id = base
     while find_user_by_id(user_id):
         user_id = f"{base}-{int(time.time() * 1000)}"
+    parent_agent = find_user_by_id(parent_agent_id) if parent_agent_id and role == "user" else None
     user = {
         "id": user_id,
         "username": username,
@@ -1529,6 +1807,7 @@ def create_user(username, password, display_name="", role="user", template_user=
         "active": True,
         "canViewJson": role == "super",
         "parentAgentId": parent_agent_id if role == "user" else "",
+        "parentAgentName": user_display_name(parent_agent) if parent_agent else "",
         "balance": float(balance or 0) if role == "agent" else 0,
         "passwordHash": stored_password(password),
         "apiKey": random_hex(20),
@@ -1740,11 +2019,12 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
     return order, True
 
 
-def update_user_account(user_id, body, super_edit=False):
+def update_user_account(user_id, body, super_edit=False, actor=None):
     store = read_users()
     user = next((u for u in store["users"] if u.get("id") == user_id), None)
     if not user:
         raise ValueError("用户不存在。")
+    old_role = user.get("role")
     username = (body.get("username") or user.get("username") or "").strip()
     email = (body.get("email") or user.get("email") or "").strip().lower()
     if not username:
@@ -1769,12 +2049,20 @@ def update_user_account(user_id, body, super_edit=False):
     if super_edit and "canViewJson" in body:
         user["canViewJson"] = bool(body.get("canViewJson")) or user.get("role") == "super"
     if super_edit and "balance" in body and user.get("role") == "agent":
-        user["balance"] = float(body.get("balance") or 0)
+        try:
+            user["balance"] = float(body.get("balance") or 0)
+        except Exception:
+            raise ValueError("代理余额必须是合法数字。")
     if body.get("password"):
         user["passwordHash"] = stored_password(body.get("password"))
     if super_edit and body.get("resetApiKey"):
         user["apiKey"] = random_hex(20)
     write_users(store)
+    if super_edit and old_role != user.get("role"):
+        if user.get("role") == "agent":
+            log_agent_action("promote", user, actor, "用户管理修改角色")
+        elif old_role == "agent":
+            log_agent_action("cancel", user, actor, "用户管理修改角色")
     return user
 
 
@@ -1808,11 +2096,16 @@ def target_user_id(auth, handler):
 
 
 def invite_request_from_body(store, body):
+    register_role = normalize_role(body.get("registerRole") or "user")
+    if register_role not in ("user", "agent"):
+        register_role = "user"
     return {
         "prefix": clean_invite_prefix(body.get("prefix") or body.get("code") or "YQ"),
         "count": max(1, min(200, int(body.get("count") or 1))),
         "maxUses": max(1, int(body.get("maxUses") or 1)),
         "retentionDays": max(0, int(body.get("retentionDays") or (store.get("settings") or {}).get("inviteRetentionDays") or 7)),
+        "registerRole": register_role,
+        "boundAgentId": str(body.get("boundAgentId") or "").strip(),
     }
 
 
@@ -1820,7 +2113,7 @@ def invite_quote_for_actor(store, actor, body):
     settings = read_system_settings()
     agent_settings = settings.get("agent") or {}
     price = float(agent_settings.get("invitePrice") or 0)
-    request = invite_request_from_body(store, body)
+    request = normalize_invite_request_for_actor(store, actor, invite_request_from_body(store, body))
     count = request["count"]
     total = count * price
     balance = float(actor.get("balance") or 0)
@@ -1838,12 +2131,41 @@ def invite_quote_for_actor(store, actor, body):
     }
 
 
+def normalize_invite_request_for_actor(store, actor, request):
+    normalized = dict(request or {})
+    normalized["registerRole"] = normalized.get("registerRole") if normalized.get("registerRole") in ("user", "agent") else "user"
+    if not is_super(actor):
+        if normalized.get("registerRole") == "agent":
+            raise ValueError("只有总管理员可以生成注册后为代理的邀请码。")
+        requested_bound = str(normalized.get("boundAgentId") or "").strip()
+        if requested_bound and requested_bound != actor.get("id"):
+            raise ValueError("代理只能生成绑定自己的邀请码。")
+        normalized["registerRole"] = "user"
+        normalized["boundAgentId"] = actor.get("id") if is_agent(actor) else ""
+    bound_agent_id = str(normalized.get("boundAgentId") or "").strip()
+    bound_agent = None
+    if bound_agent_id:
+        bound_agent = next((
+            u for u in store.get("users", [])
+            if u.get("id") == bound_agent_id and u.get("role") == "agent" and u.get("active", True) is not False
+        ), None)
+        if not bound_agent:
+            raise ValueError("绑定代理不存在或不是有效代理。")
+    normalized["boundAgentId"] = bound_agent.get("id") if bound_agent else ""
+    normalized["boundAgentName"] = user_display_name(bound_agent) if bound_agent else ""
+    normalized["isAgentInvite"] = normalized.get("registerRole") == "agent"
+    return normalized
+
+
 def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
-    request = invite_request_from_body(store, body)
+    request = normalize_invite_request_for_actor(store, actor, invite_request_from_body(store, body))
     prefix = request["prefix"]
     count = request["count"]
     max_uses = request["maxUses"]
     retention_days = request["retentionDays"]
+    register_role = request.get("registerRole") or "user"
+    bound_agent_id = request.get("boundAgentId") or ""
+    bound_agent_name = request.get("boundAgentName") or ""
     existing = {x.get("code") for x in store["inviteCodes"]}
     created = []
     for _ in range(count):
@@ -1853,6 +2175,11 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
                   "usedCount": 0, "usedBy": [], "retentionDays": retention_days,
                   "createdAt": now_iso(), "createdBy": actor.get("username"),
                   "createdById": actor.get("id"), "ownerAgentId": actor.get("id") if is_agent(actor) else "",
+                  "ownerAgentName": user_display_name(actor) if is_agent(actor) else "",
+                  "registerRole": register_role,
+                  "boundAgentId": bound_agent_id,
+                  "boundAgentName": bound_agent_name,
+                  "isAgentInvite": register_role == "agent",
                   "price": price if is_agent(actor) else 0, "chargedAmount": charged_amount if is_agent(actor) else 0}
         created.append(invite)
     store["inviteCodes"][0:0] = created
@@ -1860,7 +2187,9 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
 
 
 def order_detail_for_invites(request):
-    return f"生成 {request.get('count')} 个邀请码，可用次数 {request.get('maxUses')}，使用后保留 {request.get('retentionDays')} 天"
+    role_text = "代理" if request.get("registerRole") == "agent" else "普通用户"
+    bound_text = f"，绑定代理 {request.get('boundAgentName')}" if request.get("boundAgentName") else ""
+    return f"生成 {request.get('count')} 个邀请码，可用次数 {request.get('maxUses')}，使用后保留 {request.get('retentionDays')} 天，注册后角色 {role_text}{bound_text}"
 
 
 def create_invites_for_actor(store, actor, body):
@@ -2778,7 +3107,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
-            if (path == "/desktop/login" or is_login_api_path(path)) and method == "POST":
+            if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()
@@ -2791,8 +3120,14 @@ class Handler(BaseHTTPRequestHandler):
                 max_uses = int(invite.get("maxUses") or 1)
                 if max_uses > 0 and used >= max_uses:
                     raise ValueError("邀请码已被使用。")
-                parent_agent_id = invite.get("ownerAgentId") or ""
-                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"), parent_agent_id)
+                register_role = "agent" if invite.get("registerRole") == "agent" else "user"
+                parent_agent_id = "" if register_role == "agent" else (invite.get("boundAgentId") or invite.get("ownerAgentId") or "")
+                default_balance = 0
+                if register_role == "agent":
+                    default_balance = float((read_system_settings().get("agent") or {}).get("defaultBalance") or 0)
+                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), register_role, None, body.get("email"), parent_agent_id, default_balance)
+                if register_role == "agent":
+                    log_agent_action("promote", user, None, f"使用邀请码 {code} 注册成为代理")
                 store = read_users()
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
                 invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
@@ -2949,9 +3284,44 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("不支持的批量操作。")
             write_users(store)
             return self.send_json({"ok": True, "changed": changed})
+        if path == "/api/super/users/agent" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以设置代理身份。"}, 403)
+            body = self.read_body()
+            user_id = (body.get("id") or "").strip()
+            action = (body.get("action") or "").strip()
+            if action == "promote":
+                balance = None
+                if body.get("useDefaultBalance") is not True and "balance" in body:
+                    try:
+                        balance = float(body.get("balance") or 0)
+                    except Exception:
+                        raise ValueError("代理余额必须是合法数字。")
+                user = promote_user_to_agent(user_id, auth["user"], body.get("useDefaultBalance") is True, balance, "用户管理设为代理")
+                return self.send_json(public_user(user, read_users()))
+            if action == "cancel":
+                user = cancel_user_agent(user_id, auth["user"], "用户管理取消代理")
+                return self.send_json(public_user(user, read_users()))
+            if action == "balance":
+                try:
+                    balance = float(body.get("balance") or 0)
+                except Exception:
+                    raise ValueError("代理余额必须是合法数字。")
+                store = read_users()
+                user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
+                if not user:
+                    raise ValueError("用户不存在。")
+                if user.get("role") != "agent":
+                    raise ValueError("只有代理用户才能调整代理余额。")
+                user["balance"] = balance
+                user["updatedAt"] = now_iso()
+                write_users(store)
+                log_agent_action("balance", user, auth["user"], f"调整代理余额为 {balance:.2f}")
+                return self.send_json(public_user(user, store))
+            raise ValueError("不支持的代理操作。")
         if path == "/api/super/users":
             if method == "GET":
-                return self.send_json({"users": [public_user(u) for u in scoped_users(store, auth["user"])]})
+                return self.send_json({"users": [public_user(u, store) for u in scoped_users(store, auth["user"])]})
             if method == "POST":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "代理不能直接创建账号，请使用邀请码。"}, 403)
@@ -2965,7 +3335,7 @@ class Handler(BaseHTTPRequestHandler):
                     if "active" in b:
                         allowed["active"] = bool(b.get("active"))
                     b = allowed
-                user = update_user_account(b.get("id"), b, True)
+                user = update_user_account(b.get("id"), b, True, auth["user"])
                 return self.send_json(public_user(user))
             if method == "DELETE":
                 if not is_super(auth["user"]):
@@ -3043,6 +3413,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(write_system_settings(self.read_body()))
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
+        if path == "/api/super/agent-applications":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以审核代理申请。"}, 403)
+            data = read_agent_applications()
+            if method == "GET":
+                status = (self.query.get("status", ["all"])[0] or "all").strip()
+                rows = data.get("applications", [])
+                if status in ("pending", "approved", "rejected"):
+                    rows = [row for row in rows if row.get("status") == status]
+                return self.send_json({"applications": [public_agent_application(row) for row in rows[:500]], "pendingCount": agent_pending_application_count()})
+            if method == "PATCH":
+                body = self.read_body()
+                reviewed = review_agent_application((body.get("id") or "").strip(), (body.get("status") or body.get("action") or "").strip(), auth["user"], body.get("rejectReason") or "")
+                return self.send_json(reviewed)
         if path == "/api/super/orders":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作。"}, 403)
@@ -3084,11 +3468,28 @@ class Handler(BaseHTTPRequestHandler):
         user_id = target_user_id(auth, self)
         if path == "/api/admin/me" and method == "GET":
             return self.send_json({"user": public_user(auth["user"]), "targetUser": public_user(find_user_by_id(user_id))})
+        if path == "/api/admin/agent-application":
+            if method == "GET":
+                return self.send_json(public_agent_apply_state(auth["user"]))
+            if method == "POST":
+                application, user, auto_approved = submit_agent_application(auth["user"], self.read_body())
+                return self.send_json({
+                    "application": application,
+                    "user": user,
+                    "autoApproved": auto_approved,
+                    "message": "申请已通过，你已成为代理。" if auto_approved else "申请已提交，请等待审核。",
+                })
+        if path == "/api/admin/agent-orders" and method == "GET":
+            if not is_agent(auth["user"]):
+                return self.send_json({"orders": []})
+            data = read_orders()
+            orders = [order for order in data.get("orders", []) if order.get("agentId") == auth["user"].get("id")]
+            return self.send_json({"orders": [public_order(order) for order in orders[:100]]})
         if path == "/api/admin/notices":
             data = read_notices()
             if method == "GET":
                 notices = [n for n in data.get("notices", []) if notice_visible_to_user(n, auth["user"])]
-                return self.send_json({"notices": [public_notice(n, auth["user"]["id"]) for n in notices[:80]]})
+                return self.send_json({"notices": [public_notice(n, auth["user"]["id"]) for n in notices[:80]], "agentPendingCount": agent_pending_application_count() if is_super(auth["user"]) else 0})
             if method == "POST":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "只有总管理员可以发送通知。"}, 403)

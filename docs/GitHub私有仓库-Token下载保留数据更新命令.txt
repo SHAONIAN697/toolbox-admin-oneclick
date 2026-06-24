@@ -1,12 +1,12 @@
 set -e
 SERVICE="toolbox-admin"
 APP="/www/wwwroot/gjx.vst76.cn"
-BRANCH="private-local-tested-preserve-data-20260620"
-PKG_NAME="toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz"
+BRANCH="main"
+PKG_NAME="toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="9116b55d87bd5372b34ee99ed2c0a11aeae5732ad916748422e31501ffbd9642"
+SHA="ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-github-private-local-tested-$TS.tar.gz"
 TMP="/tmp/toolbox-github-private-local-tested-$TS"
@@ -83,11 +83,11 @@ grep -q "/api/admin/popup" app.py
 grep -q "savePopupAllBtn" wwwroot/admin.js
 ! grep -q "popup_sources" app.py
 grep -Fq 'public_popup_config(user["id"], self.base_url())' app.py
-grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs
-grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs
-grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs; grep -q "RenderPortalLoadingState" client-template/ToolboxClient.cs; grep -q "IsPortalDemoPlaceholderConfig" client-template/ToolboxClient.cs
+grep -q "服务器不支持32线程分片" client-template/ToolboxClient.cs
+grep -q "return MaxSegmentedDownloadConnections;" client-template/ToolboxClient.cs
+! grep -q "DownloadFileSingleConnection(task, attempt);" client-template/ToolboxClient.cs
 grep -q "/api/admin/desktop/download" app.py
 grep -q "admin-desktop.js" wwwroot/index.html
 grep -q "downloadAdminDesktopBtn" wwwroot/index.html
 test -f admin-desktop-template/ToolboxAdminDesktop.cs
-echo "OK: updated to 20260623 admin-desktop build from private GitHub branch, data preserved. Reopen admin EXE to load the latest backend. Browser users can Ctrl+F5. Backup: $BACKUP"
+echo "OK: no-agent forced32 build updated from private GitHub, data preserved. Rebuild/download client EXE. Backup: $BACKUP"

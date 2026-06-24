@@ -911,8 +911,8 @@ def role_label(role):
 
 
 def is_login_api_path(path):
-    normalized = "/" + str(path or "").strip("/")
-    return normalized == "/api/login" or normalized.endswith("/api/login")
+    normalized = "/" + str(path or "").strip("/").lower()
+    return normalized in ("/api/login", "/desktop/login") or normalized.endswith("/api/login") or normalized.endswith("/desktop/login")
 
 
 def handle_desktop_login(handler):
@@ -2825,7 +2825,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
-            if (path == "/desktop/login" or is_login_api_path(path)) and method == "POST":
+            if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()

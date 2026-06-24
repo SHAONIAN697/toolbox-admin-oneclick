@@ -1,0 +1,520 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
+cd "$APP"
+
+TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/www/backup/toolbox-directlink-faststart-short-$TS"
+mkdir -p "$BACKUP"
+cp -a client-template "$BACKUP/" 2>/dev/null || true
+cp -a data "$BACKUP/" 2>/dev/null || true
+
+python3 - <<'PY'
+import json
+import re
+import shutil
+from pathlib import Path
+
+NEW_URL = "https://wd.vst76.cn/d/%E5%A4%A9%E7%BF%BC%E4%BA%91%E4%B8%AA%E4%BA%BA/%E8%B0%83%E8%AF%95%E5%B7%A5%E5%85%B7/%E6%8F%92%E4%BB%B6%E5%8C%85/7.27g%E8%B0%83%E9%9F%B3%E5%B8%88%E6%8F%92%E4%BB%B6%E5%8C%85.exe"
+OLD_URL = "https://1821343905.v.123pan.cn/1821343905/13061460"
+TARGET_ID = "btn_19edac90408_ed01855d"
+PLUGIN_NAME = "64\u4f4d\u63d2\u4ef6\u5305"
+PLUGIN_WORD = "\u63d2\u4ef6"
+PACK_WORD = "\u5305"
+
+p = Path("client-template/ToolboxClient.cs")
+s = p.read_text(encoding="utf-8", errors="ignore")
+
+def insert_after(anchor, addition, label):
+    global s
+    if addition.strip() in s:
+        print("skip", label)
+        return
+    if anchor not in s:
+        raise SystemExit("ERROR: cannot find patch point: " + label)
+    s = s.replace(anchor, anchor + addition, 1)
+    print("patch", label)
+
+def insert_before(anchor, addition, label):
+    global s
+    if addition.strip() in s:
+        print("skip", label)
+        return
+    if anchor not in s:
+        raise SystemExit("ERROR: cannot find patch point: " + label)
+    s = s.replace(anchor, addition + anchor, 1)
+    print("patch", label)
+
+def replace_method(signature, new_method, label):
+    global s
+    start = s.find(signature)
+    if start < 0:
+        raise SystemExit("ERROR: cannot find method: " + label)
+    brace = s.find("{", start)
+    if brace < 0:
+        raise SystemExit("ERROR: cannot find method body: " + label)
+    depth = 0
+    end = -1
+    for i in range(brace, len(s)):
+        ch = s[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        raise SystemExit("ERROR: cannot parse method body: " + label)
+    old = s[start:end]
+    if old.strip() == new_method.strip():
+        print("skip", label)
+        return
+    s = s[:start] + new_method.rstrip() + s[end:]
+    print("patch", label)
+
+direct_helpers = r'''
+        private static bool LooksLikeDirectDownloadFile(string value)
+        {
+            return !String.IsNullOrWhiteSpace(DirectDownloadFileNameFromText(value));
+        }
+
+        private static string DirectDownloadFileNameFromText(string value)
+        {
+            string text = (value ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(text)) return "";
+            try { text = Uri.UnescapeDataString(text); } catch { }
+            try
+            {
+                Uri uri;
+                if (Uri.TryCreate(text, UriKind.Absolute, out uri))
+                {
+                    string pathName = Path.GetFileName(uri.LocalPath);
+                    if (HasDirectDownloadExtension(pathName)) return pathName;
+                }
+            }
+            catch { }
+            string[] parts = text.Split(new char[] { '/', '\\', '?', '&', '=', '#', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = parts.Length - 1; i >= 0; i--)
+            {
+                string part = parts[i].Trim().Trim(new char[] { '"', '\'', ' ', '\t', '\r', '\n' });
+                if (HasDirectDownloadExtension(part)) return part;
+            }
+            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
+            return match.Success ? match.Groups[1].Value : "";
+        }
+
+        private static bool HasDirectDownloadExtension(string fileName)
+        {
+            string value = (fileName ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(value)) return false;
+            try { value = Uri.UnescapeDataString(value); } catch { }
+            value = value.Split(new char[] { '?', '#', '&' }, 2)[0].Trim().Trim(new char[] { '"', '\'' });
+            string ext = "";
+            try { ext = Path.GetExtension(value); } catch { }
+            if (String.IsNullOrWhiteSpace(ext)) return false;
+            ext = ext.ToLowerInvariant();
+            return ext == ".exe" || ext == ".msi" || ext == ".msix" || ext == ".appx" ||
+                   ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".tar" ||
+                   ext == ".gz" || ext == ".tgz" || ext == ".bz2" || ext == ".xz" ||
+                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" ||
+                   ext == ".apk" || ext == ".deb" || ext == ".rpm" || ext == ".msu" ||
+                   ext == ".cab" || ext == ".dll" || ext == ".vst3" || ext == ".vst" ||
+                   ext == ".aax" || ext == ".component" || ext == ".pdf" || ext == ".bin";
+        }
+
+'''
+
+if "DirectDownloadFileNameFromText" not in s:
+    m = re.search(r'(?ms)^        private static bool LooksLikeInstallerDownloadUrl\(string url\)\s*\{.*?^        \}\r?\n', s)
+    if not m:
+        raise SystemExit("ERROR: cannot find LooksLikeInstallerDownloadUrl")
+    s = s[:m.end()] + direct_helpers + s[m.end():]
+    print("patch direct file helpers")
+else:
+    print("skip direct file helpers")
+
+fast_block = '''                if (ShouldFastStartDownload(request))
+                {
+                    request.FastStartDirectDownload = true;
+                    request.FileName = SafeDownloadFileName(request.FileName);
+                    return request;
+                }
+
+'''
+if "ShouldFastStartDownload(request)" not in s:
+    insert_after("            if (!request.BrowserOnly)\n            {\n", fast_block, "skip slow prepare probes")
+else:
+    print("skip slow prepare probes")
+
+fast_helper = r'''
+        private static bool ShouldFastStartDownload(DownloadRequest request)
+        {
+            if (request == null || request.BrowserOnly) return false;
+            string directName = DirectDownloadFileNameFromText(request.Url);
+            if (String.IsNullOrWhiteSpace(directName)) directName = DirectDownloadFileNameFromText(request.OriginalUrl);
+            if (!String.IsNullOrWhiteSpace(directName))
+            {
+                if (!LooksLikeDirectDownloadFile(request.FileName) || !IsUsefulDownloadFileName(request.FileName))
+                {
+                    request.FileName = directName;
+                }
+                return true;
+            }
+            return LooksLikeDirectDownloadFile(request.FileName);
+        }
+
+'''
+if "private static bool ShouldFastStartDownload(" not in s:
+    insert_before("        private DownloadRequest ResolveCloud189ClientDownloadRequest(string url)\n", fast_helper, "fast-start helper")
+else:
+    print("skip fast-start helper")
+
+if "task.FastStartDirectDownload = download.FastStartDirectDownload;" not in s:
+    if "            task.BrowserUrl = download.BrowserUrl;\n" in s:
+        insert_after("            task.BrowserUrl = download.BrowserUrl;\n", "            task.FastStartDirectDownload = download.FastStartDirectDownload;\n", "task fast-start assignment")
+    else:
+        insert_after("            DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);\n", "            task.FastStartDirectDownload = download.FastStartDirectDownload;\n", "task fast-start assignment")
+else:
+    print("skip task fast-start assignment")
+
+if "            if (task.FastStartDirectDownload) return false;\n" in s:
+    s = s.replace("            if (task.FastStartDirectDownload) return false;\n", "", 1)
+    print("patch keep segmented download for direct files")
+else:
+    print("skip keep segmented download for direct files")
+
+old_probe_timeout = "                using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, 12000, 12000))"
+new_probe_timeout = '''                int timeout = task.FastStartDirectDownload ? 4000 : 12000;
+                using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, timeout, timeout))'''
+if old_probe_timeout in s:
+    s = s.replace(old_probe_timeout, new_probe_timeout, 1)
+    print("patch short direct range probe")
+elif new_probe_timeout in s:
+    print("skip short direct range probe")
+else:
+    print("warn: range probe timeout point not found")
+
+if "public bool FastStartDirectDownload;" not in s:
+    insert_after("            public bool BrowserOnly;\n", "            public bool FastStartDirectDownload;\n", "download request field")
+else:
+    print("skip download request field")
+
+if "public volatile bool FastStartDirectDownload;" not in s:
+    if "            public volatile bool DisableSegmentedDownload;\n" in s:
+        insert_after("            public volatile bool DisableSegmentedDownload;\n", "            public volatile bool FastStartDirectDownload;\n", "download task field")
+    else:
+        insert_after("            public volatile bool Segmented;\n", "            public volatile bool FastStartDirectDownload;\n", "download task field")
+else:
+    print("skip download task field")
+
+if "public bool FastStartDirectDownload { get; set; }" not in s:
+    if "            public bool DisableSegmentedDownload { get; set; }\n" in s:
+        insert_after("            public bool DisableSegmentedDownload { get; set; }\n", "            public bool FastStartDirectDownload { get; set; }\n", "paused state field")
+    else:
+        insert_after("            public bool Segmented { get; set; }\n", "            public bool FastStartDirectDownload { get; set; }\n", "paused state field")
+else:
+    print("skip paused state field")
+
+if "task.FastStartDirectDownload = state.FastStartDirectDownload;" not in s:
+    if "                    task.DisableSegmentedDownload = state.DisableSegmentedDownload;\n" in s:
+        insert_after("                    task.DisableSegmentedDownload = state.DisableSegmentedDownload;\n", "                    task.FastStartDirectDownload = state.FastStartDirectDownload;\n", "restore fast-start")
+    else:
+        insert_after("                    task.Segmented = state.Segmented;\n", "                    task.FastStartDirectDownload = state.FastStartDirectDownload;\n", "restore fast-start")
+else:
+    print("skip restore fast-start")
+
+if "state.FastStartDirectDownload = task.FastStartDirectDownload;" not in s:
+    if "            state.DisableSegmentedDownload = task.DisableSegmentedDownload;\n" in s:
+        insert_after("            state.DisableSegmentedDownload = task.DisableSegmentedDownload;\n", "            state.FastStartDirectDownload = task.FastStartDirectDownload;\n", "save fast-start")
+    else:
+        insert_after("            state.Segmented = task.Segmented;\n", "            state.FastStartDirectDownload = task.FastStartDirectDownload;\n", "save fast-start")
+else:
+    print("skip save fast-start")
+
+probe_helper_method = r'''
+        private RemoteDownloadInfo ProbeRemoteDownloadInfoForTask(DownloadTask task)
+        {
+            RemoteDownloadInfo info = new RemoteDownloadInfo();
+            if (task == null || String.IsNullOrWhiteSpace(task.Url)) return info;
+            int timeout = task.FastStartDirectDownload ? 4000 : 12000;
+            string current = task.Url;
+            for (int redirect = 0; redirect < 8; redirect++)
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(current);
+                request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ToolboxClient";
+                request.Accept = "*/*";
+                request.AllowAutoRedirect = false;
+                request.KeepAlive = true;
+                request.Timeout = timeout;
+                request.ReadWriteTimeout = timeout;
+                request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+                try { request.Headers[HttpRequestHeader.AcceptEncoding] = "identity"; } catch { }
+                try
+                {
+                    if (!String.IsNullOrWhiteSpace(task.OriginalUrl) && !String.Equals(task.OriginalUrl, current, StringComparison.OrdinalIgnoreCase))
+                    {
+                        request.Referer = task.OriginalUrl;
+                    }
+                }
+                catch
+                {
+                }
+                ApplyDownloadRange(request, true, 0, 0);
+                HttpWebResponse response = null;
+                try
+                {
+                    response = (HttpWebResponse)request.GetResponse();
+                    if (IsRedirectStatus(response.StatusCode))
+                    {
+                        string location = response.Headers["Location"];
+                        response.Close();
+                        if (String.IsNullOrWhiteSpace(location)) return info;
+                        current = ResolveRedirectUrl(current, location);
+                        continue;
+                    }
+                    info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
+                    info.TotalLength = ParseContentRangeTotal(response.Headers["Content-Range"]);
+                    if (info.TotalLength <= 0 && response.StatusCode != HttpStatusCode.PartialContent) info.TotalLength = response.ContentLength;
+                    return info;
+                }
+                catch
+                {
+                    return info;
+                }
+                finally
+                {
+                    if (response != null) response.Close();
+                }
+            }
+            return info;
+        }
+
+'''
+has_task_probe = "private RemoteDownloadInfo ProbeRemoteDownloadInfo(DownloadTask task)" in s
+if has_task_probe:
+    probe_call = "ProbeRemoteDownloadInfo(task)"
+else:
+    probe_call = "ProbeRemoteDownloadInfoForTask(task)"
+    if "private RemoteDownloadInfo ProbeRemoteDownloadInfoForTask(DownloadTask task)" not in s:
+        insert_before("        private HttpWebResponse OpenProbeDownloadResponse", probe_helper_method, "compat range probe helper")
+    else:
+        print("skip compat range probe helper")
+
+forced_attempt_method = r'''
+        private void DownloadFileAttempt(DownloadTask task, int attempt)
+        {
+            if (task == null) return;
+            if (task.Segmented && task.RestoredSegments.Count > 0)
+            {
+                try
+                {
+                    DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (ex is OperationCanceledException || task.CancelRequested) throw;
+                    task.RestoredSegments.Clear();
+                    CleanupSegmentedPart(task);
+                    task.StateText = "分片失败，重新尝试32线程";
+                    QueueDownloadTaskRowUpdate(task);
+                }
+            }
+
+            SegmentedDownloadPlan plan;
+            if (!TryCreateSegmentedDownloadPlan(task, out plan))
+            {
+                task.StateText = "服务器不支持32线程分片";
+                QueueDownloadTaskRowUpdate(task);
+                throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
+            }
+
+            DownloadFileSegmented(task, plan, attempt);
+        }
+
+'''
+
+old_worker_block = '''                        task.Attempt = attempt;
+                        SegmentedDownloadPlan plan;
+                        if (task.Segmented && task.RestoredSegments.Count > 0)
+                            DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
+                        else if (TryCreateSegmentedDownloadPlan(task, out plan))
+                            DownloadFileSegmented(task, plan, attempt);
+                        else
+                            DownloadFileSingleConnection(task, attempt);'''
+new_worker_block = '''                        task.Attempt = attempt;
+                        DownloadFileAttempt(task, attempt);'''
+if old_worker_block in s:
+    s = s.replace(old_worker_block, new_worker_block, 1)
+    print("patch worker forced segmented call")
+else:
+    print("skip worker forced segmented call")
+
+if "private void DownloadFileAttempt(DownloadTask task, int attempt)" in s:
+    replace_method("        private void DownloadFileAttempt(DownloadTask task, int attempt)", forced_attempt_method, "force 32-thread attempt")
+else:
+    insert_before("        private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)\n", forced_attempt_method, "force 32-thread attempt")
+
+forced_plan_method = '''
+        private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)
+        {
+            plan = null;
+            if (task == null || !IsHttpUrl(task.Url)) return false;
+            RemoteDownloadInfo info = ''' + probe_call + ''';
+            if (info == null || !info.SupportsRanges || info.TotalLength <= 0) return false;
+            int segmentCount = CalculateSegmentCount(info.TotalLength);
+            if (segmentCount <= 1) return false;
+            plan = new SegmentedDownloadPlan { TotalLength = info.TotalLength, SegmentCount = segmentCount };
+            return true;
+        }
+
+'''
+replace_method("        private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)", forced_plan_method, "force segmented plan")
+
+forced_count_method = r'''
+        private int CalculateSegmentCount(long totalLength)
+        {
+            if (totalLength <= 1) return 1;
+            return MaxSegmentedDownloadConnections;
+        }
+
+'''
+replace_method("        private int CalculateSegmentCount(long totalLength)", forced_count_method, "force 32 segment count")
+
+old_segment_fallback = '''                if (plan == null && !TryCreateSegmentedDownloadPlan(task, out plan))
+                {
+                    task.Segmented = false;
+                    task.PartPath = "";
+                    DownloadFileSingleConnection(task, attempt);
+                    return;
+                }'''
+new_segment_fallback = '''                if (plan == null && !TryCreateSegmentedDownloadPlan(task, out plan))
+                {
+                    task.Segmented = false;
+                    task.PartPath = "";
+                    throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
+                }'''
+if old_segment_fallback in s:
+    s = s.replace(old_segment_fallback, new_segment_fallback, 1)
+    print("patch no single fallback inside segmented")
+elif new_segment_fallback in s:
+    print("skip no single fallback inside segmented")
+else:
+    print("warn: segmented fallback point not found")
+
+if "segments = CreateDownloadSegments(plan.TotalLength, SegmentedDownloadMinSegmentBytes);" in s:
+    s = s.replace("segments = CreateDownloadSegments(plan.TotalLength, SegmentedDownloadMinSegmentBytes);", "segments = CreateDownloadSegments(plan.TotalLength, plan.SegmentCount);", 1)
+    print("patch fixed 32 segment layout")
+else:
+    print("skip fixed 32 segment layout")
+
+fixed_segment_method = r'''
+        private List<DownloadSegment> CreateDownloadSegments(long totalLength, int segmentCount)
+        {
+            List<DownloadSegment> segments = new List<DownloadSegment>();
+            if (totalLength <= 0) return segments;
+            int count = Math.Max(1, Math.Min(MaxSegmentedDownloadConnections, segmentCount));
+            if (totalLength < count) count = (int)Math.Max(1, totalLength);
+            long baseSize = totalLength / count;
+            long remainder = totalLength % count;
+            long start = 0;
+            for (int index = 0; index < count; index++)
+            {
+                long size = baseSize + (index < remainder ? 1 : 0);
+                long end = start + size - 1;
+                segments.Add(new DownloadSegment { Index = index, Start = start, End = end });
+                start = end + 1;
+            }
+            return segments;
+        }
+
+'''
+if "private List<DownloadSegment> CreateDownloadSegments(long totalLength, int segmentCount)" not in s:
+    insert_before("        private List<DownloadSegment> CreateDownloadSegmentsFromState(List<DownloadSegmentState> states, long totalLength)\n", fixed_segment_method, "fixed 32 segment method")
+else:
+    print("skip fixed 32 segment method")
+
+required = [
+    "DirectDownloadFileNameFromText",
+    "ShouldFastStartDownload(request)",
+    "task.FastStartDirectDownload = download.FastStartDirectDownload;",
+    "public bool FastStartDirectDownload;",
+    "public volatile bool FastStartDirectDownload;",
+    "服务器不支持32线程分片",
+    "return MaxSegmentedDownloadConnections;",
+    "CreateDownloadSegments(plan.TotalLength, plan.SegmentCount)",
+    "private List<DownloadSegment> CreateDownloadSegments(long totalLength, int segmentCount)",
+]
+missing = [x for x in required if x not in s]
+if missing:
+    raise SystemExit("ERROR: client patch incomplete: " + ", ".join(missing))
+if "task.FastStartDirectDownload ? 4000 : 12000" not in s:
+    raise SystemExit("ERROR: range probe timeout patch incomplete")
+blocked = ["DownloadFileSingleConnection(task, attempt);", "分片不兼容，改用普通下载", "改用普通下载"]
+bad = [x for x in blocked if x in s]
+if bad:
+    raise SystemExit("ERROR: ordinary download fallback still exists: " + ", ".join(bad))
+p.write_text(s, encoding="utf-8")
+print("OK: client template direct-link fast-start + forced 32-thread segmented patch applied")
+
+paths = [Path("data/config.json"), Path("data/config-shares.json")]
+users_dir = Path("data/users")
+if users_dir.exists():
+    paths.extend(sorted(users_dir.glob("*/config.json")))
+
+def is_target_button(item):
+    if not isinstance(item, dict):
+        return False
+    name = str(item.get("name") or "")
+    values = [str(item.get(k) or "") for k in ("id", "url", "download_url", "target")]
+    if TARGET_ID in values or OLD_URL in values or NEW_URL in values:
+        return True
+    return name == PLUGIN_NAME or (PLUGIN_WORD in name and PACK_WORD in name)
+
+def patch_tree(node):
+    changed = 0
+    if isinstance(node, dict):
+        if is_target_button(node):
+            node["action"] = "download"
+            node["url"] = NEW_URL
+            node["download_url"] = NEW_URL
+            node["target"] = NEW_URL
+            changed += 1
+        for value in list(node.values()):
+            changed += patch_tree(value)
+    elif isinstance(node, list):
+        for value in node:
+            changed += patch_tree(value)
+    return changed
+
+total = 0
+for path in paths:
+    if not path.exists():
+        continue
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        print("skip invalid json", path, exc)
+        continue
+    changed = patch_tree(data)
+    if changed:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print("patched", path, changed, "button(s)")
+        total += changed
+
+for cache in (Path("data/client-cache"), Path("data/client-jobs"), Path("__pycache__")):
+    if cache.exists():
+        shutil.rmtree(cache, ignore_errors=True)
+        print("removed", cache)
+
+print("OK: plugin button patched", total, "time(s)")
+PY
+
+python3 -m py_compile app.py
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+echo "OK: direct-link fast-start fixed. Rebuild/download the client EXE from admin panel. Backup: $BACKUP"

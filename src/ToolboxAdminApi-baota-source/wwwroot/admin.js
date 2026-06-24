@@ -23,6 +23,22 @@
   inviteSnapshot: ''
 };
 
+function applyDesktopTokenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('desktopToken') || '';
+  if (!token) return;
+  state.token = token;
+  localStorage.setItem('toolbox_session_token', token);
+  params.delete('desktopToken');
+  params.delete('desktop');
+  params.delete('_t');
+  const query = params.toString();
+  const cleanUrl = window.location.pathname + (query ? `?${query}` : '') + window.location.hash;
+  window.history.replaceState(null, document.title, cleanUrl);
+}
+
+applyDesktopTokenFromUrl();
+
 const $ = (id) => document.getElementById(id);
 
 const ACTIONS = [

@@ -7,6 +7,7 @@
   invites: [],
   inviteFilter: ['all', 'used', 'unused'].includes(localStorage.getItem('toolbox_invite_filter')) ? localStorage.getItem('toolbox_invite_filter') : 'all',
   orders: [],
+  agentOrders: [],
   mail: null,
   system: null,
   templateMode: false,
@@ -15,6 +16,7 @@
   buttons: [],
   inviteCurrency: 'CNY',
   noticePopupShownIds: new Set(),
+  activeView: localStorage.getItem('toolbox_active_view') || 'overview',
   clientDownloading: false,
   clientBuildTimer: null,
   clientBuildStartedAt: 0,
@@ -22,6 +24,22 @@
   inviteRefreshBusy: false,
   inviteSnapshot: ''
 };
+
+function applyDesktopTokenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('desktopToken') || '';
+  if (!token) return;
+  state.token = token;
+  localStorage.setItem('toolbox_session_token', token);
+  params.delete('desktopToken');
+  params.delete('desktop');
+  params.delete('_t');
+  const query = params.toString();
+  const cleanUrl = window.location.pathname + (query ? `?${query}` : '') + window.location.hash;
+  window.history.replaceState(null, document.title, cleanUrl);
+}
+
+applyDesktopTokenFromUrl();
 
 const $ = (id) => document.getElementById(id);
 
@@ -233,13 +251,18 @@ function setupCollapsiblePanels() {
       panel.classList.toggle('is-collapsed', collapsed);
       toggle.textContent = collapsed ? '展开' : '收起';
       toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      if (panel.id) {
+        localStorage.setItem(`toolbox_panel_${panel.id}`, collapsed ? '1' : '0');
+      }
       [...panel.children].filter((child) => child !== head).forEach((child) => {
         child.classList.add('collapsible-body');
         child.hidden = collapsed || child.dataset.keepHidden === '1';
       });
     };
 
-    setCollapsed(panel.dataset.defaultCollapsed === '1');
+    const savedCollapsed = panel.id ? localStorage.getItem(`toolbox_panel_${panel.id}`) : '';
+    const shouldCollapse = savedCollapsed === '1' || (savedCollapsed !== '0' && panel.dataset.defaultCollapsed === '1');
+    setCollapsed(shouldCollapse);
     toggle.onclick = (event) => {
       event.stopPropagation();
       setCollapsed(!panel.classList.contains('is-collapsed'));
@@ -509,6 +532,7 @@ async function loadAll() {
   }
 
   showToast('正在读取配置...', 'warn');
+  const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
   let me;
   try {
     me = await api('/api/admin/me');
@@ -540,6 +564,7 @@ async function loadAll() {
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
     renderAll();
+    if (viewToRestore) switchView(viewToRestore);
     showUnreadNoticePopup();
     showToast('配置读取成功。', 'success');
   } catch (error) {
@@ -557,10 +582,13 @@ function handleLoadFailure(error) {
   state.templateMode = false;
   state.users = [];
   state.invites = [];
+  state.agentOrders = [];
   state.inviteSnapshot = '';
+  state.activeView = 'overview';
   stopInviteAutoRefresh();
   localStorage.removeItem('toolbox_session_token');
   localStorage.removeItem('toolbox_target_user');
+  localStorage.removeItem('toolbox_active_view');
   showLogin();
   showToast(`读取配置失败：${error.message}`, 'error');
 }
@@ -694,6 +722,7 @@ function logout() {
   state.templateMode = false;
   state.users = [];
   state.invites = [];
+  state.agentOrders = [];
   state.inviteSnapshot = '';
   stopInviteAutoRefresh();
   localStorage.removeItem('toolbox_session_token');
@@ -756,6 +785,9 @@ function inviteSnapshot(invites) {
     maxUses: Number(invite.maxUses || 1),
     usedBy: invite.usedBy || [],
     ownerAgentId: invite.ownerAgentId || '',
+    registerRole: invite.registerRole || 'user',
+    boundAgentId: invite.boundAgentId || '',
+    isAgentInvite: invite.isAgentInvite === true,
     createdAt: invite.createdAt || ''
   })));
 }
@@ -820,8 +852,6 @@ async function loadSystemSettings() {
   state.system = await api('/api/super/system');
   const result = await api('/api/super/orders');
   state.orders = result.orders || [];
-}
-
 async function loadNotices() {
   if (!state.currentUser) return;
   const result = await api('/api/admin/notices');
@@ -891,6 +921,8 @@ function switchView(view) {
     setStatus('当前账号没有 JSON 管理权限。', true);
     view = 'overview';
   }
+  state.activeView = view;
+  localStorage.setItem('toolbox_active_view', view);
   document.querySelectorAll('.nav').forEach((x) => x.classList.remove('active'));
   document.querySelectorAll('.view').forEach((x) => x.classList.remove('show'));
   const nav = document.querySelector(`.nav[data-view="${view}"]`);
@@ -1345,7 +1377,7 @@ function renderUsers() {
         <div class="user-summary">
           <strong>${escapeHtml(user.displayName || user.username || '')}</strong>
           <span>${escapeHtml(user.username || '')} · ${escapeHtml(user.email || '未填写邮箱')}</span>
-          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}</small>
+          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
         </div>
         <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</span>
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
@@ -1356,6 +1388,8 @@ function renderUsers() {
             <input data-field="balance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() ? 'disabled' : ''}>
             <button data-action="save-balance" type="button" ${!isSuper() ? 'disabled' : ''}>保存余额</button>
           </label>
+          <span class="pill">邀请码 ${Number(user.agentInviteCount || 0)}</span>
+          <span class="pill">推广用户 ${Number(user.promotedUserCount || 0)}</span>
         ` : ''}
       </div>
       <div class="user-card-detail" hidden>
@@ -1378,6 +1412,9 @@ function renderUsers() {
         <div class="card-actions">
           <button data-action="download" data-variant="original" ${!isSuper() ? 'disabled' : ''}>下载工具箱</button>
           <button data-action="save" ${!isSuper() ? 'disabled' : ''}>保存</button>
+          ${user.role === 'agent'
+            ? `<button data-action="cancel-agent" class="danger" ${!isSuper() || user.id === 'admin' ? 'disabled' : ''}>取消代理</button><button data-action="view-agent-orders" type="button">查看代理订单</button>`
+            : `<button data-action="promote-agent" ${!isSuper() || user.role === 'super' ? 'disabled' : ''}>设为代理</button>`}
           <button data-action="toggle-active" class="${user.active === false ? '' : 'danger'}" ${user.id === 'admin' ? 'disabled' : ''}>${user.active === false ? '解冻账号' : '冻结账号'}</button>
           <button data-action="reset-key" ${!isSuper() ? 'disabled' : ''}>重置地址</button>
           <button class="danger" data-action="delete" ${user.id === 'admin' || !isSuper() ? 'disabled' : ''}>删除</button>
@@ -1393,7 +1430,13 @@ function renderUsers() {
     card.querySelector('[data-action="download"]').onclick = () => downloadClient(user.id);
     card.querySelector('[data-action="save"]').onclick = () => saveUser(user.id, card);
     const saveBalanceBtn = card.querySelector('[data-action="save-balance"]');
-    if (saveBalanceBtn) saveBalanceBtn.onclick = () => saveUser(user.id, card);
+    if (saveBalanceBtn) saveBalanceBtn.onclick = () => saveAgentBalance(user.id, card);
+    const promoteBtn = card.querySelector('[data-action="promote-agent"]');
+    if (promoteBtn) promoteBtn.onclick = () => promoteUserAgent(user.id);
+    const cancelAgentBtn = card.querySelector('[data-action="cancel-agent"]');
+    if (cancelAgentBtn) cancelAgentBtn.onclick = () => cancelUserAgent(user.id);
+    const viewAgentOrdersBtn = card.querySelector('[data-action="view-agent-orders"]');
+    if (viewAgentOrdersBtn) viewAgentOrdersBtn.onclick = () => jumpToAgentOrders(user.id);
     card.querySelector('[data-action="toggle-active"]').onclick = () => toggleUserActive(user.id, user.active !== false);
     card.querySelector('[data-action="reset-key"]').onclick = () => resetUserApiKey(user.id);
     card.querySelector('[data-action="delete"]').onclick = () => deleteUser(user.id, user.username);
@@ -1469,7 +1512,7 @@ function renderInvites() {
 
   if (!visibleInvites.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="8" class="empty-cell">当前筛选下没有邀请码。</td>`;
+    tr.innerHTML = `<td colspan="11" class="empty-cell">当前筛选下没有邀请码。</td>`;
     tbody.appendChild(tr);
   }
 
@@ -1480,15 +1523,21 @@ function renderInvites() {
     const usedBy = (invite.usedBy || [])
       .map((item) => `${item.username || item.userId || ''} ${item.usedAt ? new Date(item.usedAt).toLocaleString() : ''}`)
       .join('；');
+    const registerRole = invite.registerRole === 'agent' ? '代理' : '普通用户';
+    const boundAgentName = invite.boundAgentName || userNameFromId(invite.boundAgentId || invite.ownerAgentId || '', invite.boundAgentId || invite.ownerAgentId || '');
+    const isAgentInvite = invite.isAgentInvite === true || invite.registerRole === 'agent' || !!invite.ownerAgentId;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="checkbox" class="invite-check" value="${escapeAttr(invite.code || '')}" ${checkedCodes.has(invite.code || '') ? 'checked' : ''}></td>
       <td><input readonly class="invite-code" value="${escapeAttr(invite.code || '')}"></td>
       <td>${escapeHtml(invite.createdAt ? formatDateTime(invite.createdAt) : '暂无')}</td>
+      <td><span class="invite-badge ${invite.registerRole === 'agent' ? 'is-unused' : ''}">${escapeHtml(registerRole)}</span></td>
+      <td>${escapeHtml(boundAgentName || '不绑定')}</td>
+      <td>${isAgentInvite ? '<span class="invite-badge is-unused">是</span>' : '<span class="invite-badge">否</span>'}</td>
       <td><span class="invite-badge ${invite.active ? 'is-active' : 'is-inactive'}">${invite.active ? '可用' : '已停用'}</span></td>
       <td><span class="invite-badge ${inviteUsed ? 'is-used' : 'is-unused'}">${inviteUsed ? '已使用' : '未使用'}</span></td>
       <td>${usedCount} / ${maxUses}</td>
-      <td>${escapeHtml(usedBy || '暂无')}${invite.ownerAgentId ? '<br><small>代理邀请码</small>' : ''}</td>
+      <td>${escapeHtml(usedBy || '暂无')}${invite.ownerAgentId ? '<br><small>代理生成</small>' : ''}</td>
       <td class="actions">
         <button data-invite-action="copy">复制</button>
         <button data-invite-action="toggle">${invite.active ? '停用' : '启用'}</button>
@@ -1524,15 +1573,16 @@ function renderNotices() {
   const title = $('noticeAreaTitle');
   if (title) title.textContent = state.system?.locations?.noticeAreaTitle || '全部未读';
   const unread = state.notices.filter((item) => !item.read).length;
+  const totalUnread = unread;
   const badge = $('noticeUnreadBadge');
   if (badge) {
-    badge.textContent = String(unread);
-    badge.hidden = unread <= 0;
+    badge.textContent = String(totalUnread);
+    badge.hidden = totalUnread <= 0;
   }
   const bell = $('noticeBellBtn');
   if (bell) {
-    bell.classList.toggle('has-unread', unread > 0);
-    bell.title = unread > 0 ? `通知：${unread} 条未读` : '通知';
+    bell.classList.toggle('has-unread', totalUnread > 0);
+    bell.title = totalUnread > 0 ? `通知：${totalUnread} 条提醒` : '通知';
   }
   if (!state.notices.length) {
     list.textContent = '暂无通知';
@@ -2019,7 +2069,7 @@ function renderOrders() {
   const paymentLabels = { balance: '余额支付', manual: '人工审核', interface: '接口支付' };
   const orderStatusLabels = { pending: '待处理', paid: '已支付', done: '已处理', cancelled: '已取消' };
   tbody.innerHTML = orders.map((order) => `
-    <tr data-order-id="${escapeAttr(order.id || '')}">
+    <tr data-order-id="${escapeAttr(order.id || '')}" data-order-agent-id="${escapeAttr(order.agentId || '')}">
       <td>${escapeHtml(order.id || '')}<br><small>${escapeHtml(formatDateTime(order.createdAt))}</small></td>
       <td>${escapeHtml(order.agentDisplayName || userNameFromId(order.agentId, order.agentUsername || ''))}</td>
       <td>${Number(order.amount || 0).toFixed(2)} ${escapeHtml(order.currency || 'CNY')}</td>
@@ -3139,7 +3189,9 @@ function invitePayloadFromForm() {
     prefix: $('newInviteCode').value.trim(),
     maxUses: Number($('newInviteMaxUses').value || 1),
     count: Number($('newInviteCount')?.value || 1),
-    retentionDays: Number($('newInviteRetentionDays')?.value || 7)
+    retentionDays: Number($('newInviteRetentionDays')?.value || 7),
+    registerRole: $('newInviteRegisterRole')?.value || 'user',
+    boundAgentId: $('newInviteBoundAgent')?.value || ''
   };
 }
 
@@ -3148,6 +3200,8 @@ function resetInviteForm() {
   if ($('newInviteCount')) $('newInviteCount').value = '1';
   if ($('newInviteRetentionDays')) $('newInviteRetentionDays').value = '7';
   $('newInviteMaxUses').value = '1';
+  if ($('newInviteRegisterRole')) $('newInviteRegisterRole').value = 'user';
+  if ($('newInviteBoundAgent')) $('newInviteBoundAgent').value = isAgent() ? state.currentUser?.id || '' : '';
 }
 
 function closeInvitePaymentDialog(choice = null) {
@@ -3239,37 +3293,51 @@ async function createInvite() {
   const payload = invitePayloadFromForm();
   let payment = {};
 
-  if (isAgent()) {
-    const quote = await api('/api/super/invites/quote', {
+  try {
+    if (isAgent()) {
+      let quote;
+      try {
+        quote = await api('/api/super/invites/quote', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        setStatus(error.message || '邀请码预估失败。', true);
+        return;
+      }
+      state.inviteCurrency = quote.currency || state.inviteCurrency || 'CNY';
+      if (state.currentUser) state.currentUser.balance = quote.balance;
+      renderUserContext();
+      const choice = await showInvitePaymentDialog(quote);
+      if (!choice) return;
+      payment = choice;
+    }
+
+    const result = await api('/api/super/invites', {
       method: 'POST',
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ ...payload, ...payment })
     });
-    state.inviteCurrency = quote.currency || state.inviteCurrency || 'CNY';
-    if (state.currentUser) state.currentUser.balance = quote.balance;
+
+    if (typeof result.balance !== 'undefined' && state.currentUser) {
+      state.currentUser.balance = result.balance;
+    }
+    resetInviteForm();
+    try {
+      await loadInvites();
+    } catch (error) {
+      console.warn('刷新邀请码失败：', error);
+    }
     renderUserContext();
-    const choice = await showInvitePaymentDialog(quote);
-    if (!choice) return;
-    payment = choice;
+    if (result.order) {
+      setStatus(result.message || '订单已提交，必须总管理员通过后才会生成邀请码。');
+      return;
+    }
+    const createdCount = (result.invites || []).length || Math.max(1, payload.count);
+    openInviteResultDialog(result.invites || [], createdCount);
+    setStatus(`邀请码已生成 ${createdCount} 个。`);
+  } catch (error) {
+    setStatus(error.message || '生成邀请码失败。', true);
   }
-
-  const result = await api('/api/super/invites', {
-    method: 'POST',
-    body: JSON.stringify({ ...payload, ...payment })
-  });
-
-  if (typeof result.balance !== 'undefined' && state.currentUser) {
-    state.currentUser.balance = result.balance;
-  }
-  resetInviteForm();
-  await loadInvites();
-  renderUserContext();
-  if (result.order) {
-    setStatus(result.message || '订单已提交，必须总管理员通过后才会生成邀请码。');
-    return;
-  }
-  const createdCount = (result.invites || []).length || Math.max(1, payload.count);
-  openInviteResultDialog(result.invites || [], createdCount);
-  setStatus(`邀请码已生成 ${createdCount} 个。`);
 }
 
 function ensureInviteTools() {
@@ -3314,6 +3382,24 @@ function ensureInviteTools() {
       table.dataset.inviteUsedHeadReady = '1';
     }
   }
+  if (table && !table.dataset.inviteAgentHeadReady) {
+    const headRow = table.querySelector('thead tr');
+    if (headRow) {
+      const heads = [...headRow.children].map((item) => item.textContent.trim());
+      const insertBeforeStatus = [...headRow.children].find((item) => item.textContent.trim() === '状态');
+      [
+        ['注册后角色', 'role'],
+        ['绑定代理', 'agent'],
+        ['代理邀请码', 'flag']
+      ].forEach(([label]) => {
+        if (heads.includes(label)) return;
+        const th = document.createElement('th');
+        th.textContent = label;
+        headRow.insertBefore(th, insertBeforeStatus || null);
+      });
+      table.dataset.inviteAgentHeadReady = '1';
+    }
+  }
 
   const prefixInput = $('newInviteCode');
   if (prefixInput && !prefixInput.dataset.prefixReady) {
@@ -3326,8 +3412,15 @@ function ensureInviteTools() {
     const retentionLabel = document.createElement('label');
     retentionLabel.innerHTML = '使用后保留天数<input id="newInviteRetentionDays" type="number" min="0" value="7">';
     prefixInput.closest('.invite-create').appendChild(retentionLabel);
+    const roleLabel = document.createElement('label');
+    roleLabel.innerHTML = '注册后角色<select id="newInviteRegisterRole"><option value="user">普通用户</option><option value="agent">代理</option></select>';
+    prefixInput.closest('.invite-create').appendChild(roleLabel);
+    const boundLabel = document.createElement('label');
+    boundLabel.innerHTML = '绑定代理<select id="newInviteBoundAgent"></select>';
+    prefixInput.closest('.invite-create').appendChild(boundLabel);
     prefixInput.dataset.prefixReady = '1';
   }
+  renderInviteAgentControls();
 
   const panelHead = $('createInviteBtn')?.closest('.panel-head');
   if (panelHead && !$('inviteUseFilter')) {
@@ -3366,6 +3459,40 @@ function ensureInviteTools() {
     deleteBtn.textContent = '删除选中';
     deleteBtn.onclick = deleteSelectedInvites;
     panelHead.insertBefore(deleteBtn, $('createInviteBtn'));
+  }
+}
+
+function renderInviteAgentControls() {
+  const roleSelect = $('newInviteRegisterRole');
+  const boundSelect = $('newInviteBoundAgent');
+  if (!roleSelect || !boundSelect) return;
+  const previousRole = roleSelect.value || 'user';
+  const previousBound = boundSelect.value || '';
+  roleSelect.innerHTML = '<option value="user">普通用户</option><option value="agent">代理</option>';
+  roleSelect.value = previousRole === 'agent' && isSuper() ? 'agent' : 'user';
+  roleSelect.disabled = !isSuper();
+  boundSelect.innerHTML = '<option value="">不绑定</option>';
+  (state.users || [])
+    .filter((user) => user.role === 'agent' && user.active !== false)
+    .forEach((user) => {
+      const opt = document.createElement('option');
+      opt.value = user.id;
+      opt.textContent = displayNameOf(user, user.username);
+      boundSelect.appendChild(opt);
+    });
+  if (isAgent()) {
+    const own = state.currentUser?.id || '';
+    if (![...boundSelect.options].some((option) => option.value === own)) {
+      const opt = document.createElement('option');
+      opt.value = own;
+      opt.textContent = displayNameOf(state.currentUser, state.currentUser?.username || '当前代理');
+      boundSelect.appendChild(opt);
+    }
+    boundSelect.value = own;
+    boundSelect.disabled = true;
+  } else {
+    boundSelect.value = [...boundSelect.options].some((option) => option.value === previousBound) ? previousBound : '';
+    boundSelect.disabled = false;
   }
 }
 
@@ -3521,6 +3648,7 @@ function openInviteResultDialog(invites, count = 0) {
 }
 
 async function saveUser(userId, row) {
+  const balanceInput = row.querySelector('[data-field="balance"]') || row.querySelector('[data-field="detailBalance"]');
   const body = {
     id: userId,
     username: row.querySelector('[data-field="username"]').value.trim(),
@@ -3528,7 +3656,7 @@ async function saveUser(userId, row) {
     displayName: row.querySelector('[data-field="displayName"]').value.trim(),
     role: row.querySelector('[data-field="role"]').value,
     canViewJson: row.querySelector('[data-field="canViewJson"]')?.checked !== false,
-    balance: Number(row.querySelector('[data-field="balance"]')?.value || 0)
+    balance: Number(balanceInput?.value || 0)
   };
   const password = row.querySelector('[data-field="password"]').value.trim();
   if (password) body.password = password;
@@ -3541,6 +3669,62 @@ async function saveUser(userId, row) {
   await loadUsers();
   renderUserContext();
   setStatus('用户已保存。');
+}
+
+async function saveAgentBalance(userId, row) {
+  const balance = Number(row.querySelector('[data-field="balance"]')?.value || row.querySelector('[data-field="detailBalance"]')?.value || 0);
+  await api('/api/super/users/agent', {
+    method: 'POST',
+    body: JSON.stringify({ id: userId, action: 'balance', balance })
+  });
+  await loadUsers();
+  renderUserContext();
+  setStatus('代理余额已保存。');
+}
+
+async function promoteUserAgent(userId) {
+  const user = state.users.find((item) => item.id === userId);
+  if (!user) return;
+  const useDefaultBalance = confirm(`把「${user.displayName || user.username}」设为代理，并写入系统默认代理余额吗？\n选择“取消”会设为代理但余额保留为 0 或当前值。`);
+  await api('/api/super/users/agent', {
+    method: 'POST',
+    body: JSON.stringify({ id: userId, action: 'promote', useDefaultBalance })
+  });
+  await loadUsers();
+  await loadInvites();
+  renderUserContext();
+  setStatus('用户已设为代理。');
+}
+
+async function cancelUserAgent(userId) {
+  const user = state.users.find((item) => item.id === userId);
+  if (!user) return;
+  if (!confirm(`确认取消「${user.displayName || user.username}」的代理身份？\n用户不会删除，历史代理订单会保留。`)) return;
+  await api('/api/super/users/agent', {
+    method: 'POST',
+    body: JSON.stringify({ id: userId, action: 'cancel' })
+  });
+  await loadUsers();
+  await loadInvites();
+  renderUserContext();
+  setStatus('代理身份已取消。');
+}
+
+async function jumpToAgentOrders(agentId) {
+  if (!isSuper()) return;
+  switchView('system');
+  await refreshOrders(false);
+  const panel = $('orderRows')?.closest('.collapsible-panel');
+  if (panel?.classList.contains('is-collapsed')) panel.querySelector('.panel-collapse-toggle')?.click();
+  const rows = [...document.querySelectorAll('[data-order-agent-id]')].filter((row) => row.dataset.orderAgentId === agentId);
+  setTimeout(() => {
+    (rows[0] || panel)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    rows.forEach((row) => {
+      row.classList.add('row-highlight');
+      setTimeout(() => row.classList.remove('row-highlight'), 2600);
+    });
+  }, 80);
+  setStatus(rows.length ? `已找到 ${rows.length} 条代理订单。` : '该代理暂无订单记录。');
 }
 
 async function batchUsers(action) {
@@ -3787,11 +3971,11 @@ async function resetTemplate() {
   setStatus('新用户模板已恢复默认。');
 }
 
-async function refreshOrders() {
+async function refreshOrders(showMessage = true) {
   const result = await api('/api/super/orders');
   state.orders = result.orders || [];
   renderOrders();
-  setStatus('订单列表已刷新。');
+  if (showMessage) setStatus('订单列表已刷新。');
 }
 
 async function updateOrderStatus(id, status) {

@@ -1,13 +1,29 @@
 ﻿9116b55d87bd5372b34ee99ed2c0a11aeae5732ad916748422e31501ffbd9642  packages/toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz
+
 1a77f590ee9e3bff34d4f12038667088dcd0988a98d3fb714c5a36dc4aa325a5  packages/toolbox-admin-baota-oneclick-clean-20260620.tar.gz
+
 98521d9d883ba948317d3b85aa087d7ef14546462bd28cd81ddd5484e13291fd  packages/toolbox-admin-baota-oneclick-clean-20260622.tar.gz
+
 7790f841e311fd4989c90d5f957198038d988491d0e7d4eaa0851a89b97d611b  packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz
+
+ee3fe7732e34fe537e8ee8405febff981b04756c5a1fc36a1441ab433bf41a83  packages/toolbox-admin-baota-oneclick-no-agent-forced32-20260624.tar.gz
+
 5cdf404aaa159a8053c4b96d09935aaa90e047495d8598fb8dfc76d7eda50316  packages/toolbox-admin-source-no-agent-fixed2-20260624.tar.gz
+
+4c381d4522e890c6047c23038624d04ad31dcae0aedc3868ccc15b1a28376d63  packages/toolbox-admin-source-no-agent-forced32-20260624.tar.gz
+
 74f36e1f8eb65080c0432aacbb08b0035cd0c99ce5837ca0b5239019a4090295  packages/toolbox-baota-config-exchange-update.tar.gz
+
 f2315470aa348c9ef62217ea7b44d284900a3bf91ccf7f194219a836a4c46d74  packages/toolbox-baota-full-local-tested-update.tar.gz
+
 2532533a7945e04e54b8971fda6873c69cd4f63b1a8caa98b26acf0932d1966a  packages/toolbox-full-local-tested-preserve-data.tar.gz
+
 4555919332bccb916eb2569b6c971c3232d013b63b3249da448bd6cae9b86783  packages/toolbox-gjx-8uid-download-compat-hotfix-preserve-data.tar.gz
+
 7c4fe300fe0de9637fc78e2ee63c3a46513f2ba24ee8dfe28ca87e119b0bc3ee  packages/toolbox-gjx-config-hotfix-preserve-data.tar.gz
+
 5a1c9982a693178ca65910c27e3b00a96ef6cdc31ca293c491d8bb3355312690  packages/toolbox-gjx-target-user-header-hotfix-preserve-data.tar.gz
+
 2d4ed9b636409b451b83b9404f5d3403d1ae0c22e44bf1544a4983033d18599b  packages/toolbox-gjx-title-slash-hotfix-preserve-data.tar.gz
+
 9a202021a56132cba869f9a921ce8cfc4b849b9802eac0458d440dcfe3785cbd  packages/toolbox-multithread-download-hotfix-20260623.tar.gz
