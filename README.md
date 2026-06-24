@@ -1,99 +1,75 @@
-# 工具箱三个客户端版本本地测试更新分支
+# 工具箱后台无代理版
 
-本分支用于保存 2026-06-19 至 2026-06-22 本地测试后准备同步到宝塔服务器的三个客户端版本更新。它是从 `main` 新建的独立分支，不覆盖旧版本主分支。
+本分支保存的是最新无代理版工具箱后台源码和宝塔一键更新包。无代理版已移除业务代理/代理申请/代理订单相关入口，保留后台管理、用户配置、邀请码、通知、客户端生成、三套客户端版本、软件大全、配置导入导出和云端配置链接等功能。
 
-## 本分支更新的是哪三个客户端
+## 当前最新版
 
-这次不是只更新后台说明，也不是只保留生成逻辑；本分支已经同步更新后台生成的三个 EXE 客户端版本：
+- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz`
+- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz.b64`
+- 无代理源码包：`packages/toolbox-admin-source-no-agent-fixed2-20260624.tar.gz`
+- 无代理源码目录：`src/ToolboxAdminApi-no-agent`
+- SHA256 清单：`docs/更新包SHA256清单.txt`
 
-- 默认版：`original`，后台按钮显示为“下载工具箱”。
-- 工作台版：`studio`，后台三版本下载区里的工作台布局版本。
-- 门户版：`portal`，后台三版本下载区里的门户布局版本。
+本仓库不提交服务器运行数据目录 `data/`，避免覆盖已部署服务器上的账号、密码、用户配置、通知、订单、系统设置和客户端生成记录。
 
-三个版本共用同一份客户端模板 `client-template/ToolboxClient.cs`，由后台 `CLIENT_VARIANTS` 按 `original / studio / portal` 分别生成。服务器更新完成后会清理旧 EXE 缓存，必须回到后台重新下载这三个客户端 EXE，旧 EXE 不会自动变。
+## 更新重点
 
-## 分支内容
-
-- `src/ToolboxAdminApi`：当前宝塔站点使用的完整后台源码。
-- `src/ToolboxAdminApi-oneclick`：一键部署版源码。
-- `src/ToolboxAdminApi-baota-source`：宝塔源码版。
-- `packages/`：本地测试后生成的更新包和热修复包。
-- `docs/`：服务器直接替换更新命令、全量更新命令和配置同步说明。
-
-仓库中不包含服务器运行数据目录 `data/`、客户端编译缓存、任务 EXE、会话、日志和本地账号配置，避免覆盖已部署服务器数据。
-
-## 本次更新重点
-
-- 已统一同步三个客户端版本：默认版、工作台版、门户版。
-- 三个客户端都新增“软件大全”页面，支持内置目录、Winget 搜索和常用软件/游戏检索下载。
-- 软件大全可在后台开启或关闭；页面访问锁可按页面单独设置，也支持多个页面不同密码。
-- 客户端默认同时最多下载 5 个，并在三个版本里加入并发下载数量下拉选择。
-- 客户端下载器新增 Range 分片加速：支持 `206 Partial Content` 的云盘直链会自动启用最多 16 线程分片下载，绕开单连接限速；不支持 Range 的站点自动回退单连接。
-- 总管理后台的邀请码列表新增“全部 / 已使用 / 未使用”筛选，导出未勾选时会按当前筛选导出。
-- 后台总览页改为多个独立保存卡片，页面权限移到启动密码下方并默认收缩；按钮页“页面与分组”和“新增按钮”也默认收缩。
-- 第一个客户端版本恢复全部主题选项，页面锁提示改为页面访问密码。
-- 总管理后台切换其他账号时，目标账号不再通过 `X-Target-User` 请求头传递，修复中文或特殊字符账号导致浏览器 `fetch` 拒绝请求的问题。
-- 客户端支持识别 `links.8uid.com/d/...` 这类中转直链，能解析真实文件名和下载入口；遇到验证码时自动打开浏览器处理。
-- 修复客户端旧 .NET 环境下 `Trim(Char)` 方法不兼容导致的弹窗错误。
-- 修复客户端标题显示中多余的 `/`。
-- 修复工具箱配置公开读取接口，客户端可按 key 正常拉取配置。
-- 支持后台导出配置文件、导入配置文件、生成云端配置链接并从链接导入。
-- 更新后后台需要重新生成并下载三个客户端 EXE：默认版、工作台版、门户版。
+- 移除业务代理功能入口和代理申请接口。
+- 修复无代理版后台登录后前端脚本解析失败的问题。
+- 修复读取附加接口失败时阻断主配置加载的问题，旧服务入口返回 `Not found` 时不再卡死后台。
+- 已部署服务器更新时保留原 `data/`，只替换程序文件。
+- 保留三套客户端生成：默认版、工作台版、门户版。
+- 保留软件大全、页面访问密码、配置导入导出、云端配置链接、通知、邀请码、后台桌面 EXE 等功能。
 
 ## 首次部署
 
-新服务器第一次安装时使用这条命令。它会下载本分支的一键部署包、安装依赖、创建 `systemd` 服务，并初始化后台数据。
+新服务器第一次安装可使用一键包。首次部署会初始化新的 `data/` 数据目录。
 
 ```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/private-local-tested-preserve-data-20260620/toolbox-admin-baota-oneclick.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && ls -lh toolbox-admin-oneclick.tar.gz && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/private-local-tested-preserve-data-20260620/packages/toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
 ```
 
-执行后按提示填写：
-
-- 绑定域名：填写客户自己的域名。
-- 安装目录：首次部署可直接回车。
-- 服务端口：默认 `5088`。
-- 管理员密码：首次部署可填写或回车自动生成。
+执行后按提示填写域名、安装目录、端口和管理员密码。新服务器没有旧数据时才使用这条命令。
 
 ## 已部署服务器更新
 
-已经部署过的宝塔服务器不要重新跑首次部署命令。更新时直接使用下面这条命令，它只覆盖程序文件，保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
+已经部署过的服务器不要重新跑首次部署命令。使用下面这份命令文件更新，它只覆盖程序文件，保留服务器原来的 `data/`。
 
-```bash
-set -e; SERVICE="toolbox-admin"; APP="/www/wwwroot/gjx.vst76.cn"; BRANCH="private-local-tested-preserve-data-20260620"; URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz"; SHA="9116b55d87bd5372b34ee99ed2c0a11aeae5732ad916748422e31501ffbd9642"; TS="$(date +%Y%m%d-%H%M%S)"; PKG="/tmp/toolbox-github-local-tested-$TS.tar.gz"; TMP="/tmp/toolbox-github-local-tested-$TS"; BACKUP="/www/backup/gjx-toolbox-$TS"; mkdir -p "$TMP" "$BACKUP"; [ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }; curl -L --retry 3 -o "$PKG" "$URL"; echo "$SHA  $PKG" | sha256sum -c -; tar -xzf "$PKG" -C "$TMP"; python3 -m py_compile "$TMP/ToolboxAdminApi-oneclick/app.py"; cd "$APP"; cp -a app.py wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true; rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs; \cp -a "$TMP/ToolboxAdminApi-oneclick/app.py" "$APP/app.py"; \cp -a "$TMP/ToolboxAdminApi-oneclick/wwwroot" "$APP/wwwroot"; \cp -a "$TMP/ToolboxAdminApi-oneclick/client-template" "$APP/client-template"; \cp -a "$TMP/ToolboxAdminApi-oneclick/assets" "$APP/assets"; \cp -a "$TMP/ToolboxAdminApi-oneclick/deploy" "$APP/deploy"; \cp -a "$TMP/ToolboxAdminApi-oneclick/admin-desktop-template" "$APP/admin-desktop-template"; [ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"; systemctl restart "$SERVICE"; sleep 2; systemctl is-active --quiet "$SERVICE"; curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null; grep -q "software_catalog_enabled" app.py; grep -q "ensureButtonsPagePanels" wwwroot/admin.js; grep -q "inviteUseFilter" wwwroot/admin.js; grep -q "/api/admin/popup" app.py; grep -q "savePopupAllBtn" wwwroot/admin.js; ! grep -q "popup_sources" app.py; grep -Fq 'public_popup_config(user["id"], self.base_url())' app.py; grep -q "DefaultMaxParallelDownloads = 5" client-template/ToolboxClient.cs; grep -q "SoftwareCatalogPageId" client-template/ToolboxClient.cs; grep -q "BrandPopupClickWindowMs" client-template/ToolboxClient.cs; grep -q "RenderPortalLoadingState" client-template/ToolboxClient.cs; grep -q "IsPortalDemoPlaceholderConfig" client-template/ToolboxClient.cs; grep -q "/api/admin/desktop/download" app.py; grep -q "admin-desktop.js" wwwroot/index.html; grep -q "downloadAdminDesktopBtn" wwwroot/index.html; test -f admin-desktop-template/ToolboxAdminDesktop.cs; echo "OK: updated to 20260623 admin-desktop build, data preserved. Reopen admin EXE to load the latest backend. Browser users can Ctrl+F5. Backup: $BACKUP"
+```text
+docs/GitHub无代理版-已部署服务器保留数据更新命令.txt
 ```
 
 这条更新命令会：
 
-- 备份当前 `app.py`、`wwwroot`、`client-template`、`assets`、`deploy` 到 `/www/backup/`。
-- 覆盖程序文件和前端文件。
-- 保留服务器上的 `data/`，包括账号、密码、用户配置、通知、订单、邀请码、系统设置和云端配置链接。
-- 清理 `data/client-cache` 和 `data/client-jobs`，避免旧的三个客户端 EXE 缓存继续生效。
-- 重启 `toolbox-admin` 服务。
+- 自动识别 `toolbox-admin` 当前 `WorkingDirectory`。
+- 要求已有 `data/` 目录存在，否则直接退出。
+- 备份当前程序文件和当前 `data` 到 `/www/backup/toolbox-no-agent-*`。
+- 只替换 `app.py`、`wwwroot`、`client-template`、`assets`、`deploy`、`admin-desktop-template`。
+- 只清理 `data/client-cache` 和 `data/client-jobs`。
+- 校验 `data/users.json` 和 `data/config.json` 是合法 JSON 后再重启服务。
 
-更新完成后，后台 EXE 关闭后重新打开即可进入新版；仍用浏览器访问后台的用户可以按 `Ctrl+F5` 强制刷新。然后在后台重新下载需要分发的客户端 EXE。
+## 数据保留
+
+更新模式会保留服务器上的：
+
+- 后台账号和密码
+- 用户列表和邀请码
+- 每个用户的工具箱配置
+- 通知、订单、系统设置
+- 邮件设置、云端配置链接
+- 已上传图片和静态资源
+
+不会保留的是客户端生成缓存，因为更新后需要重新生成并下载客户端 EXE。
 
 ## 目录说明
 
 ```text
-src/
-  ToolboxAdminApi/              当前部署源码
-  ToolboxAdminApi-oneclick/     一键部署版源码
-  ToolboxAdminApi-baota-source/ 宝塔源码版
-packages/
-  toolbox-multithread-download-hotfix-20260623.tar.gz
-  toolbox-admin-baota-oneclick-admin-desktop-20260623.tar.gz
-  toolbox-gjx-target-user-header-hotfix-preserve-data.tar.gz
-  toolbox-gjx-8uid-download-compat-hotfix-preserve-data.tar.gz
-  toolbox-gjx-title-slash-hotfix-preserve-data.tar.gz
-  toolbox-gjx-config-hotfix-preserve-data.tar.gz
-  toolbox-full-local-tested-preserve-data.tar.gz
-docs/
-  gjx服务器直接替换更新命令.txt
-  服务器免上传-全量本地测试更新命令.txt
-  服务器直接执行-全量本地测试更新命令.txt
+src/ToolboxAdminApi-no-agent/          无代理版源码
+packages/                              一键包、源码包和热修复包
+docs/GitHub无代理版-已部署服务器保留数据更新命令.txt
+docs/更新包SHA256清单.txt
 ```
 
 ## 注意
 
-GitHub 的私密性是仓库级别，不是分支级别。如果需要私密，请将整个仓库设置为 Private；本分支不会影响 `main` 旧版本。
+GitHub 的私密性是仓库级别，不是分支级别。如果需要私密，请将整个仓库设置为 Private。
