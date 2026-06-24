@@ -1,4 +1,4 @@
-# 工具箱后台无代理版
+﻿# 工具箱后台无代理版
 
 本分支保存的是最新无代理版工具箱后台源码和宝塔一键更新包。无代理版已移除业务代理/代理申请/代理订单相关入口，保留后台管理、用户配置、邀请码、通知、客户端生成、三套客户端版本、软件大全、配置导入导出和云端配置链接等功能。
 
@@ -33,10 +33,90 @@ cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz t
 
 ## 已部署服务器更新
 
-已经部署过的服务器不要重新跑首次部署命令。使用下面这份命令文件更新，它只覆盖程序文件，保留服务器原来的 `data/`。
+已经部署过的服务器不要重新跑首次部署命令。直接复制下面整段命令粘贴到宝塔终端执行；它只覆盖程序文件，保留服务器原来的 `data/`。
 
-```text
-docs/GitHub无代理版-已部署服务器保留数据更新命令.txt
+```bash
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+BRANCH="private-local-tested-preserve-data-20260620"
+PKG_NAME="toolbox-admin-baota-oneclick-no-agent-fixed2-20260624.tar.gz"
+URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
+URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
+URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
+SHA="7790f841e311fd4989c90d5f957198038d988491d0e7d4eaa0851a89b97d611b"
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-no-agent-$TS.tar.gz"
+TMP="/tmp/toolbox-no-agent-$TS"
+REPO_TMP="/tmp/toolbox-no-agent-repo-$TS"
+BACKUP="/www/backup/toolbox-no-agent-$TS"
+
+mkdir -p "$TMP" "$BACKUP" "$REPO_TMP"
+[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
+[ -d "$APP/data" ] || { echo "Existing data dir not found: $APP/data"; exit 1; }
+
+download_codeload() {
+  local repo_pkg="/tmp/toolbox-no-agent-repo-$TS.tar.gz"
+  echo "Downloading from codeload branch archive..."
+  rm -f "$repo_pkg"
+  rm -rf "$REPO_TMP"
+  mkdir -p "$REPO_TMP"
+  curl -L --fail --retry 2 --connect-timeout 8 --speed-limit 20480 --speed-time 20 --max-time 180 -o "$repo_pkg" "$URL_CODELOAD" || return 1
+  tar -xzf "$repo_pkg" -C "$REPO_TMP" || return 1
+  local found
+  found="$(find "$REPO_TMP" -path "*/packages/$PKG_NAME" -type f | head -n 1)"
+  [ -n "$found" ] || return 1
+  cp "$found" "$PKG"
+}
+
+download_direct() {
+  local url="$1"
+  echo "Downloading direct package: $url"
+  rm -f "$PKG"
+  curl -L --fail --retry 1 --connect-timeout 8 --speed-limit 20480 --speed-time 15 --max-time 60 -o "$PKG" "$url"
+}
+
+download_git() {
+  command -v git >/dev/null 2>&1 || return 1
+  echo "Downloading through git clone fallback..."
+  rm -rf "$REPO_TMP"
+  git clone --depth 1 --branch "$BRANCH" "https://github.com/SHAONIAN697/toolbox-admin-oneclick.git" "$REPO_TMP"
+  [ -f "$REPO_TMP/packages/$PKG_NAME" ] || return 1
+  cp "$REPO_TMP/packages/$PKG_NAME" "$PKG"
+}
+
+download_codeload || download_direct "$URL_RAW" || download_direct "$URL_GITHUB" || download_git || { echo "Download failed from all sources"; exit 1; }
+echo "$SHA  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$TMP"
+SRC="$TMP/ToolboxAdminApi-oneclick"
+python3 -m py_compile "$SRC/app.py"
+
+cd "$APP"
+cp -a app.py wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
+cp -a data "$BACKUP/data.current" 2>/dev/null || true
+
+rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs
+\cp -a "$SRC/app.py" "$APP/app.py"
+\cp -a "$SRC/wwwroot" "$APP/wwwroot"
+\cp -a "$SRC/client-template" "$APP/client-template"
+\cp -a "$SRC/assets" "$APP/assets"
+\cp -a "$SRC/deploy" "$APP/deploy"
+\cp -a "$SRC/admin-desktop-template" "$APP/admin-desktop-template"
+[ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"
+
+test -f "$APP/data/users.json"
+test -f "$APP/data/config.json"
+python3 -m json.tool "$APP/data/users.json" >/dev/null
+python3 -m json.tool "$APP/data/config.json" >/dev/null
+
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
+grep -q "function loadOptional" "$APP/wwwroot/admin.js"
+! grep -q "/api/admin/agent-application" "$APP/app.py"
+echo "OK: no-agent build updated, existing data preserved. Backup: $BACKUP"
 ```
 
 这条更新命令会：
@@ -73,3 +153,4 @@ docs/更新包SHA256清单.txt
 ## 注意
 
 GitHub 的私密性是仓库级别，不是分支级别。如果需要私密，请将整个仓库设置为 Private。
+
