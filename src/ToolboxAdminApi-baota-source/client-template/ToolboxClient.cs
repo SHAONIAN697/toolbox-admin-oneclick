@@ -106,7 +106,6 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
-        private System.Windows.Forms.Timer syncClockTimer;
         private string currentPage = "";
         private IList<object> currentSections = new List<object>();
         private const string SoftwareCatalogPageId = "software_catalog";
@@ -155,7 +154,6 @@ namespace ToolboxClient
         private const int DownloadTaskRowGap = 8;
         private string lastConfigJson = "";
         private string lastSyncText = "";
-        private DateTime lastSuccessfulSyncAt = DateTime.MinValue;
         private string lastPasswordHash = "";
         private string runtimeIntegrityToken = "";
         private bool runtimeIntegrityChecked = false;
@@ -165,6 +163,7 @@ namespace ToolboxClient
         private bool initialSizeApplied = false;
         private readonly bool studioVariant = Program.ClientVariant.Equals("studio", StringComparison.OrdinalIgnoreCase);
         private readonly bool portalVariant = Program.ClientVariant.Equals("portal", StringComparison.OrdinalIgnoreCase);
+        private readonly bool tunerVariant = false;
         private readonly Dictionary<string, Control> navButtons = new Dictionary<string, Control>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -259,13 +258,9 @@ namespace ToolboxClient
             BuildShell();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 2000;
+            refreshTimer.Interval = 5000;
             refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
             Shown += delegate { LoadConfigAsync(true); refreshTimer.Start(); };
-            syncClockTimer = new System.Windows.Forms.Timer();
-            syncClockTimer.Interval = 1000;
-            syncClockTimer.Tick += delegate { UpdateSyncClockStatus(); };
-            Shown += delegate { syncClockTimer.Start(); };
         }
 
         private static string NormalizeConfigUrl(string url)
@@ -291,12 +286,6 @@ namespace ToolboxClient
                 refreshTimer.Stop();
                 refreshTimer.Dispose();
                 refreshTimer = null;
-            }
-            if (syncClockTimer != null)
-            {
-                syncClockTimer.Stop();
-                syncClockTimer.Dispose();
-                syncClockTimer = null;
             }
             if (softwareSearchTimer != null)
             {
@@ -330,6 +319,10 @@ namespace ToolboxClient
         {
             base.OnResize(e);
             if (portalVariant) UpdatePortalWindowRegion();
+            if (portalVariant && IsHandleCreated && content != null && !content.IsDisposed)
+            {
+                QueueContentResizeRender();
+            }
         }
 
         protected override CreateParams CreateParams
@@ -917,7 +910,10 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
+                if (portalVariant && IsHandleCreated && !content.IsDisposed)
+                {
+                    QueueContentResizeRender();
+                }
             };
             mainLayout.Controls.Add(content, 0, 1);
 
@@ -1349,21 +1345,19 @@ namespace ToolboxClient
                 SaveCache(json);
                 if (json == lastConfigJson)
                 {
-                    lastSuccessfulSyncAt = DateTime.Now;
-                    lastSyncText = SyncClockText();
+                    lastSyncText = "已同步 " + DateTime.Now.ToString("HH:mm:ss");
                     statusMessage = lastSyncText;
                     BeginInvoke(new Action(delegate { status.Text = statusMessage; }));
                     return;
                 }
-                lastSuccessfulSyncAt = DateTime.Now;
                 if (showMessage)
                 {
-                    lastSyncText = "配置已刷新，" + SyncClockText();
+                    lastSyncText = "配置已刷新 " + DateTime.Now.ToString("HH:mm:ss");
                     statusMessage = lastSyncText;
                 }
                 else
                 {
-                    lastSyncText = SyncClockText();
+                    lastSyncText = "已同步 " + DateTime.Now.ToString("HH:mm:ss");
                     statusMessage = lastSyncText;
                 }
             }
@@ -1433,7 +1427,6 @@ namespace ToolboxClient
                     lastConfigJson = json;
                     if (!String.IsNullOrWhiteSpace(statusMessage)) status.Text = statusMessage;
                     ApplyConfig();
-                    RefreshCurrentPageFromConfig();
                     LoadPopupConfigAsync(false);
                 }));
             }
@@ -2288,83 +2281,6 @@ namespace ToolboxClient
             contentResizeTimer.Start();
         }
 
-        private void QueueContentRender()
-        {
-            if (content == null || content.IsDisposed) return;
-            if (String.IsNullOrWhiteSpace(currentPage)) return;
-
-            if (softwareCatalogLayoutUpdating || contentRendering)
-            {
-                contentResizeRenderPending = true;
-                return;
-            }
-
-            contentResizeRenderPending = true;
-            EnsureContentResizeTimer();
-            contentResizeTimer.Stop();
-            contentResizeTimer.Start();
-        }
-
-        private void RefreshCurrentPageFromConfig()
-        {
-            if (String.IsNullOrWhiteSpace(currentPage)) return;
-            if (!BindCurrentPageSectionsFromConfig())
-            {
-                QueueContentRender();
-                return;
-            }
-            QueueContentRender();
-        }
-
-        private bool BindCurrentPageSectionsFromConfig()
-        {
-            if (String.IsNullOrWhiteSpace(currentPage)) return false;
-            if (currentPage.Equals("toolbox", StringComparison.OrdinalIgnoreCase))
-            {
-                title.Text = portalVariant ? PortalText("系统工具", "Tools") : "系统工具";
-                List<object> sections = new List<object>();
-                IList<object> tabs = AsList(Get(config, "toolbox_tabs"));
-                foreach (object tabObj in tabs)
-                {
-                    Dictionary<string, object> tab = AsDict(tabObj);
-                    string tabName = GetText(tab, "name", "工具箱");
-                    foreach (object sectionObj in AsList(Get(tab, "sections")))
-                    {
-                        Dictionary<string, object> section = new Dictionary<string, object>(AsDict(sectionObj));
-                        string sectionName = GetText(section, "title", "").Trim();
-                        section["title"] = String.IsNullOrWhiteSpace(sectionName) ? tabName : tabName + "  " + sectionName;
-                        sections.Add(section);
-                    }
-                }
-                currentSections = sections;
-                return true;
-            }
-            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            if (!pages.ContainsKey(currentPage)) return false;
-            Dictionary<string, object> page = AsDict(pages[currentPage]);
-            title.Text = portalVariant ? PortalLabel(PageLabel(page, currentPage), currentPage) : PageLabel(page, currentPage);
-            currentSections = AsList(Get(page, "sections"));
-            return true;
-        }
-
-        private string SyncClockText()
-        {
-            if (lastSuccessfulSyncAt == DateTime.MinValue) return "等待同步";
-            return "已同步 " + DateTime.Now.ToString("HH:mm:ss");
-        }
-
-        private void UpdateSyncClockStatus()
-        {
-            if (status == null || status.IsDisposed) return;
-            if (lastSuccessfulSyncAt == DateTime.MinValue) return;
-            if (status.Text.StartsWith("已同步", StringComparison.Ordinal) ||
-                status.Text.StartsWith("配置已刷新", StringComparison.Ordinal))
-            {
-                lastSyncText = SyncClockText();
-                status.Text = lastSyncText;
-            }
-        }
-
         private void EnsureContentResizeTimer()
         {
             if (contentResizeTimer == null)
@@ -2614,7 +2530,13 @@ namespace ToolboxClient
                 content.FlowDirection = listMode ? FlowDirection.TopDown : FlowDirection.LeftToRight;
                 content.WrapContents = !listMode;
 
-                List<Dictionary<string, object>> buttons = CollectButtonsInSectionOrder(currentSections);
+                List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
+                buttons.Sort((a, b) =>
+                {
+                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
+                    if (result != 0) return result;
+                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
+                });
                 if (buttons.Count == 0)
                 {
                     AddEmptyMessage("这里还没有按钮。");
@@ -2644,16 +2566,6 @@ namespace ToolboxClient
                 {
                     Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
                     content.Controls.Add(card);
-                }
-                if (listMode)
-                {
-                    content.Controls.Add(new Panel
-                    {
-                        Width = available,
-                        Height = 34,
-                        Margin = Padding.Empty,
-                        BackColor = Color.Transparent
-                    });
                 }
             }
             finally
@@ -3119,6 +3031,34 @@ namespace ToolboxClient
             return button;
         }
 
+        private int PortalContentWidth()
+        {
+            int width = content == null ? 0 : content.ClientSize.Width - content.Padding.Left - content.Padding.Right - SystemInformation.VerticalScrollBarWidth - 12;
+            if (width <= 0 && ClientSize.Width > 0)
+            {
+                width = ClientSize.Width - 236 - 26 - 32 - SystemInformation.VerticalScrollBarWidth - 12;
+            }
+            return Math.Max(280, width);
+        }
+
+        private static int PortalGridColumnCount(int available, int maxColumns, int preferredCardWidth, int marginRight)
+        {
+            for (int columns = Math.Max(1, maxColumns); columns > 1; columns--)
+            {
+                if (available >= columns * (preferredCardWidth + marginRight)) return columns;
+            }
+            return 1;
+        }
+
+        private static int PortalGridCardWidth(int available, int columns, int marginRight)
+        {
+            columns = Math.Max(1, columns);
+            int maxWidth = Math.Max(1, available - marginRight);
+            int width = Math.Max(1, (available - marginRight * columns - 4) / columns);
+            width = Math.Min(width, maxWidth);
+            return Math.Max(1, width);
+        }
+
         private void RenderPortalSections()
         {
             content.SuspendLayout();
@@ -3127,10 +3067,16 @@ namespace ToolboxClient
             content.WrapContents = false;
             content.BackColor = Bg;
 
-            List<Dictionary<string, object>> buttons = CollectButtonsInSectionOrder(currentSections);
+            List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
+            buttons.Sort((a, b) =>
+            {
+                int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
+                if (result != 0) return result;
+                return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
+            });
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
-            int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int available = PortalContentWidth();
 
             content.Controls.Add(new PortalHeroControl
             {
@@ -3181,13 +3127,13 @@ namespace ToolboxClient
             if (buttons.Count == 0)
             {
                 cards.Height = 132;
-                cards.Controls.Add(CreatePortalEmptyCard(Math.Min(330, available)));
+                cards.Controls.Add(CreatePortalEmptyCard(Math.Max(160, Math.Min(330, available - 16))));
             }
             else
             {
                 int gap = 16;
-                int columns = available >= 900 ? 4 : 3;
-                int cardWidth = Math.Max(140, (available - gap * columns - 2) / columns);
+                int columns = PortalGridColumnCount(available, 4, 190, gap);
+                int cardWidth = PortalGridCardWidth(available, columns, gap);
                 int rows = (int)Math.Ceiling(buttons.Count / (double)columns);
                 cards.Height = Math.Max(132, rows * 132);
                 for (int i = 0; i < buttons.Count; i++)
@@ -3209,7 +3155,7 @@ namespace ToolboxClient
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
-            int available = Math.Max(520, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int available = PortalContentWidth();
             Label loading = new Label
             {
                 Width = available,
@@ -3306,8 +3252,8 @@ namespace ToolboxClient
                 BackColor = Bg
             };
             int gap = 16;
-            int columns = available >= 920 ? 3 : (available >= 660 ? 2 : 1);
-            int cardWidth = Math.Max(260, (available - gap * columns - 2) / columns);
+            int columns = PortalGridColumnCount(available, 3, 260, gap);
+            int cardWidth = PortalGridCardWidth(available, columns, gap);
             int rows = (int)Math.Ceiling(buttons.Count / (double)columns);
             cards.Height = Math.Max(112, rows * 126);
             for (int i = 0; i < buttons.Count; i++)
@@ -3358,7 +3304,7 @@ namespace ToolboxClient
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
-            int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int available = PortalContentWidth();
 
             content.Controls.Add(CreatePortalPageHeading(PortalText("下载管理", "Download Manager"), "", available));
 
@@ -3388,7 +3334,7 @@ namespace ToolboxClient
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
-            int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int available = PortalContentWidth();
             ClientSettings settings = LoadClientSettings();
 
             content.Controls.Add(CreatePortalPageHeading(PortalText("全局设置", "Global Settings"), "", available));
@@ -5612,28 +5558,6 @@ namespace ToolboxClient
             return buttons;
         }
 
-        private List<Dictionary<string, object>> CollectButtonsInSectionOrder(IList<object> sections)
-        {
-            List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
-            foreach (object sectionObj in sections)
-            {
-                Dictionary<string, object> section = AsDict(sectionObj);
-                List<Dictionary<string, object>> sectionButtons = new List<Dictionary<string, object>>();
-                foreach (object buttonObj in AsList(Get(section, "buttons")))
-                {
-                    sectionButtons.Add(AsDict(buttonObj));
-                }
-                sectionButtons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
-                buttons.AddRange(sectionButtons);
-            }
-            return buttons;
-        }
-
         private void AddEmptyMessage(string message)
         {
             Label empty = new Label
@@ -6758,7 +6682,8 @@ namespace ToolboxClient
             Exception failure = null;
             try
             {
-                for (int attempt = 1; attempt <= 3; attempt++)
+                int attempt = 1;
+                while (true)
                 {
                     try
                     {
@@ -6771,14 +6696,26 @@ namespace ToolboxClient
                     {
                         failure = ex;
                         task.AbortActiveRequests();
-                        if (ex is OperationCanceledException || task.CancelRequested) break;
-                        if (task.DisableSegmentedDownload && attempt < 3) CleanupSegmentedPart(task);
-                        if (attempt < 3)
+                        if (!(ex is OperationCanceledException) && !task.CancelRequested && task.Segmented)
                         {
-                            task.StateText = "网络中断，重试 " + (attempt + 1) + "/3";
-                            QueueDownloadTaskRowUpdate(task);
-                            Thread.Sleep(900 * attempt);
+                            List<DownloadSegmentState> restoredSegments = SnapshotDownloadSegments(task);
+                            if (restoredSegments.Count > 0)
+                            {
+                                lock (task.SegmentLock)
+                                {
+                                    task.RestoredSegments.Clear();
+                                    task.RestoredSegments.AddRange(restoredSegments);
+                                }
+                            }
                         }
+                        if (ex is OperationCanceledException || task.CancelRequested) break;
+                        if (task.DisableSegmentedDownload) CleanupSegmentedPart(task);
+                        int nextAttempt = attempt == Int32.MaxValue ? attempt : attempt + 1;
+                        task.StateText = "下载中断，自动续传第 " + nextAttempt + " 次";
+                        QueueDownloadTaskRowUpdate(task);
+                        SavePausedDownloadTasks();
+                        Thread.Sleep(Math.Min(5000, 900 * Math.Max(1, Math.Min(attempt, 6))));
+                        if (attempt < Int32.MaxValue) attempt++;
                     }
                 }
             }
@@ -6804,7 +6741,7 @@ namespace ToolboxClient
             if (resumeFrom > 0)
             {
                 task.Received = resumeFrom;
-                task.StateText = attempt > 1 ? "重试续传 " + attempt + "/3" : "继续下载";
+                task.StateText = attempt > 1 ? "重试续传第 " + attempt + " 次" : "继续下载";
             }
 
             HttpWebRequest request = null;
@@ -6951,7 +6888,7 @@ namespace ToolboxClient
                 task.Total = plan.TotalLength;
                 task.Received = 0;
                 task.SpeedBytesPerSecond = 0;
-                task.StateText = (attempt > 1 ? "重试分片 " + attempt + "/3" : "分片加速") + " " + plan.SegmentCount + "线程";
+                task.StateText = (attempt > 1 ? "重试分片第 " + attempt + " 次" : "分片加速") + " " + plan.SegmentCount + "线程";
                 QueueDownloadTaskRowUpdate(task);
 
                 try { if (File.Exists(partPath)) File.Delete(partPath); } catch { }
@@ -6975,7 +6912,7 @@ namespace ToolboxClient
                 task.Total = Math.Max(task.Total, SumSegmentLengths(segments));
                 task.Received = SumSegmentReceived(segments);
                 task.SpeedBytesPerSecond = 0;
-                task.StateText = (attempt > 1 ? "继续重试分片 " + attempt + "/3" : "继续分片") + " " + Math.Max(1, MaxSegmentWorkerCount(segments)) + "线程";
+                task.StateText = (attempt > 1 ? "继续重试分片第 " + attempt + " 次" : "继续分片") + " " + Math.Max(1, MaxSegmentWorkerCount(segments)) + "线程";
                 QueueDownloadTaskRowUpdate(task);
             }
 
@@ -7475,7 +7412,7 @@ namespace ToolboxClient
 
             CleanupSegmentedPart(task);
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
-            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已自动重试 3 次。");
+            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。");
             RemoveActiveDownload(task);
             FillDownloadRecords();
             StartQueuedDownloads();
@@ -10403,14 +10340,28 @@ namespace ToolboxClient
 
         private static Color CardAccent(string action, string title, int index)
         {
-            // 按按钮显示位置轮换颜色，避免同一行相邻按钮因为标题/动作相近而撞色连在一起。
+            string text = ((title ?? "") + " " + (action ?? "")).ToLowerInvariant();
+            if (text.IndexOf("删除", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("清理", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("禁用", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("关闭", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("防火墙", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("uac", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return Red;
+            }
+
             Color orange = Color.FromArgb(236, 118, 59);
             Color cyan = Color.FromArgb(31, 180, 172);
             Color pink = Color.FromArgb(220, 86, 148);
             Color lime = Color.FromArgb(133, 185, 48);
-            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime, Red };
-            int safeIndex = Math.Max(0, index);
-            return palette[safeIndex % palette.Length];
+            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime };
+            int seed = StableHash(text) + Math.Max(0, index) * 37;
+            if (action == "cmd") seed += 5;
+            if (action == "download") seed += 11;
+            if (action == "winget") seed += 17;
+            int colorIndex = seed & 0x7fffffff;
+            return palette[colorIndex % palette.Length];
         }
 
         private static int StableHash(string value)
@@ -11827,3 +11778,4 @@ namespace ToolboxClient
         }
     }
 }
+

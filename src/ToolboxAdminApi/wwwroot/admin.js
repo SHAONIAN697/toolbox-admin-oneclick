@@ -107,6 +107,13 @@ const CLIENT_VARIANTS = [
     preview: 'studio'
   },
   {
+    id: 'tuner',
+    label: '\u8c03\u97f3\u5e08\u5de5\u5177\u7bb1\u7b80\u7ea6\u7248',
+    badge: '\u7b80\u7ea6\u65b0\u7248',
+    description: '\u767d\u8272\u6807\u9898\u680f\u3001\u5de6\u4fa7\u5bfc\u822a\u3001\u72ec\u7acb\u4e0b\u8f7d\u9875\u548c\u7b80\u7ea6\u7cfb\u7edf\u8bbe\u7f6e\u9875\uff0c\u9002\u5408\u8c03\u97f3\u5de5\u5177\u4e0e\u7cfb\u7edf\u7ef4\u62a4\u573a\u666f\u3002',
+    preview: 'tuner'
+  },
+  {
     id: 'portal',
     label: '导航首页版',
     badge: '推荐资源中心',
@@ -2006,6 +2013,28 @@ function clientPreviewMarkup(type) {
             <div class="original-button-grid">
               ${Array.from({ length: 12 }).map((_, index) => `<span>${['控制面板', '设备管理', '系统清理', '运行命令'][index % 4]}</span>`).join('')}
             </div>
+          </main>
+        </div>
+      </div>`;
+  }
+  if (type === 'tuner') {
+    return `
+      <div class="client-preview tuner-preview">
+        <div class="preview-window-bar tuner-window-bar"><span>\u8c03\u97f3\u5e08\u5de5\u5177\u7bb1\u7b80\u7ea6\u7248</span><i></i><i></i><i></i></div>
+        <div class="tuner-preview-body">
+          <aside>
+            <div class="tuner-brand"><b>Y</b><strong>\u5c11\u5e74\u97f3\u9891\u8d44\u6e90\u7f51</strong><small>\u8c03\u97f3\u5e08\u5de5\u5177\u7bb1</small></div>
+            <em class="active">\u8c03\u97f3\u5de5\u5177</em>
+            <em>\u673a\u67b6\u5bbf\u4e3b</em>
+            <em>\u63d2\u4ef6\u4e2d\u5fc3</em>
+            <em>\u7cfb\u7edf\u5de5\u5177</em>
+          </aside>
+          <main>
+            <section class="tuner-section">
+              <h4><span>?</span> \u8c03\u97f3\u5de5\u5177 <b>?</b></h4>
+              <div class="tuner-buttons"><span>Studio Pro</span><span>\u767e\u5ea6</span><span>\u63d2\u4ef6\u68c0\u67e5</span><span>\u58f0\u5361\u9a71\u52a8</span><span>\u5e38\u7528\u8f6f\u4ef6</span><span>\u5e38\u7528\u7f51\u7ad9</span></div>
+            </section>
+            <div class="tuner-status"><span>? \u5df2\u540c\u6b65</span><time>12:30:26</time></div>
           </main>
         </div>
       </div>`;

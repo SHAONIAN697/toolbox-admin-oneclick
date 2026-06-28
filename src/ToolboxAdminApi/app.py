@@ -48,7 +48,6 @@ SESSIONS = {}
 CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
-RESET_CODES = {}
 DEFAULT_CLIENT_VARIANT = "original"
 CLIENT_VARIANTS = {
     "original": {
@@ -62,6 +61,12 @@ CLIENT_VARIANTS = {
         "label": "调音师经典版",
         "file": "studio",
         "description": "左侧导航、分组面板和紧凑按钮布局，适合系统工具与音频维护场景。",
+    },
+    "tuner": {
+        "id": "tuner",
+        "label": "调音师工具箱简约版",
+        "file": "tuner",
+        "description": "按本地调音师工具箱的白色标题栏、左侧导航、折叠分组和底部状态栏复刻，继续使用当前后台配置和内置下载模块。",
     },
     "portal": {
         "id": "portal",
@@ -417,7 +422,7 @@ def client_variant_info(value):
 
 
 def public_client_variants():
-    return {"variants": [dict(CLIENT_VARIANTS[key]) for key in ("original", "studio", "portal")]}
+    return {"variants": [dict(CLIENT_VARIANTS[key]) for key in ("original", "studio", "tuner", "portal")]}
 
 
 def request_client_variant(handler, body=None):
@@ -1764,17 +1769,17 @@ def mark_user_login(user_id):
     return find_user_by_id(user_id)
 
 
+def find_user_by_api_key(key):
+    if not key:
+        return None
+    return next((u for u in read_users()["users"] if u.get("apiKey") == key and u.get("active", True) is not False), None)
+
+
 def find_user_by_email(email):
     email = (email or "").strip().lower()
     if not email:
         return None
     return next((u for u in read_users()["users"] if (u.get("email") or "").strip().lower() == email), None)
-
-
-def find_user_by_api_key(key):
-    if not key:
-        return None
-    return next((u for u in read_users()["users"] if u.get("apiKey") == key and u.get("active", True) is not False), None)
 
 
 def normalize_role(role):
@@ -2312,9 +2317,7 @@ def button_sort_value(button):
 def button_rows(config):
     rows = []
     changed = False
-    sidebar_order = {item.get("id"): index for index, item in enumerate(config.get("sidebar") or []) if isinstance(item, dict)}
-    for page_index, (page_id, page) in enumerate((config.get("pages") or {}).items()):
-        area_order = sidebar_order.get(page_id, page_index)
+    for page_id, page in (config.get("pages") or {}).items():
         for si, section in enumerate(page.get("sections") or []):
             buttons = section.get("buttons") or []
             kept = [button for button in buttons if not is_empty_button(button)]
@@ -2327,7 +2330,6 @@ def button_rows(config):
                     changed = True
                 rows.append({"scope": "page", "pageId": page_id, "tabIndex": None, "sectionIndex": si, "buttonIndex": bi,
                              "id": button.get("id"),
-                             "areaOrder": area_order, "sectionOrder": si,
                              "area": page.get("title") or page.get("name") or page_id, "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
@@ -2345,12 +2347,11 @@ def button_rows(config):
                     changed = True
                 rows.append({"scope": "toolbox", "pageId": None, "tabIndex": ti, "sectionIndex": si, "buttonIndex": bi,
                              "id": button.get("id"),
-                             "areaOrder": ti, "sectionOrder": si,
                              "area": tab.get("name", ""), "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
                              "sort": button_sort_value(button), "target": get_target(button), "raw": button})
-    rows.sort(key=lambda row: (row.get("scope") or "", int(row.get("areaOrder") or 0), int(row.get("sectionOrder") or 0), int(row.get("sort") or 0), int(row.get("buttonIndex") or 0)))
+    rows.sort(key=lambda row: (row.get("area") or "", row.get("section") or "", int(row.get("sort") or 0), int(row.get("buttonIndex") or 0)))
     return rows, changed
 
 
@@ -2371,32 +2372,6 @@ def get_container(config, body):
     if body.get("scope") == "toolbox":
         return config["toolbox_tabs"][int(body.get("tabIndex", 0))]
     return config["pages"][body.get("pageId")]
-
-
-def get_target_container(config, body):
-    scope = body.get("targetScope", body.get("scope"))
-    if scope == "toolbox":
-        return config["toolbox_tabs"][int(body.get("targetTabIndex", body.get("tabIndex", 0)))]
-    return config["pages"][body.get("targetPageId", body.get("pageId"))]
-
-
-def target_section_index(body):
-    return int(body.get("targetSectionIndex", body.get("sectionIndex", 0)))
-
-
-def move_button_if_needed(config, body, source_section, button_index, button):
-    target_container = get_target_container(config, body)
-    sections = target_container.setdefault("sections", [])
-    target_index = target_section_index(body)
-    while len(sections) <= target_index:
-        sections.append({"title": "默认分组", "buttons": []})
-    target_section = sections[target_index]
-    if target_section is source_section:
-        return target_section, button_index
-    del source_section["buttons"][button_index]
-    target_buttons = target_section.setdefault("buttons", [])
-    target_buttons.append(button)
-    return target_section, len(target_buttons) - 1
 
 
 def find_button_slot(config, body):
@@ -3142,64 +3117,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
             if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
-            if path == "/api/register" and method == "POST":
-                body = self.read_body()
-                code = (body.get("inviteCode") or "").strip()
-                store = read_users()
-                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
-                if not invite or invite.get("active") is False:
-                    raise ValueError("邀请码无效。")
-                used = int(invite.get("usedCount") or 0)
-                max_uses = int(invite.get("maxUses") or 1)
-                if max_uses > 0 and used >= max_uses:
-                    raise ValueError("邀请码已被使用。")
-                register_role = "agent" if invite.get("registerRole") == "agent" else "user"
-                parent_agent_id = "" if register_role == "agent" else (invite.get("boundAgentId") or invite.get("ownerAgentId") or "")
-                default_balance = 0
-                if register_role == "agent":
-                    default_balance = float((read_system_settings().get("agent") or {}).get("defaultBalance") or 0)
-                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), register_role, None, body.get("email"), parent_agent_id, default_balance)
-                if register_role == "agent":
-                    log_agent_action("promote", user, None, f"使用邀请码 {code} 注册成为代理")
-                store = read_users()
-                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
-                invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
-                invite["usedCount"] = used + 1
-                if max_uses > 0 and invite["usedCount"] >= max_uses:
-                    invite["active"] = False
-                write_users(store)
-                token = random_hex(32)
-                user = mark_user_login(user["id"])
-                SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
-                save_sessions()
-                return self.send_json({"token": token, "user": public_user(user)})
-            if path == "/api/password/forgot" and method == "POST":
-                body = self.read_body()
-                email = (body.get("email") or "").strip().lower()
-                user = find_user_by_email(email)
-                if not user or user.get("active", True) is False:
-                    return self.send_json({"ok": True, "message": "如果邮箱存在，验证码会发送到邮箱。"})
-                code = str(secrets.randbelow(900000) + 100000)
-                RESET_CODES[email] = {"code": code, "userId": user["id"], "expires": time.time() + 600}
-                sent = send_reset_email(email, code)
-                result = {"ok": True, "message": "验证码已发送，请查看邮箱。"}
-                if not sent:
-                    result["message"] = "服务器未配置 SMTP，临时验证码已显示。"
-                    result["debugCode"] = code
-                return self.send_json(result)
-            if path == "/api/password/reset" and method == "POST":
-                body = self.read_body()
-                email = (body.get("email") or "").strip().lower()
-                code = (body.get("code") or "").strip()
-                password = body.get("password") or ""
-                record = RESET_CODES.get(email)
-                if not record or record.get("code") != code or record.get("expires", 0) < time.time():
-                    return self.send_json({"error": "验证码无效或已过期。"}, 400)
-                if len(password) < 6:
-                    return self.send_json({"error": "密码至少 6 位。"}, 400)
-                update_user_account(record["userId"], {"password": password})
-                RESET_CODES.pop(email, None)
-                return self.send_json({"ok": True})
             if path in ("/api/toolbox/config", "/api/config"):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
                 if not user:
@@ -3270,8 +3187,6 @@ class Handler(BaseHTTPRequestHandler):
                     sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
                 elif method == "PATCH":
                     section, button_index = find_button_slot(cfg, body)
-                    button = section["buttons"][button_index]
-                    section, button_index = move_button_if_needed(cfg, body, section, button_index, button)
                     button = section["buttons"][button_index]
                     old_id = button.get("id") or body.get("id")
                     payload = dict(body.get("button") or body)
@@ -3708,8 +3623,6 @@ class Handler(BaseHTTPRequestHandler):
                 sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
             elif method == "PATCH":
                 section, button_index = find_button_slot(cfg, body)
-                button = section["buttons"][button_index]
-                section, button_index = move_button_if_needed(cfg, body, section, button_index, button)
                 button = section["buttons"][button_index]
                 old_id = button.get("id") or body.get("id")
                 payload = dict(body.get("button") or body)
