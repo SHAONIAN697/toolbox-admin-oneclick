@@ -2645,6 +2645,16 @@ namespace ToolboxClient
                     Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
                     content.Controls.Add(card);
                 }
+                if (listMode)
+                {
+                    content.Controls.Add(new Panel
+                    {
+                        Width = available,
+                        Height = 34,
+                        Margin = Padding.Empty,
+                        BackColor = Color.Transparent
+                    });
+                }
             }
             finally
             {
@@ -10393,28 +10403,14 @@ namespace ToolboxClient
 
         private static Color CardAccent(string action, string title, int index)
         {
-            string text = ((title ?? "") + " " + (action ?? "")).ToLowerInvariant();
-            if (text.IndexOf("删除", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("清理", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("禁用", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("关闭", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("防火墙", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("uac", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return Red;
-            }
-
+            // 按按钮显示位置轮换颜色，避免同一行相邻按钮因为标题/动作相近而撞色连在一起。
             Color orange = Color.FromArgb(236, 118, 59);
             Color cyan = Color.FromArgb(31, 180, 172);
             Color pink = Color.FromArgb(220, 86, 148);
             Color lime = Color.FromArgb(133, 185, 48);
-            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime };
-            int seed = StableHash(text) + Math.Max(0, index) * 37;
-            if (action == "cmd") seed += 5;
-            if (action == "download") seed += 11;
-            if (action == "winget") seed += 17;
-            int colorIndex = seed & 0x7fffffff;
-            return palette[colorIndex % palette.Length];
+            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime, Red };
+            int safeIndex = Math.Max(0, index);
+            return palette[safeIndex % palette.Length];
         }
 
         private static int StableHash(string value)
@@ -11831,4 +11827,3 @@ namespace ToolboxClient
         }
     }
 }
-
