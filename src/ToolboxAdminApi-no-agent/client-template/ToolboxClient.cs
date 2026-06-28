@@ -3960,6 +3960,13 @@ namespace ToolboxClient
             button.Height = height;
             button.StudioMode = true;
             button.OverviewIconMode = true;
+            string overviewIconUrl = GetText(item, "icon", "");
+            if (!String.IsNullOrWhiteSpace(overviewIconUrl))
+            {
+                Image overviewIcon = GetCachedButtonIcon(overviewIconUrl);
+                if (overviewIcon == null) overviewIcon = LoadRemoteImage(overviewIconUrl, 48, 48);
+                if (overviewIcon != null) button.IconImage = overviewIcon;
+            }
             return button;
         }
 
