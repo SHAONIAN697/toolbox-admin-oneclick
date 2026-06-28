@@ -1862,8 +1862,22 @@ td small {
   object-fit: contain;
 }
 
+.readonly-icon {
+  display: inline-grid;
+  vertical-align: middle;
+}
+
 .icon-field input {
   min-width: 220px;
+}
+
+.target-preview {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 td.actions {
@@ -1881,6 +1895,28 @@ tr.row-highlight {
   outline-offset: -2px;
   background: rgba(79, 183, 168, .12);
   transition: background .25s ease, outline-color .25s ease;
+}
+
+.button-edit-row {
+  background: rgba(79, 183, 168, .06);
+}
+
+.button-edit-row [data-field="action"] {
+  min-width: 110px;
+}
+
+.button-edit-row td:nth-child(6) {
+  min-width: 124px;
+}
+
+.button-edit-row td:nth-child(7) {
+  min-width: 360px;
+}
+
+.button-edit-row .target-control input,
+.button-edit-row .target-control select,
+.button-edit-row [data-field="target"] {
+  min-width: 340px;
 }
 
 .button-disabled-row {
@@ -1943,7 +1979,7 @@ tr.row-highlight {
 }
 
 .invite-create {
-  grid-template-columns: minmax(180px, 0.9fr) 112px 112px 136px;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -1953,6 +1989,11 @@ tr.row-highlight {
 }
 
 .invite-create input {
+  min-height: 32px;
+  padding: 6px 9px;
+}
+
+.invite-create select {
   min-height: 32px;
   padding: 6px 9px;
 }
@@ -1975,7 +2016,7 @@ tr.row-highlight {
 }
 
 .invite-table table {
-  min-width: 1020px;
+  min-width: 1320px;
 }
 
 .invite-table th,
@@ -2069,6 +2110,74 @@ tr.row-highlight {
 
 .invite-badge.is-unused {
   color: #bff5ea;
+}
+
+.agent-account-card {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-account-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.agent-account-grid > div,
+.agent-mini-order {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.agent-account-grid span,
+.agent-mini-order span,
+.agent-mini-order small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-account-grid strong {
+  font-size: 15px;
+}
+
+.agent-mini-orders {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.agent-apply-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.agent-apply-description {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(79, 183, 168, .28);
+  border-radius: 8px;
+  background: rgba(79, 183, 168, .08);
+  color: var(--muted);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.agent-application-table table {
+  min-width: 1180px;
+}
+
+.agent-application-table th,
+.agent-application-table td {
+  vertical-align: top;
+}
+
+.agent-application-reason {
+  max-width: 260px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .danger {
@@ -2758,6 +2867,14 @@ body.sidebar-collapsed .nav.active {
     margin-bottom: 10px;
   }
 
+  .agent-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-application-table {
+    overflow-x: auto;
+  }
+
   .invite-table {
     border: 0;
     overflow: visible;
@@ -2815,11 +2932,14 @@ body.sidebar-collapsed .nav.active {
   .invite-table td:nth-child(1)::before { content: "选择"; }
   .invite-table td:nth-child(2)::before { content: "邀请码"; }
   .invite-table td:nth-child(3)::before { content: "生成时间"; }
-  .invite-table td:nth-child(4)::before { content: "状态"; }
-  .invite-table td:nth-child(5)::before { content: "是否使用"; }
-  .invite-table td:nth-child(6)::before { content: "使用次数"; }
-  .invite-table td:nth-child(7)::before { content: "使用记录"; }
-  .invite-table td:nth-child(8)::before { content: "操作"; }
+  .invite-table td:nth-child(4)::before { content: "注册后角色"; }
+  .invite-table td:nth-child(5)::before { content: "绑定代理"; }
+  .invite-table td:nth-child(6)::before { content: "代理邀请码"; }
+  .invite-table td:nth-child(7)::before { content: "状态"; }
+  .invite-table td:nth-child(8)::before { content: "是否使用"; }
+  .invite-table td:nth-child(9)::before { content: "使用次数"; }
+  .invite-table td:nth-child(10)::before { content: "使用记录"; }
+  .invite-table td:nth-child(11)::before { content: "操作"; }
 
   .invite-table td:first-child {
     text-align: left;

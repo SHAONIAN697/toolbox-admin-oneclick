@@ -1862,8 +1862,22 @@ td small {
   object-fit: contain;
 }
 
+.readonly-icon {
+  display: inline-grid;
+  vertical-align: middle;
+}
+
 .icon-field input {
   min-width: 220px;
+}
+
+.target-preview {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 td.actions {
@@ -1881,6 +1895,28 @@ tr.row-highlight {
   outline-offset: -2px;
   background: rgba(79, 183, 168, .12);
   transition: background .25s ease, outline-color .25s ease;
+}
+
+.button-edit-row {
+  background: rgba(79, 183, 168, .06);
+}
+
+.button-edit-row [data-field="action"] {
+  min-width: 110px;
+}
+
+.button-edit-row td:nth-child(6) {
+  min-width: 124px;
+}
+
+.button-edit-row td:nth-child(7) {
+  min-width: 360px;
+}
+
+.button-edit-row .target-control input,
+.button-edit-row .target-control select,
+.button-edit-row [data-field="target"] {
+  min-width: 340px;
 }
 
 .button-disabled-row {

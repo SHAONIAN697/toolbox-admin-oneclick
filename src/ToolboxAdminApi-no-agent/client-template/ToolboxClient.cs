@@ -106,6 +106,7 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
+        private System.Windows.Forms.Timer syncClockTimer;
         private string currentPage = "";
         private IList<object> currentSections = new List<object>();
         private const string SoftwareCatalogPageId = "software_catalog";
@@ -154,6 +155,7 @@ namespace ToolboxClient
         private const int DownloadTaskRowGap = 8;
         private string lastConfigJson = "";
         private string lastSyncText = "";
+        private DateTime lastSuccessfulSyncAt = DateTime.MinValue;
         private string lastPasswordHash = "";
         private string runtimeIntegrityToken = "";
         private bool runtimeIntegrityChecked = false;
@@ -257,9 +259,13 @@ namespace ToolboxClient
             BuildShell();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 5000;
+            refreshTimer.Interval = 2000;
             refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
             Shown += delegate { LoadConfigAsync(true); refreshTimer.Start(); };
+            syncClockTimer = new System.Windows.Forms.Timer();
+            syncClockTimer.Interval = 1000;
+            syncClockTimer.Tick += delegate { UpdateSyncClockStatus(); };
+            Shown += delegate { syncClockTimer.Start(); };
         }
 
         private static string NormalizeConfigUrl(string url)
@@ -285,6 +291,12 @@ namespace ToolboxClient
                 refreshTimer.Stop();
                 refreshTimer.Dispose();
                 refreshTimer = null;
+            }
+            if (syncClockTimer != null)
+            {
+                syncClockTimer.Stop();
+                syncClockTimer.Dispose();
+                syncClockTimer = null;
             }
             if (softwareSearchTimer != null)
             {
@@ -1337,19 +1349,21 @@ namespace ToolboxClient
                 SaveCache(json);
                 if (json == lastConfigJson)
                 {
-                    lastSyncText = "已同步 " + DateTime.Now.ToString("HH:mm:ss");
+                    lastSuccessfulSyncAt = DateTime.Now;
+                    lastSyncText = SyncClockText();
                     statusMessage = lastSyncText;
                     BeginInvoke(new Action(delegate { status.Text = statusMessage; }));
                     return;
                 }
+                lastSuccessfulSyncAt = DateTime.Now;
                 if (showMessage)
                 {
-                    lastSyncText = "配置已刷新 " + DateTime.Now.ToString("HH:mm:ss");
+                    lastSyncText = "配置已刷新，" + SyncClockText();
                     statusMessage = lastSyncText;
                 }
                 else
                 {
-                    lastSyncText = "已同步 " + DateTime.Now.ToString("HH:mm:ss");
+                    lastSyncText = SyncClockText();
                     statusMessage = lastSyncText;
                 }
             }
@@ -1419,6 +1433,7 @@ namespace ToolboxClient
                     lastConfigJson = json;
                     if (!String.IsNullOrWhiteSpace(statusMessage)) status.Text = statusMessage;
                     ApplyConfig();
+                    RefreshCurrentPageFromConfig();
                     LoadPopupConfigAsync(false);
                 }));
             }
@@ -2273,6 +2288,83 @@ namespace ToolboxClient
             contentResizeTimer.Start();
         }
 
+        private void QueueContentRender()
+        {
+            if (content == null || content.IsDisposed) return;
+            if (String.IsNullOrWhiteSpace(currentPage)) return;
+
+            if (softwareCatalogLayoutUpdating || contentRendering)
+            {
+                contentResizeRenderPending = true;
+                return;
+            }
+
+            contentResizeRenderPending = true;
+            EnsureContentResizeTimer();
+            contentResizeTimer.Stop();
+            contentResizeTimer.Start();
+        }
+
+        private void RefreshCurrentPageFromConfig()
+        {
+            if (String.IsNullOrWhiteSpace(currentPage)) return;
+            if (!BindCurrentPageSectionsFromConfig())
+            {
+                QueueContentRender();
+                return;
+            }
+            QueueContentRender();
+        }
+
+        private bool BindCurrentPageSectionsFromConfig()
+        {
+            if (String.IsNullOrWhiteSpace(currentPage)) return false;
+            if (currentPage.Equals("toolbox", StringComparison.OrdinalIgnoreCase))
+            {
+                title.Text = portalVariant ? PortalText("系统工具", "Tools") : "系统工具";
+                List<object> sections = new List<object>();
+                IList<object> tabs = AsList(Get(config, "toolbox_tabs"));
+                foreach (object tabObj in tabs)
+                {
+                    Dictionary<string, object> tab = AsDict(tabObj);
+                    string tabName = GetText(tab, "name", "工具箱");
+                    foreach (object sectionObj in AsList(Get(tab, "sections")))
+                    {
+                        Dictionary<string, object> section = new Dictionary<string, object>(AsDict(sectionObj));
+                        string sectionName = GetText(section, "title", "").Trim();
+                        section["title"] = String.IsNullOrWhiteSpace(sectionName) ? tabName : tabName + "  " + sectionName;
+                        sections.Add(section);
+                    }
+                }
+                currentSections = sections;
+                return true;
+            }
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            if (!pages.ContainsKey(currentPage)) return false;
+            Dictionary<string, object> page = AsDict(pages[currentPage]);
+            title.Text = portalVariant ? PortalLabel(PageLabel(page, currentPage), currentPage) : PageLabel(page, currentPage);
+            currentSections = AsList(Get(page, "sections"));
+            return true;
+        }
+
+        private string SyncClockText()
+        {
+            if (lastSuccessfulSyncAt == DateTime.MinValue) return "等待同步";
+            return "已同步 " + DateTime.Now.ToString("HH:mm:ss");
+        }
+
+        private void UpdateSyncClockStatus()
+        {
+            if (status == null || status.IsDisposed) return;
+            if (lastSuccessfulSyncAt == DateTime.MinValue) return;
+            if (status.Text.StartsWith("已同步", StringComparison.Ordinal) ||
+                status.Text.StartsWith("配置已刷新", StringComparison.Ordinal))
+            {
+                lastSyncText = SyncClockText();
+                status.Text = lastSyncText;
+            }
+        }
+
         private void EnsureContentResizeTimer()
         {
             if (contentResizeTimer == null)
@@ -2522,13 +2614,7 @@ namespace ToolboxClient
                 content.FlowDirection = listMode ? FlowDirection.TopDown : FlowDirection.LeftToRight;
                 content.WrapContents = !listMode;
 
-                List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-                buttons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
+                List<Dictionary<string, object>> buttons = CollectButtonsInSectionOrder(currentSections);
                 if (buttons.Count == 0)
                 {
                     AddEmptyMessage("这里还没有按钮。");
@@ -3031,13 +3117,7 @@ namespace ToolboxClient
             content.WrapContents = false;
             content.BackColor = Bg;
 
-            List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-            buttons.Sort((a, b) =>
-            {
-                int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                if (result != 0) return result;
-                return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-            });
+            List<Dictionary<string, object>> buttons = CollectButtonsInSectionOrder(currentSections);
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
             int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
@@ -5518,6 +5598,28 @@ namespace ToolboxClient
                 {
                     buttons.Add(AsDict(buttonObj));
                 }
+            }
+            return buttons;
+        }
+
+        private List<Dictionary<string, object>> CollectButtonsInSectionOrder(IList<object> sections)
+        {
+            List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
+            foreach (object sectionObj in sections)
+            {
+                Dictionary<string, object> section = AsDict(sectionObj);
+                List<Dictionary<string, object>> sectionButtons = new List<Dictionary<string, object>>();
+                foreach (object buttonObj in AsList(Get(section, "buttons")))
+                {
+                    sectionButtons.Add(AsDict(buttonObj));
+                }
+                sectionButtons.Sort((a, b) =>
+                {
+                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
+                    if (result != 0) return result;
+                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
+                });
+                buttons.AddRange(sectionButtons);
             }
             return buttons;
         }

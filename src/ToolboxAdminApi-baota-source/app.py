@@ -2035,7 +2035,9 @@ def button_sort_value(button):
 def button_rows(config):
     rows = []
     changed = False
-    for page_id, page in (config.get("pages") or {}).items():
+    sidebar_order = {item.get("id"): index for index, item in enumerate(config.get("sidebar") or []) if isinstance(item, dict)}
+    for page_index, (page_id, page) in enumerate((config.get("pages") or {}).items()):
+        area_order = sidebar_order.get(page_id, page_index)
         for si, section in enumerate(page.get("sections") or []):
             buttons = section.get("buttons") or []
             kept = [button for button in buttons if not is_empty_button(button)]
@@ -2048,6 +2050,7 @@ def button_rows(config):
                     changed = True
                 rows.append({"scope": "page", "pageId": page_id, "tabIndex": None, "sectionIndex": si, "buttonIndex": bi,
                              "id": button.get("id"),
+                             "areaOrder": area_order, "sectionOrder": si,
                              "area": page.get("title") or page.get("name") or page_id, "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
@@ -2065,11 +2068,12 @@ def button_rows(config):
                     changed = True
                 rows.append({"scope": "toolbox", "pageId": None, "tabIndex": ti, "sectionIndex": si, "buttonIndex": bi,
                              "id": button.get("id"),
+                             "areaOrder": ti, "sectionOrder": si,
                              "area": tab.get("name", ""), "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
                              "sort": button_sort_value(button), "target": get_target(button), "raw": button})
-    rows.sort(key=lambda row: (row.get("area") or "", row.get("section") or "", int(row.get("sort") or 0), int(row.get("buttonIndex") or 0)))
+    rows.sort(key=lambda row: (row.get("scope") or "", int(row.get("areaOrder") or 0), int(row.get("sectionOrder") or 0), int(row.get("sort") or 0), int(row.get("buttonIndex") or 0)))
     return rows, changed
 
 
@@ -2090,6 +2094,32 @@ def get_container(config, body):
     if body.get("scope") == "toolbox":
         return config["toolbox_tabs"][int(body.get("tabIndex", 0))]
     return config["pages"][body.get("pageId")]
+
+
+def get_target_container(config, body):
+    scope = body.get("targetScope", body.get("scope"))
+    if scope == "toolbox":
+        return config["toolbox_tabs"][int(body.get("targetTabIndex", body.get("tabIndex", 0)))]
+    return config["pages"][body.get("targetPageId", body.get("pageId"))]
+
+
+def target_section_index(body):
+    return int(body.get("targetSectionIndex", body.get("sectionIndex", 0)))
+
+
+def move_button_if_needed(config, body, source_section, button_index, button):
+    target_container = get_target_container(config, body)
+    sections = target_container.setdefault("sections", [])
+    target_index = target_section_index(body)
+    while len(sections) <= target_index:
+        sections.append({"title": "默认分组", "buttons": []})
+    target_section = sections[target_index]
+    if target_section is source_section:
+        return target_section, button_index
+    del source_section["buttons"][button_index]
+    target_buttons = target_section.setdefault("buttons", [])
+    target_buttons.append(button)
+    return target_section, len(target_buttons) - 1
 
 
 def find_button_slot(config, body):
@@ -2951,6 +2981,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif method == "PATCH":
                     section, button_index = find_button_slot(cfg, body)
                     button = section["buttons"][button_index]
+                    section, button_index = move_button_if_needed(cfg, body, section, button_index, button)
+                    button = section["buttons"][button_index]
                     old_id = button.get("id") or body.get("id")
                     payload = dict(body.get("button") or body)
                     if old_id:
@@ -3322,6 +3354,8 @@ class Handler(BaseHTTPRequestHandler):
                 sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
             elif method == "PATCH":
                 section, button_index = find_button_slot(cfg, body)
+                button = section["buttons"][button_index]
+                section, button_index = move_button_if_needed(cfg, body, section, button_index, button)
                 button = section["buttons"][button_index]
                 old_id = button.get("id") or body.get("id")
                 payload = dict(body.get("button") or body)

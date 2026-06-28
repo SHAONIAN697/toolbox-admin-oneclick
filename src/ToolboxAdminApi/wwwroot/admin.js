@@ -2471,6 +2471,7 @@ function renderManagedSectionName() {
   const sectionIndex = Number($('manageSection').value || 0);
   const section = ensureSections(pos.container)[sectionIndex];
   $('manageSectionName').value = section ? (section.title || '') : '';
+  if ($('manageSectionOrder')) $('manageSectionOrder').value = section ? sectionIndex + 1 : 1;
 }
 
 function renderSelectors() {
@@ -2519,6 +2520,53 @@ function currentAddTarget() {
   return state.config.pages?.[id];
 }
 
+function positionValueForButton(button) {
+  return button.scope === 'toolbox' ? `toolbox:${button.tabIndex}` : `page:${button.pageId}`;
+}
+
+function positionOptionsHtml(selectedValue) {
+  return getPositions().map((item) =>
+    `<option value="${escapeAttr(item.value)}" ${item.value === selectedValue ? 'selected' : ''}>${escapeHtml(item.label)}</option>`
+  ).join('');
+}
+
+function sectionOptionsHtml(positionValue, selectedIndex = 0) {
+  const pos = parsePositionValue(positionValue);
+  const sections = ensureSections(pos?.container || {});
+  return sections.map((section, index) =>
+    `<option value="${index}" ${index === Number(selectedIndex || 0) ? 'selected' : ''}>${escapeHtml(section.title || `默认分组 ${index + 1}`)}</option>`
+  ).join('');
+}
+
+function syncRowSectionOptions(row) {
+  const scopeSelect = row.querySelector('[data-field="moveScope"]');
+  const sectionSelect = row.querySelector('[data-field="moveSection"]');
+  if (!scopeSelect || !sectionSelect) return;
+  const previous = sectionSelect.value;
+  sectionSelect.innerHTML = sectionOptionsHtml(scopeSelect.value, Number(previous || 0));
+  if (![...sectionSelect.options].some((option) => option.value === previous)) {
+    sectionSelect.value = '0';
+  }
+}
+
+function selectedMoveTarget(row) {
+  const raw = row.querySelector('[data-field="moveScope"]')?.value || '';
+  const [scope, id] = raw.split(':');
+  const sectionIndex = Number(row.querySelector('[data-field="moveSection"]')?.value || 0);
+  if (scope === 'toolbox') {
+    return {
+      targetScope: 'toolbox',
+      targetTabIndex: Number(id || 0),
+      targetSectionIndex: sectionIndex
+    };
+  }
+  return {
+    targetScope: 'page',
+    targetPageId: id,
+    targetSectionIndex: sectionIndex
+  };
+}
+
 function renderButtons() {
   const tbody = $('buttonRows');
   const query = ($('buttonSearch').value || '').trim().toLowerCase();
@@ -2534,8 +2582,9 @@ function renderButtons() {
   state.buttons
     .slice()
     .sort((a, b) =>
-      String(a.area || '').localeCompare(String(b.area || ''), 'zh-Hans-CN') ||
-      String(a.section || '').localeCompare(String(b.section || ''), 'zh-Hans-CN') ||
+      String(a.scope || '').localeCompare(String(b.scope || '')) ||
+      Number(a.areaOrder ?? 0) - Number(b.areaOrder ?? 0) ||
+      Number(a.sectionOrder ?? a.sectionIndex ?? 0) - Number(b.sectionOrder ?? b.sectionIndex ?? 0) ||
       Number(a.sort ?? a.raw?.sort ?? 0) - Number(b.sort ?? b.raw?.sort ?? 0) ||
       Number(a.buttonIndex || 0) - Number(b.buttonIndex || 0)
     )
@@ -2550,53 +2599,90 @@ function renderButtons() {
       return !query || haystack.includes(query);
     })
     .forEach((button) => {
-      const icon = button.icon || button.raw?.icon || '';
-      const isScript = button.action === 'script';
-      const enabled = button.enabled !== false;
       const tr = document.createElement('tr');
-      tr.className = enabled ? '' : 'button-disabled-row';
-      tr.innerHTML = `
-        <td>${escapeHtml(button.area || '')}<small>${escapeHtml(button.section || '')}</small></td>
-        <td><input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></td>
-        <td><input value="${escapeAttr(button.name || '')}" data-field="name"></td>
-        <td>
-          <div class="icon-field">
-            <span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span>
-            <input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接">
-          </div>
-        </td>
-        <td><input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></td>
-        <td>
-          <select data-field="action">
-            ${ACTIONS.map(([action, label]) =>
-              `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`
-            ).join('')}
-          </select>
-        </td>
-        <td>
-          <span class="target-control">${targetControlHtml(button.action, button.target)}</span>
-          <small class="target-note"></small>
-        </td>
-        <td class="actions">
-          <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
-          <button data-action="save">保存</button>
-          ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
-        </td>
-      `;
-
-      updateRowTargetState(tr, button);
-      tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
-      tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
-      tr.querySelector('.icon-preview').ondblclick = () => {
-        tr.querySelector('[data-field="icon"]').value = '';
-        updateIconPreview(tr);
-      };
-      tr.querySelector('[data-action="save"]').onclick = () => saveButton(button, tr);
-      tr.querySelector('[data-action="toggle-enabled"]').onclick = () => toggleButtonEnabled(button);
-      const deleteBtn = tr.querySelector('[data-action="delete"]');
-      if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
+      renderButtonPreviewRow(tr, button);
       tbody.appendChild(tr);
     });
+}
+
+function renderButtonPreviewRow(tr, button) {
+  const icon = button.icon || button.raw?.icon || '';
+  const description = button.raw?.description || button.raw?.intro || button.raw?.remark || '';
+  const isScript = button.action === 'script';
+  const enabled = button.enabled !== false;
+  tr.className = enabled ? '' : 'button-disabled-row';
+  tr.innerHTML = `
+    <td><strong>${escapeHtml(button.area || '')}</strong><small>${escapeHtml(button.section || '')}</small></td>
+    <td>${escapeHtml(String(button.sort ?? button.raw?.sort ?? 0))}</td>
+    <td>${escapeHtml(button.name || '')}</td>
+    <td>${icon ? `<span class="icon-preview readonly-icon">${icon.startsWith('http') || icon.startsWith('/') ? `<img src="${escapeAttr(icon)}" alt="">` : escapeHtml(icon)}</span>` : '<span class="muted-action">无</span>'}</td>
+    <td>${escapeHtml(description || '-')}</td>
+    <td>${escapeHtml(ACTION_LABELS[button.action] || button.action || '')}</td>
+    <td><span class="target-preview" title="${escapeAttr(displayTarget(button))}">${escapeHtml(displayTarget(button) || '-')}</span></td>
+    <td class="actions">
+      <button data-action="edit">编辑</button>
+      <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
+      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
+    </td>
+  `;
+  tr.querySelector('[data-action="edit"]').onclick = () => renderButtonEditRow(tr, button);
+  tr.querySelector('[data-action="toggle-enabled"]').onclick = () => toggleButtonEnabled(button);
+  const deleteBtn = tr.querySelector('[data-action="delete"]');
+  if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
+}
+
+function renderButtonEditRow(tr, button) {
+  const icon = button.icon || button.raw?.icon || '';
+  const isScript = button.action === 'script';
+  const enabled = button.enabled !== false;
+  const moveScopeValue = positionValueForButton(button);
+  tr.className = enabled ? 'button-edit-row' : 'button-edit-row button-disabled-row';
+  tr.innerHTML = `
+    <td>
+      <select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select>
+      <select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select>
+    </td>
+    <td><input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></td>
+    <td><input value="${escapeAttr(button.name || '')}" data-field="name"></td>
+    <td>
+      <div class="icon-field">
+        <span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span>
+        <input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接">
+      </div>
+    </td>
+    <td><input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></td>
+    <td>
+      <select data-field="action">
+        ${ACTIONS.map(([action, label]) =>
+          `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`
+        ).join('')}
+      </select>
+    </td>
+    <td>
+      <span class="target-control">${targetControlHtml(button.action, button.target)}</span>
+      <small class="target-note"></small>
+    </td>
+    <td class="actions">
+      <button data-action="save">保存</button>
+      <button data-action="cancel">取消</button>
+      <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
+      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
+    </td>
+  `;
+
+  updateRowTargetState(tr, button);
+  tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
+  tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
+  tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
+  tr.querySelector('.icon-preview').ondblclick = () => {
+    tr.querySelector('[data-field="icon"]').value = '';
+    updateIconPreview(tr);
+  };
+  tr.querySelector('[data-action="save"]').onclick = () => saveButton(button, tr);
+  tr.querySelector('[data-action="cancel"]').onclick = () => renderButtonPreviewRow(tr, button);
+  tr.querySelector('[data-action="toggle-enabled"]').onclick = () => toggleButtonEnabled(button);
+  const deleteBtn = tr.querySelector('[data-action="delete"]');
+  if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
 }
 
 function ensureButtonSortUi() {
@@ -3025,6 +3111,17 @@ async function renameSection() {
   await saveWholeConfig('分组名称已保存。');
 }
 
+async function moveSection() {
+  const pos = parsePositionValue($('manageScope').value);
+  if (!pos) return;
+  const sections = ensureSections(pos.container);
+  const fromIndex = Number($('manageSection').value || 0);
+  const desired = Math.max(1, Math.min(sections.length, Number($('manageSectionOrder')?.value || fromIndex + 1)));
+  if (fromIndex < 0 || fromIndex >= sections.length) return;
+  moveArrayItem(sections, fromIndex, desired - 1);
+  await saveWholeConfig('分组位置已保存。');
+}
+
 async function deleteSection() {
   const pos = parsePositionValue($('manageScope').value);
   if (!pos) return;
@@ -3099,6 +3196,7 @@ async function saveButton(ref, row) {
     tabIndex: ref.tabIndex,
     sectionIndex: ref.sectionIndex,
     buttonIndex: ref.buttonIndex,
+    ...selectedMoveTarget(row),
     button: {
       name: row.querySelector('[data-field="name"]').value.trim(),
       sort: Number(row.querySelector('[data-field="sort"]')?.value || 0),
@@ -3138,6 +3236,10 @@ async function toggleButtonEnabled(ref) {
     tabIndex: ref.tabIndex,
     sectionIndex: ref.sectionIndex,
     buttonIndex: ref.buttonIndex,
+    targetScope: ref.scope,
+    targetPageId: ref.pageId,
+    targetTabIndex: ref.tabIndex,
+    targetSectionIndex: ref.sectionIndex,
     button: {
       name: ref.name || '',
       sort: Number(ref.sort ?? ref.raw?.sort ?? 0),
@@ -4395,6 +4497,7 @@ $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(erro
 $('deleteScopeBtn').onclick = () => deletePosition().catch((error) => setStatus(error.message, true));
 $('addSectionBtn').onclick = () => addSection().catch((error) => setStatus(error.message, true));
 $('renameSectionBtn').onclick = () => renameSection().catch((error) => setStatus(error.message, true));
+if ($('moveSectionBtn')) $('moveSectionBtn').onclick = () => moveSection().catch((error) => setStatus(error.message, true));
 $('deleteSectionBtn').onclick = () => deleteSection().catch((error) => setStatus(error.message, true));
 $('addButtonBtn').onclick = () => addButton().catch((error) => setStatus(error.message, true));
 $('addAction').onchange = updateAddTargetState;
