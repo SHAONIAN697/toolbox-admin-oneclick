@@ -41,6 +41,56 @@ ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
+STUDIO_OVERVIEW_PAGE_ID = "system_overview"
+
+
+def default_studio_overview_page():
+    return {
+        "title": "\u7cfb\u7edf\u6982\u89c8",
+        "name": "\u7cfb\u7edf\u6982\u89c8",
+        "sections": [{
+            "title": "\u53f3\u4e0b\u89d2\u5feb\u6377\u56fe\u6807",
+            "buttons": [
+                {"id": "overview_browser", "name": "\u6d4f\u89c8\u5668", "sort": 10, "icon": "", "action": "link", "url": "https://www.microsoft.com/edge", "target": "https://www.microsoft.com/edge", "enabled": True},
+                {"id": "overview_wechat", "name": "\u5fae\u4fe1", "sort": 20, "icon": "", "action": "link", "url": "", "target": "", "enabled": True},
+                {"id": "overview_yy", "name": "YY\u8bed\u97f3", "sort": 30, "icon": "", "action": "link", "url": "", "target": "", "enabled": True},
+                {"id": "overview_studio_one", "name": "Studio one", "sort": 40, "icon": "", "action": "link", "url": "", "target": "", "enabled": True},
+                {"id": "overview_karaoke", "name": "\u5168\u6c11K\u6b4c", "sort": 50, "icon": "", "action": "link", "url": "", "target": "", "enabled": True},
+                {"id": "overview_live", "name": "\u76f4\u64ad\u4f34\u4fa3", "sort": 60, "icon": "", "action": "link", "url": "", "target": "", "enabled": True},
+            ]
+        }]
+    }
+
+
+def ensure_studio_overview_page(config):
+    if not isinstance(config, dict):
+        return False
+    pages = config.setdefault("pages", {})
+    if not isinstance(pages, dict):
+        config["pages"] = {}
+        pages = config["pages"]
+    if STUDIO_OVERVIEW_PAGE_ID not in pages or not isinstance(pages.get(STUDIO_OVERVIEW_PAGE_ID), dict):
+        pages[STUDIO_OVERVIEW_PAGE_ID] = default_studio_overview_page()
+        return True
+    page = pages[STUDIO_OVERVIEW_PAGE_ID]
+    changed = False
+    if not page.get("title"):
+        page["title"] = "\u7cfb\u7edf\u6982\u89c8"
+        changed = True
+    sections = page.setdefault("sections", [])
+    if not isinstance(sections, list) or not sections:
+        page["sections"] = default_studio_overview_page()["sections"]
+        changed = True
+    else:
+        first = sections[0] if isinstance(sections[0], dict) else {}
+        if not isinstance(sections[0], dict):
+            sections[0] = first
+            changed = True
+        first.setdefault("title", "\u53f3\u4e0b\u89d2\u5feb\u6377\u56fe\u6807")
+        if not isinstance(first.get("buttons"), list):
+            first["buttons"] = []
+            changed = True
+    return changed
 ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "dev-token")
 SESSIONS = {}
 CLIENT_BUILD_JOBS = {}
@@ -506,6 +556,8 @@ def ensure_config_defaults(config):
     if normalize_feature_settings(config):
         changed = True
     if normalize_page_locks(config):
+        changed = True
+    if ensure_studio_overview_page(config):
         changed = True
     normalized_popup = normalize_popup_settings(config.get("popup") or {})
     if config.get("popup") != normalized_popup:
