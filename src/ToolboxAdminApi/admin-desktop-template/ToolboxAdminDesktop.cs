@@ -357,12 +357,93 @@ namespace ToolboxAdminDesktop
     {
         internal static LoginResult Login(string username, string password)
         {
-            string body = new JavaScriptSerializer().Serialize(new { username = username, password = password });
-            byte[] payload = Encoding.UTF8.GetBytes(body);
-            return PostLogin(Program.AdminBaseUrl() + "/api/login", payload);
+            return LoginInternal("/api/login", new { username = username, password = password });
         }
 
-        private static LoginResult PostLogin(string url, byte[] payload)
+        internal static LoginResult Register(string username, string email, string displayName, string password, string inviteCode)
+        {
+            return RegisterInternal(new
+            {
+                username = username,
+                email = email,
+                displayName = displayName,
+                password = password,
+                inviteCode = inviteCode
+            });
+        }
+
+        internal static LoginResult Register(string username, string password, string inviteCode)
+        {
+            return Register(username, "", "", password, inviteCode);
+        }
+
+        internal static LoginResult Register(params string[] args)
+        {
+            if (args == null || args.Length == 0) throw new Exception("注册参数不完整。");
+            if (args.Length >= 5) return Register(args[0], args[1], args[2], args[3], args[4]);
+            if (args.Length == 3) return Register(args[0], "", "", args[1], args[2]);
+            throw new Exception("注册参数不完整。");
+        }
+
+        internal static string SendResetCode(string email)
+        {
+            return PostJson("/api/password/forgot", new { email = email });
+        }
+
+        internal static string SendResetCode(params string[] args)
+        {
+            string email = args != null && args.Length > 0 ? args[0] : "";
+            return SendResetCode(email);
+        }
+
+        internal static string ResetPassword(string email, string code, string password)
+        {
+            return PostJson("/api/password/reset", new { email = email, code = code, password = password });
+        }
+
+        internal static string ResetPassword(params string[] args)
+        {
+            string email = args != null && args.Length > 0 ? args[0] : "";
+            string code = args != null && args.Length > 1 ? args[1] : "";
+            string password = args != null && args.Length > 2 ? args[2] : "";
+            return ResetPassword(email, code, password);
+        }
+
+        internal static string PostJson(string path, object body)
+        {
+            return PostJson(path, new JavaScriptSerializer().Serialize(body));
+        }
+
+        internal static string PostJson(string path, string body)
+        {
+            string url = path;
+            if (!path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                url = Program.AdminBaseUrl() + path;
+            }
+            return PostJsonRaw(url, Encoding.UTF8.GetBytes(body ?? "{}"), "请求失败，请检查后台地址。");
+        }
+
+        private static LoginResult LoginInternal(string path, object body)
+        {
+            string text = PostJson(path, body);
+            return ParseLoginResult(text, "后台没有返回登录凭证。");
+        }
+
+        private static LoginResult RegisterInternal(object body)
+        {
+            string text = PostJson("/api/register", body);
+            return ParseLoginResult(text, "后台没有返回注册凭证。");
+        }
+
+        private static LoginResult ParseLoginResult(string text, string defaultMessage)
+        {
+            LoginResponse parsed = new JavaScriptSerializer().Deserialize<LoginResponse>(text);
+            if (parsed == null || String.IsNullOrWhiteSpace(parsed.token)) throw new Exception(defaultMessage);
+            return new LoginResult { Token = parsed.token };
+        }
+
+        private static string PostJsonRaw(string url, byte[] payload, string defaultMessage)
         {
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = "POST";
@@ -376,15 +457,12 @@ namespace ToolboxAdminDesktop
                 using (HttpWebResponse res = (HttpWebResponse)req.GetResponse())
                 using (StreamReader reader = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
                 {
-                    string text = reader.ReadToEnd();
-                    LoginResponse parsed = new JavaScriptSerializer().Deserialize<LoginResponse>(text);
-                    if (parsed == null || String.IsNullOrWhiteSpace(parsed.token)) throw new Exception("后台没有返回登录凭证。");
-                    return new LoginResult { Token = parsed.token };
+                    return reader.ReadToEnd();
                 }
             }
             catch (WebException ex)
             {
-                string detail = "登录失败，请检查账号、密码或服务器地址。";
+                string detail = defaultMessage;
                 if (ex.Response != null)
                 {
                     using (StreamReader reader = new StreamReader(ex.Response.GetResponseStream(), Encoding.UTF8))
@@ -397,6 +475,12 @@ namespace ToolboxAdminDesktop
                 }
                 throw new Exception(detail);
             }
+        }
+
+        private static LoginResult PostLogin(string url, byte[] payload)
+        {
+            string text = PostJsonRaw(url, payload, "登录失败，请检查账号、密码或服务器地址。");
+            return ParseLoginResult(text, "后台没有返回登录凭证。");
         }
     }
 

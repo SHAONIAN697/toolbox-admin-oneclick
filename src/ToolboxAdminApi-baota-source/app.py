@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import base64
 import hashlib
 import hmac
@@ -2701,6 +2701,8 @@ def make_admin_desktop_exe(base_url):
         raise RuntimeError("后台默认图标缺失，请上传 assets/toolbox-default.ico 后再生成 EXE。")
     base_url = normalize_public_base_url(base_url)
     source = ADMIN_DESKTOP_TEMPLATE.read_text(encoding="utf-8")
+    if any(marker not in source for marker in ("Register(", "SendResetCode(", "ResetPassword(")):
+        raise RuntimeError("后台 EXE 模板不完整/已过期：缺少 Register/SendResetCode/ResetPassword。")
     app_config = read_config("").get("app", {})
     exe_title = app_config.get("admin_desktop_title") or app_config.get("admin_title") or DEFAULT_ADMIN_TITLE
     exe_description = app_config.get("admin_desktop_description") or "工具箱后台桌面登录器"
@@ -2710,6 +2712,7 @@ def make_admin_desktop_exe(base_url):
     exe_version = assembly_version(app_config.get("admin_desktop_version") or app_config.get("exe_version") or app_config.get("version") or "1.0.0.0")
     file_name = admin_desktop_exe_filename()
     source = source.replace('"__ADMIN_URL__"', csharp_literal(base_url))
+    source = source.replace('"__ADMIN_TOKEN__"', csharp_literal(ADMIN_TOKEN))
     source = source.replace('"__APP_TITLE__"', csharp_literal(exe_title))
     source = source.replace('"__LOGIN_HINT__"', csharp_literal(app_config.get("login_hint") or DEFAULT_LOGIN_HINT))
     source = source.replace('"__EXE_TITLE__"', csharp_literal(exe_title))
