@@ -4,8 +4,8 @@
 
 ## 当前最新版
 
-- 无代理一键包：`packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz`
-- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz.b64`
+- 无代理一键包：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz`
+- 无代理一键包 Base64：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz.b64`
 - 无代理源码包：`packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz`
 - 无代理源码包 Base64：`packages/toolbox-admin-source-no-agent-theme-toggle-20260624.tar.gz.b64`
 - 无代理源码目录：`src/ToolboxAdminApi-no-agent`
@@ -48,11 +48,11 @@ SERVICE="toolbox-admin"
 APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
 [ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
 BRANCH="main"
-PKG_NAME="toolbox-admin-baota-oneclick-no-agent-theme-toggle-20260624.tar.gz"
+PKG_NAME="toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="d18aa0936ea9c059e27ed021300b53d65547dfdd0958fb0b59c23ab54e3fcd3f"
+SHA="11948b90f80d3f4ffb1558fe29974ef8498689abe53a8eaf985059859e36b737"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-no-agent-$TS.tar.gz"
 TMP="/tmp/toolbox-no-agent-$TS"
@@ -163,4 +163,5 @@ docs/更新包SHA256清单.txt
 ## 注意
 
 GitHub 的私密性是仓库级别，不是分支级别。如果需要私密，请将整个仓库设置为 Private。
+
 

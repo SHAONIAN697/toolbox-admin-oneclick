@@ -35,3 +35,7 @@ f2315470aa348c9ef62217ea7b44d284900a3bf91ccf7f194219a836a4c46d74  packages/toolb
 2d4ed9b636409b451b83b9404f5d3403d1ae0c22e44bf1544a4983033d18599b  packages/toolbox-gjx-title-slash-hotfix-preserve-data.tar.gz
 
 9a202021a56132cba869f9a921ce8cfc4b849b9802eac0458d440dcfe3785cbd  packages/toolbox-multithread-download-hotfix-20260623.tar.gz
+
+11948b90f80d3f4ffb1558fe29974ef8498689abe53a8eaf985059859e36b737  packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz
+
+11948b90f80d3f4ffb1558fe29974ef8498689abe53a8eaf985059859e36b737  packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz

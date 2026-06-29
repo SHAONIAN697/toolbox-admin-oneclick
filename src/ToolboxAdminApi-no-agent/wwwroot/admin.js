@@ -530,6 +530,11 @@ async function api(path, options = {}) {
   return text;
 }
 
+function isAuthFailure(error) {
+  const message = String(error?.message || '');
+  return /请先登录|Please log in first|Unauthorized|HTTP 401|HTTP 403/i.test(message);
+}
+
 function setLoginMessage(message, type = 'error') {
   $('loginError').textContent = message || '';
   if (message) showToast(message, type);
@@ -541,13 +546,12 @@ async function loadAll() {
     return;
   }
 
-  showToast('正在读取配置...', 'warn');
-  const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
+    const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
   let me;
   try {
     me = await api('/api/admin/me');
   } catch (error) {
-    handleLoadFailure(error);
+    handleLoadFailure(error, isAuthFailure(error));
     return;
   }
   state.currentUser = me.user;
@@ -578,11 +582,11 @@ async function loadAll() {
     showUnreadNoticePopup();
     showToast('配置读取成功。', 'success');
   } catch (error) {
-    handleLoadFailure(error);
+    handleLoadFailure(error, isAuthFailure(error));
   }
 }
 
-function handleLoadFailure(error) {
+function handleLoadFailure(error, silent = false) {
   const status = $('status');
   if (status) status.textContent = '';
   state.token = '';
@@ -600,7 +604,7 @@ function handleLoadFailure(error) {
   localStorage.removeItem('toolbox_target_user');
   localStorage.removeItem('toolbox_active_view');
   showLogin();
-  showToast(`读取配置失败：${error.message}`, 'error');
+  if (!silent) showToast(`读取配置失败：${error.message}`, 'error');
 }
 
 function showLogin() {
@@ -4580,6 +4584,8 @@ if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () =>
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
 if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
 
-loadAll().catch((error) => handleLoadFailure(error));
+loadAll().catch((error) => handleLoadFailure(error, isAuthFailure(error)));
 updateAddTargetState();
+
+
 

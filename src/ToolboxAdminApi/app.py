@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import hashlib
 import hmac
 import json
@@ -3719,3 +3719,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("TOOLBOX_PORT", "5088"))
     print(f"Toolbox admin API started: http://{host}:{port}/", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
+

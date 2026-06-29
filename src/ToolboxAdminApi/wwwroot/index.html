@@ -1,10 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026062401">
+  <link rel="stylesheet" href="/styles.css?v=2026062902">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -163,10 +163,8 @@
           <button id="deleteScopeBtn" type="button">删除页面</button>
           <label>管理分组<select id="manageSection"></select></label>
           <label>分组新名称<input id="manageSectionName"></label>
-          <label>分组位置<input id="manageSectionOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
           <label>新增分组<input id="newSectionName"></label>
           <button id="renameSectionBtn" type="button">重命名分组</button>
-          <button id="moveSectionBtn" type="button">保存分组位置</button>
           <button id="addSectionBtn" type="button">新增分组</button>
           <button id="deleteSectionBtn" type="button">删除分组</button>
         </div>
@@ -430,7 +428,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026062401"></script>
+  <script src="/admin.js?v=2026062902"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

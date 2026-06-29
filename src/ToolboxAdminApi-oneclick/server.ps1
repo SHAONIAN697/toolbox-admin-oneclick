@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Url = "http://+:5088/",
+  [string]$Url = "http://localhost:5088/",
   [string]$AdminToken = $env:TOOLBOX_ADMIN_TOKEN
 )
 
@@ -17,6 +17,7 @@ $UserTemplatePath = Join-Path $DataDir "user-template.json"
 $UserDataDir = Join-Path $DataDir "users"
 $ClientTemplateDir = Join-Path $Root "client-template"
 $Sessions = @{}
+$ResetCodes = @{}
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 New-Item -ItemType Directory -Force -Path $UserDataDir | Out-Null
@@ -818,6 +819,110 @@ try {
         continue
       }
 
+      if ($path -eq "/api/register" -and $method -eq "POST") {
+        $body = Read-JsonBody $request
+        $username = (Get-Text $body "username").Trim()
+        $email = (Get-Text $body "email").Trim().ToLowerInvariant()
+        $password = [string](Get-Text $body "password")
+        $displayName = (Get-Text $body "displayName" $username).Trim()
+        $inviteCode = (Get-Text $body "inviteCode").Trim()
+        if (!$username -or !$email -or !$password -or !$inviteCode) { throw "Username, email, password and invite code are required." }
+        if ($password.Length -lt 6) { throw "Password must be at least 6 characters." }
+
+        $store = Read-Users
+        $users = Get-UsersArray $store
+        if ($null -ne ($users | Where-Object { $_.username -eq $username } | Select-Object -First 1)) {
+          throw "Username already exists."
+        }
+        if ($null -ne ($users | Where-Object { ([string](Get-Text $_ "email")).Trim().ToLowerInvariant() -eq $email } | Select-Object -First 1)) {
+          throw "Email already exists."
+        }
+        $invite = Get-InviteCodesArray $store | Where-Object { $_.code -eq $inviteCode } | Select-Object -First 1
+        if ($null -eq $invite -or $invite.active -eq $false) { throw "Invite code is invalid." }
+        $maxUses = 1
+        if ($invite.PSObject.Properties.Name -contains "maxUses" -and $null -ne $invite.maxUses) { $maxUses = [int]$invite.maxUses }
+        $usedCount = 0
+        if ($invite.PSObject.Properties.Name -contains "usedCount" -and $null -ne $invite.usedCount) { $usedCount = [int]$invite.usedCount }
+        if ($maxUses -gt 0 -and $usedCount -ge $maxUses) { throw "Invite code has been used." }
+
+        $newUser = New-UserAccount $username $password $displayName "user" $null $email
+
+        $store = Read-Users
+        $invite = Get-InviteCodesArray $store | Where-Object { $_.code -eq $inviteCode } | Select-Object -First 1
+        if ($null -ne $invite) {
+          if (!($invite.PSObject.Properties.Name -contains "usedBy") -or $null -eq $invite.usedBy) {
+            $invite | Add-Member -NotePropertyName usedBy -NotePropertyValue @() -Force
+          }
+          $usedList = New-Object System.Collections.Generic.List[object]
+          @($invite.usedBy) | ForEach-Object { $usedList.Add($_) }
+          $usedList.Add([pscustomobject]@{ userId = $newUser.id; username = $newUser.username; usedAt = [DateTimeOffset]::UtcNow.ToString("o") })
+          $invite.usedBy = $usedList.ToArray()
+          $invite.usedCount = $usedCount + 1
+          if ($maxUses -gt 0 -and $invite.usedCount -ge $maxUses) { $invite.active = $false }
+          Write-Users $store
+        }
+
+        $token = New-Session $newUser
+        Send-Json $response @{
+          token = $token
+          user = (New-UserPublicView $newUser)
+        }
+        continue
+      }
+
+      if ($path -eq "/api/password/forgot" -and $method -eq "POST") {
+        $body = Read-JsonBody $request
+        $email = (Get-Text $body "email").Trim().ToLowerInvariant()
+        $user = Find-UserByEmail $email
+        if ($null -eq $user -or $user.active -eq $false) {
+          Send-Json $response @{ ok = $true; message = "If the email exists, a reset code will be sent." }
+          continue
+        }
+
+        $code = (Get-Random -Minimum 100000 -Maximum 999999).ToString()
+        $script:ResetCodes[$email] = [pscustomobject]@{
+          code = $code
+          userId = $user.id
+          expires = [DateTimeOffset]::UtcNow.AddMinutes(10)
+        }
+        Send-Json $response @{
+          ok = $true
+          message = "SMTP is not configured. Temporary reset code is shown."
+          debugCode = $code
+        }
+        continue
+      }
+
+      if ($path -eq "/api/password/reset" -and $method -eq "POST") {
+        $body = Read-JsonBody $request
+        $email = (Get-Text $body "email").Trim().ToLowerInvariant()
+        $code = (Get-Text $body "code").Trim()
+        $password = [string](Get-Text $body "password")
+        $record = $script:ResetCodes[$email]
+        if ($null -eq $record -or $record.code -ne $code -or $record.expires -lt [DateTimeOffset]::UtcNow) {
+          Send-Json $response @{ error = "Reset code is invalid or expired." } 400
+          continue
+        }
+        if ($password.Length -lt 6) {
+          Send-Json $response @{ error = "Password must be at least 6 characters." } 400
+          continue
+        }
+
+        $store = Read-Users
+        $users = Get-UsersArray $store
+        $user = $users | Where-Object { $_.id -eq $record.userId } | Select-Object -First 1
+        if ($null -eq $user) {
+          Send-Json $response @{ error = "User does not exist." } 404
+          continue
+        }
+        $user.passwordHash = New-StoredPassword $password
+        $store.users = @($users)
+        Write-Users $store
+        $script:ResetCodes.Remove($email)
+        Send-Json $response @{ ok = $true }
+        continue
+      }
+
       if ($path -eq "/api/toolbox/config" -or $path -eq "/api/config") {
         $apiKey = $request.QueryString["key"]
         $publicUser = Get-UserByApiKey $apiKey
@@ -1096,4 +1201,3 @@ try {
   }
   $listener.Close()
 }
-
