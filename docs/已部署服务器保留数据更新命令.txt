@@ -1,42 +1,4 @@
-﻿# 工具箱后台一键版
-
-这是一个用于管理 Windows 工具箱客户端的网页后台。后台可以配置工具箱标题、主题、按钮、下载项、系统工具、用户账号、邀请码、通知、隐藏入口弹窗，并为不同用户生成专属 EXE 客户端。
-
-## 当前最新版
-
-- 一键包：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz`
-- 一键包 Base64：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz.b64`
-- 源码目录：`src/ToolboxAdminApi-oneclick`
-- SHA256 清单：`docs/更新包SHA256清单.txt`
-- 首次部署命令：`docs/首次部署命令.txt`
-- 已部署服务器保留数据更新命令：`docs/已部署服务器保留数据更新命令.txt`
-
-## 更新重点
-
-- 多用户管理：总管理员可管理用户、邀请码和每个用户的工具箱配置。
-- 邀请码注册：支持批量生成邀请码、设置可用次数和使用后保留天数。
-- 通知中心：支持未读状态、登录弹窗、单条删除、全部删除、邮件推送指定通知。
-- 自定义页面和按钮：支持页面位置、按钮分组、下载记录、系统工具和自定义脚本。
-- 隐藏入口弹窗：连续点击客户端左上角 Logo 可打开弹窗，内容由后台配置。
-- 主题自适配：后台通知框、隐藏入口弹窗和客户端界面跟随当前主题，浅色深色自动适配。
-- 编译校验：后台生成的 EXE 会校验编译签名和文件哈希，防止篡改。
-- 多电脑运行：同一个正版 EXE 可发给多台电脑运行，不绑定下载电脑；旧版 EXE 需要重新下载。
-- 手机端适配：后台表单、通知、邀请码和复制操作已优化移动端显示。
-
-## 首次部署
-
-新服务器第一次安装可使用下面命令。首次部署会初始化新的 `data/` 数据目录。
-
-```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
-```
-
-## 已部署服务器更新（保留数据）
-
-已部署服务器直接粘贴下面命令即可。它会备份当前程序文件，只替换程序，不清空 `data/`。
-
-```bash
-set -e
+﻿set -e
 SERVICE="toolbox-admin"
 APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
 [ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
@@ -120,21 +82,3 @@ grep -q "function loadOptional" "$APP/wwwroot/admin.js"
 grep -q "adminThemeToggle" "$APP/wwwroot/index.html"
 grep -q "ADMIN_THEME_STORAGE_KEY" "$APP/wwwroot/admin.js"
 echo "OK: toolbox-admin updated, existing data preserved. Backup: $BACKUP"
-```
-
-## 数据保留
-
-更新模式会保留：
-
-- 后台账号和密码
-- 用户和邀请码
-- 通知记录
-- 系统设置、邮件设置和支付接口配置
-- 每个用户的工具箱配置
-- `data/` 数据目录
-
-## 说明
-
-- 更新前会自动备份当前程序文件和 `data/`。
-- 更新时只替换程序文件，不会清空原有数据。
-- 如果服务器没有安装 `mono-devel`，只能使用已编译好的 EXE 相关功能，无法在线生成 EXE。
