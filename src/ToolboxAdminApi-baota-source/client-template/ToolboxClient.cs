@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -48,7 +48,31 @@ namespace ToolboxClient
             }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                LogClientException(e == null ? null : e.Exception);
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+            {
+                LogClientException(e == null ? null : e.ExceptionObject as Exception);
+            };
             Application.Run(new ToolboxForm(ConfigUrl));
+        }
+
+        private static void LogClientException(Exception ex)
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ToolboxClient");
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "client-errors.log");
+                string text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + (ex == null ? "unknown" : ex.ToString()) + Environment.NewLine;
+                File.AppendAllText(path, text, Encoding.UTF8);
+            }
+            catch
+            {
+            }
         }
 
         private static void ConfigureNetworkSecurity()
@@ -106,9 +130,31 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
+        private System.Windows.Forms.Timer tunerClockTimer;
+        private System.Windows.Forms.Timer studioOverviewTimer;
+        private Label tunerClockLabel;
+        private DateTime tunerStartedAt = DateTime.Now;
+        private const string TunerHomePageId = "tuner_tools";
+        private const string TunerDriversPageId = "tuner_drivers";
+        private const string TunerLinksPageId = "tuner_links";
         private string currentPage = "";
         private IList<object> currentSections = new List<object>();
+        private Label studioOverviewClockLabel;
+        private Label studioOverviewCpuValueLabel;
+        private Label studioOverviewCpuSubLabel;
+        private Panel studioOverviewCpuFillPanel;
+        private Panel studioOverviewCpuBarPanel;
+        private Label studioOverviewMemValueLabel;
+        private Label studioOverviewMemSubLabel;
+        private Panel studioOverviewMemFillPanel;
+        private Panel studioOverviewMemBarPanel;
+        private Label studioOverviewDiskValueLabel;
+        private Label studioOverviewDiskSubLabel;
+        private Panel studioOverviewDiskFillPanel;
+        private Panel studioOverviewDiskBarPanel;
+        private Label studioOverviewUptimeLabel;
         private const string SoftwareCatalogPageId = "software_catalog";
+        private const string StudioOverviewPageId = "system_overview";
         private TextBox softwareSearchBox;
         private ComboBox softwareCategoryBox;
         private FlowLayoutPanel softwareResultsPanel;
@@ -143,6 +189,7 @@ namespace ToolboxClient
         private bool configApplied = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
+        private readonly object launchDownloadedFileLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
         private bool pausedDownloadsRestored = false;
         private const int DefaultMaxParallelDownloads = 5;
@@ -162,8 +209,8 @@ namespace ToolboxClient
         private string runtimeExecutableSha256 = "";
         private bool initialSizeApplied = false;
         private readonly bool studioVariant = Program.ClientVariant.Equals("studio", StringComparison.OrdinalIgnoreCase);
+        private readonly bool tunerVariant = Program.ClientVariant.Equals("tuner", StringComparison.OrdinalIgnoreCase);
         private readonly bool portalVariant = Program.ClientVariant.Equals("portal", StringComparison.OrdinalIgnoreCase);
-        private readonly bool tunerVariant = false;
         private readonly Dictionary<string, Control> navButtons = new Dictionary<string, Control>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -207,6 +254,7 @@ namespace ToolboxClient
         private static Color TextColor = Color.FromArgb(237, 242, 244);
         private static Color Muted = Color.FromArgb(139, 151, 166);
         private static bool LightTheme = false;
+        private static bool NeutralDialogTheme = false;
 
         private readonly Dictionary<string, string> scripts = new Dictionary<string, string>
         {
@@ -311,6 +359,18 @@ namespace ToolboxClient
                 contentResizeTimer.Dispose();
                 contentResizeTimer = null;
             }
+            if (tunerClockTimer != null)
+            {
+                tunerClockTimer.Stop();
+                tunerClockTimer.Dispose();
+                tunerClockTimer = null;
+            }
+            if (studioOverviewTimer != null)
+            {
+                studioOverviewTimer.Stop();
+                studioOverviewTimer.Dispose();
+                studioOverviewTimer = null;
+            }
             if (contactPopupWindow != null && !contactPopupWindow.IsDisposed) contactPopupWindow.Dispose();
             base.OnFormClosed(e);
         }
@@ -319,7 +379,7 @@ namespace ToolboxClient
         {
             base.OnResize(e);
             if (portalVariant) UpdatePortalWindowRegion();
-            if (portalVariant && IsHandleCreated && content != null && !content.IsDisposed)
+            if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
                 QueueContentResizeRender();
             }
@@ -337,6 +397,11 @@ namespace ToolboxClient
 
         private void BuildShell()
         {
+            if (tunerVariant)
+            {
+                BuildTunerShell();
+                return;
+            }
             if (studioVariant)
             {
                 BuildStudioShell();
@@ -554,6 +619,233 @@ namespace ToolboxClient
             AttachRecordDismissHandlers(this);
         }
 
+        private void BuildTunerShell()
+        {
+            ApplyTunerPalette();
+            FormBorderStyle = FormBorderStyle.None;
+            BackColor = Bg;
+            ForeColor = TextColor;
+            MinimumSize = new Size(860, 560);
+            Size = new Size(890, 635);
+
+            TableLayoutPanel root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 3,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = Bg
+            };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200F));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            Controls.Add(root);
+
+            titleBar = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Tag = "tuner_chrome" };
+            titleBar.MouseDown += DragWindow;
+            root.Controls.Add(titleBar, 0, 0);
+            root.SetColumnSpan(titleBar, 2);
+
+            Label appName = new Label
+            {
+                Dock = DockStyle.Left,
+                Width = 280,
+                Padding = new Padding(14, 0, 0, 0),
+                Text = "工具箱",
+                ForeColor = Color.FromArgb(15, 23, 42),
+                Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            appName.Tag = "tuner_chrome";
+            appName.MouseDown += DragWindow;
+            titleBar.Controls.Add(appName);
+
+            FlowLayoutPanel windowControls = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right,
+                Width = 244,
+                Height = 34,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(0, 6, 0, 0),
+                Margin = Padding.Empty,
+                BackColor = Color.White,
+                Tag = "tuner_chrome"
+            };
+            titleBar.Controls.Add(windowControls);
+
+            downloadTasksButton = MakeTunerDownloadChromeButton();
+            recordsButton = MakeTunerChromeButton("trash");
+            topMostButton = MakeTunerChromeButton("lock");
+            contactButton = MakeTunerChromeButton("chat");
+            themeButton = MakeTunerChromeButton("moon");
+            Button minButton = MakeTunerChromeButton("min");
+            Button maxButton = MakeTunerChromeButton("max");
+            Button closeButton = MakeTunerChromeButton("close");
+            downloadTasksButton.Click += delegate { ShowPage("downloads"); };
+            recordsButton.Click += delegate { DeleteDownloadedFilesFromTopButton(); };
+            topMostButton.Click += delegate { ToggleTopMost(); };
+            contactButton.Click += delegate { ShowContactWindowFromButton(); };
+            themeButton.Click += delegate { ToggleTunerTheme(); };
+            minButton.Click += delegate { WindowState = FormWindowState.Minimized; };
+            maxButton.Click += delegate { WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized; };
+            closeButton.Click += delegate { Close(); };
+            topToolTip = new ToolTip();
+            topToolTip.SetToolTip(downloadTasksButton, "下载页面");
+            topToolTip.SetToolTip(recordsButton, "下载记录");
+            topToolTip.SetToolTip(topMostButton, "窗口置顶");
+            topToolTip.SetToolTip(contactButton, "联系方式");
+            topToolTip.SetToolTip(themeButton, "浅色 / 深色模式");
+            windowControls.Controls.Add(downloadTasksButton);
+            windowControls.Controls.Add(recordsButton);
+            windowControls.Controls.Add(topMostButton);
+            windowControls.Controls.Add(contactButton);
+            windowControls.Controls.Add(themeButton);
+            windowControls.Controls.Add(minButton);
+            windowControls.Controls.Add(maxButton);
+            windowControls.Controls.Add(closeButton);
+
+            side = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = SideBg,
+                Padding = new Padding(8, 16, 8, 12)
+            };
+            root.Controls.Add(side, 0, 1);
+
+            TableLayoutPanel sideLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = SideBg
+            };
+            sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+            sideLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            side.Controls.Add(sideLayout);
+
+            TableLayoutPanel brandPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                BackColor = SideBg,
+                Padding = new Padding(4, 0, 0, 0)
+            };
+            brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44F));
+            brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+            brandIcon = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.CenterImage, BackColor = SideBg };
+            brandTitle = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = TextColor,
+                Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
+                Padding = new Padding(7, 0, 0, 0),
+                TextAlign = ContentAlignment.BottomLeft,
+                AutoEllipsis = true
+            };
+            brandSubtitle = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(148, 163, 184),
+                Font = new Font(Font.FontFamily, 8F, FontStyle.Regular),
+                Padding = new Padding(7, 0, 0, 0),
+                TextAlign = ContentAlignment.TopLeft,
+                AutoEllipsis = true
+            };
+            brandPanel.Controls.Add(brandIcon, 0, 0);
+            brandPanel.SetRowSpan(brandIcon, 2);
+            brandPanel.Controls.Add(brandTitle, 1, 0);
+            brandPanel.Controls.Add(brandSubtitle, 1, 1);
+            AttachBrandPopupEntry(brandPanel);
+            sideLayout.Controls.Add(brandPanel, 0, 0);
+
+            nav = new BufferedFlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                BackColor = SideBg,
+                Padding = new Padding(0, 8, 0, 0)
+            };
+            nav.HorizontalScroll.Enabled = false;
+            sideLayout.Controls.Add(nav, 0, 1);
+
+            Panel main = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Bg,
+                Padding = new Padding(14, 16, 16, 12)
+            };
+            root.Controls.Add(main, 1, 1);
+
+            content = new BufferedFlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                BackColor = Bg,
+                Padding = new Padding(0, 0, 0, 10),
+                SuppressFocusAutoScroll = true
+            };
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+            content.Resize += delegate
+            {
+                if (tunerVariant && IsHandleCreated && !content.IsDisposed)
+                {
+                    QueueContentResizeRender();
+                }
+            };
+            main.Controls.Add(content);
+
+            Panel bottom = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(14, 0, 14, 0), Tag = "tuner_chrome" };
+            root.Controls.Add(bottom, 0, 2);
+            root.SetColumnSpan(bottom, 2);
+            status = new TunerStatusLabel
+            {
+                Dock = DockStyle.Left,
+                Width = 420,
+                Text = "就绪 - 桌面程序",
+                ForeColor = Color.FromArgb(100, 116, 139),
+                BackColor = Color.White,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
+            };
+            status.Tag = "tuner_chrome";
+            tunerClockLabel = new Label
+            {
+                Dock = DockStyle.Right,
+                Width = 260,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                BackColor = Color.White,
+                TextAlign = ContentAlignment.MiddleRight,
+                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
+            };
+            tunerClockLabel.Tag = "tuner_chrome";
+            bottom.Controls.Add(status);
+            bottom.Controls.Add(tunerClockLabel);
+            tunerClockTimer = new System.Windows.Forms.Timer();
+            tunerClockTimer.Interval = 1000;
+            tunerClockTimer.Tick += delegate { UpdateTunerClock(); };
+            tunerClockTimer.Start();
+            UpdateTunerClock();
+
+            title = new Label { Visible = false, Width = 1, Height = 1 };
+            gridModeButton = new Button();
+            listModeButton = new Button();
+            BuildRecordsPanel();
+            AttachRecordDismissHandlers(this);
+            UpdateTunerChromeButtons();
+        }
+
         private void BuildStudioShell()
         {
             FormBorderStyle = FormBorderStyle.None;
@@ -719,11 +1011,27 @@ namespace ToolboxClient
                 Padding = new Padding(0, 0, 0, 10),
                 SuppressFocusAutoScroll = true
             };
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
             content.Resize += delegate
             {
-                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
+                if (studioVariant && IsHandleCreated && !content.IsDisposed)
+                {
+                    QueueContentResizeRender();
+                }
             };
             main.Controls.Add(content);
+
+            studioOverviewTimer = new System.Windows.Forms.Timer();
+            studioOverviewTimer.Interval = 1000;
+            studioOverviewTimer.Tick += delegate
+            {
+                if (studioVariant && IsHandleCreated && content != null && !content.IsDisposed && currentPage.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    UpdateStudioOverviewLiveValues();
+                }
+            };
+            studioOverviewTimer.Start();
 
             titleBar = top;
             title = new Label { Visible = false, Width = 1, Height = 1 };
@@ -910,7 +1218,7 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                if (portalVariant && IsHandleCreated && !content.IsDisposed)
+                if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && !content.IsDisposed)
                 {
                     QueueContentResizeRender();
                 }
@@ -1105,6 +1413,72 @@ namespace ToolboxClient
             return button;
         }
 
+        private Button MakeTunerChromeButton(string icon)
+        {
+            TunerChromeButton button = new TunerChromeButton
+            {
+                Width = 28,
+                Height = 27,
+                Margin = new Padding(0, 0, 2, 0),
+                IconKey = icon,
+                BackColor = Color.Transparent,
+                ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238),
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            button.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            return button;
+        }
+
+        private Button MakeTunerDownloadChromeButton()
+        {
+            TunerDownloadChromeButton button = new TunerDownloadChromeButton
+            {
+                Width = 30,
+                Height = 27,
+                Margin = new Padding(0, 0, 2, 0),
+                IconKey = "downloads",
+                BackColor = Color.Transparent,
+                ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238),
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            button.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            return button;
+        }
+
+        private Button MakeTunerTextChromeButton(string text, int width)
+        {
+            Button button = new TunerTextChromeButton
+            {
+                Width = width,
+                Height = 27,
+                Margin = new Padding(0, 0, 8, 0),
+                Text = text,
+                TextAlign = ContentAlignment.MiddleCenter,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font(Font.FontFamily, 8F, FontStyle.Regular)
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(241, 245, 249);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(226, 232, 240);
+            return button;
+        }
+
+        private void UpdateTunerClock()
+        {
+            if (tunerClockLabel == null || tunerClockLabel.IsDisposed) return;
+            TimeSpan runtime = DateTime.Now - tunerStartedAt;
+            string running = String.Format("已运行: {0:00}:{1:00}:{2:00}", (int)Math.Min(99, runtime.TotalHours), runtime.Minutes, runtime.Seconds);
+            tunerClockLabel.Text = DateTime.Now.ToString("yyyy/M/d  HH:mm:ss");
+        }
+
         private Button MakeStudioSmallButton(string text)
         {
             RoundButton button = new RoundButton
@@ -1280,11 +1654,11 @@ namespace ToolboxClient
         private void FitBrandTitle(string text)
         {
             int available = brandTitle.ClientSize.Width;
-            if (available <= 0) available = studioVariant ? 126 : 154;
+            if (available <= 0) available = studioVariant ? 126 : (tunerVariant ? 118 : 154);
             available = Math.Max(64, available - brandTitle.Padding.Left - brandTitle.Padding.Right);
             float[] sizes = studioVariant
                 ? new float[] { 10F, 9.5F, 9F, 8.5F, 8F, 7.5F, 7F }
-                : (portalVariant ? new float[] { 12F, 11F, 10F, 9F, 8.5F } : new float[] { 15F, 14F, 13F, 12F, 11F });
+                : (tunerVariant ? new float[] { 11F, 10F, 9F, 8.5F, 8F, 7.5F } : (portalVariant ? new float[] { 12F, 11F, 10F, 9F, 8.5F } : new float[] { 15F, 14F, 13F, 12F, 11F }));
             for (int i = 0; i < sizes.Length; i++)
             {
                 Font candidate = new Font(Font.FontFamily, sizes[i], FontStyle.Bold);
@@ -1448,8 +1822,13 @@ namespace ToolboxClient
             content.SuspendLayout();
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
-            ApplyTheme(studioVariant ? "银光素白" : CurrentTheme(app));
+            ApplyTheme((studioVariant || tunerVariant) ? "银光素白" : CurrentTheme(app));
             ApplyTemplatePalette();
+            if (tunerVariant)
+            {
+                ApplyTunerThemeToShell();
+                UpdateTunerChromeButtons();
+            }
             if (studioVariant)
             {
                 ApplyStudioThemeToShell();
@@ -1463,17 +1842,23 @@ namespace ToolboxClient
             portalBrandTitleSource = appTitle;
             portalBrandSubtitleSource = GetText(app, "subtitle", "");
             string displayAppTitle = portalVariant ? PortalLabel(appTitle, "app.title") : appTitle;
+            if (tunerVariant) displayAppTitle = "工具箱";
             Text = displayAppTitle;
-            brandTitle.Text = displayAppTitle;
+            brandTitle.Text = tunerVariant ? appTitle : displayAppTitle;
             brandSubtitle.Text = portalVariant ? PortalLabel(portalBrandSubtitleSource, "app.subtitle") : portalBrandSubtitleSource;
-            FitBrandTitle(displayAppTitle);
+            FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
-            title.Text = portalVariant ? PortalText("首页", "Home") : (studioVariant ? "系统优化" : appTitle);
+            title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : appTitle);
             ApplyAppIcon(GetText(app, "icon", GetText(app, "icon_url", "")), GetText(app, "logo_text", "Y"));
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
-            if (!initialSizeApplied && width >= 860 && height >= 560)
+            if (!initialSizeApplied && tunerVariant)
+            {
+                Size = new Size(890, 635);
+                initialSizeApplied = true;
+            }
+            else if (!initialSizeApplied && width >= 860 && height >= 560)
             {
                 Size = new Size(width, height);
                 initialSizeApplied = true;
@@ -1516,6 +1901,7 @@ namespace ToolboxClient
                 configApplied = true;
                 BuildNav();
                 RestorePausedDownloadTasksOnce();
+                if (tunerVariant) ForceTunerLayoutRefresh();
             }
 
             content.ResumeLayout();
@@ -1527,6 +1913,7 @@ namespace ToolboxClient
         private void ApplyTheme(string theme)
         {
             string value = (theme ?? "").Trim().ToLowerInvariant();
+            NeutralDialogTheme = false;
             if (value == "星夜墨蓝")
             {
                 SetTheme(14, 24, 38, 9, 17, 29, 24, 35, 50, 31, 45, 62, 48, 63, 82, 64, 151, 240, 226, 174, 74, 38, 188, 132, 238, 86, 92, 118, 104, 224, 236, 242, 250, 145, 160, 180);
@@ -1657,7 +2044,7 @@ namespace ToolboxClient
             if (side != null) side.BackColor = SideBg;
             if (nav != null) nav.BackColor = SideBg;
             if (content != null) content.BackColor = Bg;
-            if (!studioVariant && !portalVariant) ApplyThemeToControls(this);
+            if (!studioVariant && !portalVariant && !tunerVariant) ApplyThemeToControls(this);
             RefreshContactPopupTheme();
             if (recordsPanel != null)
             {
@@ -1676,7 +2063,12 @@ namespace ToolboxClient
 
         private void ApplyTemplatePalette()
         {
-            if (studioVariant)
+            if (tunerVariant)
+            {
+                ClientSettings settings = LoadClientSettings();
+                ApplyTunerPalette(IsDarkModeSetting(settings.Theme));
+            }
+            else if (studioVariant)
             {
                 ClientSettings settings = LoadClientSettings();
                 bool dark = IsDarkModeSetting(settings.Theme);
@@ -1694,6 +2086,113 @@ namespace ToolboxClient
                 Muted = Color.FromArgb(88, 103, 124);
                 LightTheme = true;
             }
+        }
+
+        private static void ApplyTunerPalette()
+        {
+            ApplyTunerPalette(false);
+        }
+
+        private static void ApplyTunerPalette(bool dark)
+        {
+            if (dark)
+            {
+                Bg = Color.FromArgb(37, 43, 55);
+                SideBg = Color.FromArgb(43, 50, 63);
+                PanelBg = Color.FromArgb(45, 51, 64);
+                PanelBg2 = Color.FromArgb(53, 59, 73);
+                Line = Color.FromArgb(64, 72, 88);
+                Accent = Color.FromArgb(47, 145, 245);
+                TextColor = Color.FromArgb(241, 247, 255);
+                Muted = Color.FromArgb(156, 178, 205);
+                LightTheme = false;
+                NeutralDialogTheme = false;
+            }
+            else
+            {
+                Bg = Color.FromArgb(243, 245, 248);
+                SideBg = Color.White;
+                PanelBg = Color.White;
+                PanelBg2 = Color.FromArgb(248, 250, 252);
+                Line = Color.FromArgb(221, 228, 238);
+                Accent = Color.FromArgb(24, 129, 239);
+                TextColor = Color.FromArgb(15, 23, 42);
+                Muted = Color.FromArgb(100, 116, 139);
+                LightTheme = true;
+                NeutralDialogTheme = true;
+            }
+        }
+
+        private void ApplyTunerThemeToShell()
+        {
+            if (!tunerVariant) return;
+            BackColor = Bg;
+            ForeColor = TextColor;
+            ApplyTunerThemeToControlTree(this);
+        }
+
+        private void ApplyTunerThemeToControlTree(Control root)
+        {
+            if (root == null) return;
+            foreach (Control child in root.Controls)
+            {
+                if (child == contactPopupOverlay || child == recordsPanel || child == settingsPanel) continue;
+                if (child is TemplateNavButton || child is TemplateActionButton || child is TunerNavButton || child is TunerSectionHeader || child is TunerActionButton || child is RoundedPanel || child is FlatCheckBox)
+                {
+                    child.Invalidate();
+                    ApplyTunerThemeToControlTree(child);
+                    continue;
+                }
+                if (child is RoundButton)
+                {
+                    RoundButton round = child as RoundButton;
+                    round.BackColor = PanelBg2;
+                    round.ForeColor = TextColor;
+                    round.BorderColor = Line;
+                    round.HoverBackColor = Color.FromArgb(239, 246, 255);
+                    round.Invalidate();
+                    ApplyTunerThemeToControlTree(round);
+                    continue;
+                }
+                bool tunerChrome = String.Equals(Convert.ToString(child.Tag), "tuner_chrome", StringComparison.Ordinal);
+                Color chromeBack = LightTheme ? Color.White : Color.FromArgb(43, 50, 63);
+                if (child is TableLayoutPanel || child is FlowLayoutPanel || child is Panel)
+                {
+                    child.BackColor = tunerChrome ? chromeBack : (IsInsideTunerSidebar(child) ? SideBg : Bg);
+                }
+                if (child is Label)
+                {
+                    child.ForeColor = child == status ? Muted : TextColor;
+                    if (child.BackColor != Color.Transparent) child.BackColor = tunerChrome ? chromeBack : (IsInsideTunerSidebar(child) ? SideBg : Bg);
+                }
+                if (child is PictureBox)
+                {
+                    child.BackColor = IsInsideTunerSidebar(child) ? SideBg : Bg;
+                }
+                if (child is TextBox || child is ComboBox || child is ListView)
+                {
+                    child.BackColor = PanelBg2;
+                    child.ForeColor = TextColor;
+                }
+                if (child is Button)
+                {
+                    Button button = child as Button;
+                    button.ForeColor = TextColor;
+                }
+                child.Invalidate();
+                ApplyTunerThemeToControlTree(child);
+            }
+        }
+
+        private bool IsInsideTunerSidebar(Control control)
+        {
+            Control current = control;
+            while (current != null)
+            {
+                if (current == side || current == nav) return true;
+                current = current.Parent;
+            }
+            return false;
         }
 
         private void ApplyPortalThemeToShell()
@@ -1803,6 +2302,7 @@ namespace ToolboxClient
 
         private void ApplyStudioPalette(bool dark)
         {
+            NeutralDialogTheme = false;
             if (dark)
             {
                 Bg = Color.FromArgb(29, 36, 45);
@@ -2103,8 +2603,10 @@ namespace ToolboxClient
             {
                 NavItemControl navItem = pair.Value as NavItemControl;
                 TemplateNavButton templateItem = pair.Value as TemplateNavButton;
+                TunerNavButton tunerItem = pair.Value as TunerNavButton;
                 if (navItem != null) navItem.Active = false;
                 if (templateItem != null) templateItem.Active = false;
+                if (tunerItem != null) tunerItem.Active = false;
             }
         }
 
@@ -2124,16 +2626,88 @@ namespace ToolboxClient
             ClearChildControls(nav);
             navButtons.Clear();
 
+            if (tunerVariant)
+            {
+                HashSet<string> tunerAdded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                IList<object> tunerSidebar = AsList(Get(config, "sidebar"));
+                Dictionary<string, object> tunerPages = AsDict(Get(config, "pages"));
+                IList<object> tunerToolboxTabs = AsList(Get(config, "toolbox_tabs"));
+
+                foreach (object item in tunerSidebar)
+                {
+                    Dictionary<string, object> row = AsDict(item);
+                    string id = GetText(row, "id", "");
+                    if (String.IsNullOrWhiteSpace(id)) continue;
+                    if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                    string label = NavLabel(row, id, tunerPages);
+                    AddTunerNavButton(id, label, TemplateNavIcon(label, id));
+                    tunerAdded.Add(id);
+                }
+
+                foreach (string pageId in tunerPages.Keys)
+                {
+                    if (tunerAdded.Contains(pageId)) continue;
+                    if (pageId.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                    Dictionary<string, object> page = AsDict(tunerPages[pageId]);
+                    string label = PageLabel(page, pageId);
+                    AddTunerNavButton(pageId, label, TemplateNavIcon(label, pageId));
+                    tunerAdded.Add(pageId);
+                }
+
+                if (tunerToolboxTabs.Count > 0 && !tunerAdded.Contains("toolbox"))
+                {
+                    AddTunerNavButton("toolbox", "系统工具", TemplateNavIcon("系统工具", "toolbox"));
+                    tunerAdded.Add("toolbox");
+                }
+
+                if (SoftwareCatalogEnabled() && !tunerAdded.Contains(SoftwareCatalogPageId))
+                {
+                    AddTunerNavButton(SoftwareCatalogPageId, "软件大全", TemplateNavIcon("软件大全", SoftwareCatalogPageId));
+                    tunerAdded.Add(SoftwareCatalogPageId);
+                }
+
+                if (!tunerAdded.Contains("settings"))
+                {
+                    AddTunerNavButton("settings", "系统设置", "gear");
+                    tunerAdded.Add("settings");
+                }
+
+                if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
+                {
+                    MarkNavButtonActive(currentPage);
+                    return;
+                }
+                foreach (string key in navButtons.Keys)
+                {
+                    if (String.Equals(key, "settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    ShowPage(key);
+                    break;
+                }
+                nav.HorizontalScroll.Visible = false;
+                nav.HorizontalScroll.Enabled = false;
+                return;
+            }
+
             HashSet<string> added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             IList<object> sidebar = AsList(Get(config, "sidebar"));
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             IList<object> toolboxTabs = AsList(Get(config, "toolbox_tabs"));
+
+            if (studioVariant && pages.ContainsKey(StudioOverviewPageId) && !added.Contains(StudioOverviewPageId))
+            {
+                AddNavButton(StudioOverviewPageId, "\u7cfb\u7edf\u6982\u89c8");
+                added.Add(StudioOverviewPageId);
+            }
 
             foreach (object item in sidebar)
             {
                 Dictionary<string, object> row = AsDict(item);
                 string id = GetText(row, "id", "");
                 if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                if (studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
                 string label = NavLabel(row, id, pages);
                 AddNavButton(id, label);
                 added.Add(id);
@@ -2142,6 +2716,8 @@ namespace ToolboxClient
             foreach (string pageId in pages.Keys)
             {
                 if (added.Contains(pageId)) continue;
+                if (!studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                if (studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
                 Dictionary<string, object> page = AsDict(pages[pageId]);
                 AddNavButton(pageId, PageLabel(page, pageId));
                 added.Add(pageId);
@@ -2188,17 +2764,17 @@ namespace ToolboxClient
 
         private void AddNavButton(string id, string label)
         {
-            if (studioVariant || portalVariant)
+            if (studioVariant || tunerVariant || portalVariant)
             {
                 TemplateNavButton templateButton = new TemplateNavButton
                 {
-                    Width = studioVariant ? 148 : 180,
-                    Height = studioVariant ? 36 : 38,
-                    Margin = new Padding(0, 0, 0, studioVariant ? 7 : 5),
+                    Width = tunerVariant ? 166 : (studioVariant ? 148 : 180),
+                    Height = tunerVariant ? 34 : (studioVariant ? 36 : 38),
+                    Margin = new Padding(0, 0, 0, tunerVariant ? 6 : (studioVariant ? 7 : 5)),
                     SourceCaption = label,
                     Caption = portalVariant ? PortalLabel(label, id) : label,
                     IconText = TemplateNavIcon(label, id),
-                    StudioMode = studioVariant,
+                    StudioMode = studioVariant || tunerVariant,
                     Tag = id
                 };
                 templateButton.Click += delegate { QueueShowPage((string)templateButton.Tag); };
@@ -2213,6 +2789,22 @@ namespace ToolboxClient
                 Height = portalVariant ? 40 : (studioVariant ? 36 : 48),
                 Margin = new Padding(0, 0, 0, 3),
                 Caption = portalVariant ? PortalLabel(label, id) : label,
+                Tag = id
+            };
+            button.Click += delegate { QueueShowPage((string)button.Tag); };
+            nav.Controls.Add(button);
+            navButtons[id] = button;
+        }
+
+        private void AddTunerNavButton(string id, string label, string iconKey)
+        {
+            TunerNavButton button = new TunerNavButton
+            {
+                Width = 174,
+                Height = 47,
+                Margin = new Padding(0, 0, 0, 1),
+                Caption = label,
+                IconKey = iconKey,
                 Tag = id
             };
             button.Click += delegate { QueueShowPage((string)button.Tag); };
@@ -2318,9 +2910,34 @@ namespace ToolboxClient
                 else ShowDownloadRecords();
                 return;
             }
+            if (studioVariant && currentPage.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                RenderStudioOverviewPage();
+                return;
+            }
             if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
             {
                 if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
+                return;
+            }
+            if (tunerVariant && currentPage.Equals(TunerHomePageId, StringComparison.OrdinalIgnoreCase))
+            {
+                RenderTunerHomePage();
+                return;
+            }
+            if (tunerVariant && currentPage.Equals(TunerDriversPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                RenderTunerSimplePage("声卡驱动", "这里可以在后台继续配置声卡驱动下载按钮。");
+                return;
+            }
+            if (tunerVariant && currentPage.Equals(TunerLinksPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                RenderTunerSimplePage("常用链接", "这里可以在后台继续配置常用网址入口。");
+                return;
+            }
+            if (tunerVariant && currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                RenderTunerDownloadsPage();
                 return;
             }
             RenderCurrentSections();
@@ -2367,8 +2984,10 @@ namespace ToolboxClient
                 bool active = pair.Key.Equals(id, StringComparison.OrdinalIgnoreCase);
                 NavItemControl navItem = pair.Value as NavItemControl;
                 TemplateNavButton templateItem = pair.Value as TemplateNavButton;
+                TunerNavButton tunerItem = pair.Value as TunerNavButton;
                 if (navItem != null) navItem.Active = active;
                 if (templateItem != null) templateItem.Active = active;
+                if (tunerItem != null) tunerItem.Active = active;
             }
         }
 
@@ -2398,6 +3017,22 @@ namespace ToolboxClient
             }
             bool showSoftwareCatalog = id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase);
             if (!showSoftwareCatalog) CancelSoftwareCatalogRender();
+            if (tunerVariant && id.Equals("settings", StringComparison.OrdinalIgnoreCase))
+            {
+                currentPage = id;
+                MarkNavButtonActive(id);
+                title.Text = "系统设置";
+                RenderTunerSettingsPage();
+                return;
+            }
+            if (tunerVariant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                currentPage = id;
+                MarkNavButtonActive(id);
+                title.Text = "下载页面";
+                RenderTunerDownloadsPage();
+                return;
+            }
             if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled())
             {
                 status.Text = "软件大全已在后台关闭。";
@@ -2416,6 +3051,32 @@ namespace ToolboxClient
             }
             currentPage = id;
             MarkNavButtonActive(id);
+
+            if (tunerVariant && id.Equals(TunerHomePageId, StringComparison.OrdinalIgnoreCase))
+            {
+                title.Text = "调音工具";
+                RenderTunerHomePage();
+                return;
+            }
+            if (tunerVariant && id.Equals(TunerDriversPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                title.Text = "声卡驱动";
+                RenderTunerSimplePage("声卡驱动", "这里可以在后台继续配置声卡驱动下载按钮。");
+                return;
+            }
+            if (tunerVariant && id.Equals(TunerLinksPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                title.Text = "常用链接";
+                RenderTunerSimplePage("常用链接", "这里可以在后台继续配置常用网址入口。");
+                return;
+            }
+
+            if (studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                title.Text = "系统概览";
+                RenderStudioOverviewPage();
+                return;
+            }
 
             if (id.Equals("toolbox", StringComparison.OrdinalIgnoreCase))
             {
@@ -2505,6 +3166,18 @@ namespace ToolboxClient
                 }
                 return;
             }
+            if (tunerVariant)
+            {
+                try
+                {
+                    RenderTunerSections();
+                }
+                finally
+                {
+                    EndContentRender();
+                }
+                return;
+            }
             if (portalVariant)
             {
                 try
@@ -2567,6 +3240,16 @@ namespace ToolboxClient
                     Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
                     content.Controls.Add(card);
                 }
+                if (listMode)
+                {
+                    content.Controls.Add(new Panel
+                    {
+                        Width = available,
+                        Height = 34,
+                        Margin = Padding.Empty,
+                        BackColor = Color.Transparent
+                    });
+                }
             }
             finally
             {
@@ -2627,6 +3310,664 @@ namespace ToolboxClient
                 content.ResumeLayout();
                 content.Visible = oldVisible;
             }
+        }
+
+        private void RenderTunerSections()
+        {
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+
+                List<Dictionary<string, object>> sections = new List<Dictionary<string, object>>();
+                foreach (object sectionObj in currentSections)
+                {
+                    sections.Add(AsDict(sectionObj));
+                }
+                if (sections.Count == 0)
+                {
+                    AddTunerEmptyMessage("这里还没有按钮。");
+                    return;
+                }
+
+                int available = TunerContentWidth();
+                for (int i = 0; i < sections.Count; i++)
+                {
+                    Dictionary<string, object> section = sections[i];
+                    List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
+                    foreach (object buttonObj in AsList(Get(section, "buttons")))
+                    {
+                        buttons.Add(AsDict(buttonObj));
+                    }
+                    if (buttons.Count == 0) continue;
+                    buttons.Sort((a, b) =>
+                    {
+                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
+                        if (result != 0) return result;
+                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
+                    });
+                    content.Controls.Add(CreateTunerGroup(section, buttons, available, i));
+                }
+
+                if (content.Controls.Count == 0) AddTunerEmptyMessage("这里还没有按钮。");
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+            }
+        }
+
+        private void RenderTunerHomePage()
+        {
+            if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+                int available = TunerContentWidth();
+                content.Controls.Add(CreateTunerSystemOptimizeGroup(available));
+                content.Controls.Add(CreateTunerDirectoryGroup(available));
+                status.Text = "就绪 - 桌面程序";
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
+
+        private void RenderTunerSimplePage(string titleText, string message)
+        {
+            if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+                int available = TunerContentWidth();
+                content.Controls.Add(CreateTunerHeaderOnlyGroup(titleText, "gear", available, true));
+                AddTunerEmptyMessage(message);
+                status.Text = "就绪 - 桌面程序";
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
+
+        private Control CreateTunerHeaderOnlyGroup(string caption, string iconKey, int width, bool expanded)
+        {
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = 56,
+                Margin = new Padding(0, 0, 0, 16),
+                BackColor = PanelBg,
+                BorderColor = Color.Transparent,
+                Radius = 8
+            };
+            TunerSectionHeader header = new TunerSectionHeader
+            {
+                Left = 0,
+                Top = 0,
+                Width = width,
+                Height = 56,
+                Caption = caption,
+                IconKey = iconKey,
+                Expanded = expanded,
+                DrawBottomLine = false
+            };
+            panel.Controls.Add(header);
+            return panel;
+        }
+
+        private int TunerContentWidth()
+        {
+            int width = content == null ? 0 : content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 24;
+            if (width < 560)
+            {
+                int expected = Math.Max(560, ClientSize.Width - 200 - 14 - 16 - SystemInformation.VerticalScrollBarWidth - 24);
+                width = Math.Max(width, expected);
+            }
+            return Math.Max(560, width);
+        }
+
+        private Control CreateTunerSystemOptimizeGroup(int width)
+        {
+            string[] names = new string[]
+            {
+                "程序禁网", "Hosts管理", "重置插件", "插件列表",
+                "清除插件", "清除Waves", "禁用杀毒", "禁用更新",
+                "防火墙开关", "禁用UAC", "电源睡眠", "远程桌面",
+                "控制面板", "系统信息", "声音面板", "注册表",
+                "设备管理器", "任务管理器", "外观设置", "卸载软件"
+            };
+            string[] actions = new string[]
+            {
+                "firewall.cpl", "notepad.exe %WINDIR%\\System32\\drivers\\etc\\hosts", "rundll32.exe shell32.dll,Control_RunDLL appwiz.cpl", "explorer.exe %ProgramFiles%",
+                "cleanmgr.exe", "explorer.exe %ProgramFiles%", "windowsdefender:", "ms-settings:windowsupdate",
+                "firewall.cpl", "UserAccountControlSettings.exe", "powercfg.cpl", "SystemPropertiesRemote.exe",
+                "control.exe", "msinfo32.exe", "mmsys.cpl", "regedit.exe",
+                "devmgmt.msc", "taskmgr.exe", "desk.cpl", "appwiz.cpl"
+            };
+            return CreateTunerButtonGroup("系统优化", "gear", width, names, actions, 4, 5);
+        }
+
+        private Control CreateTunerDirectoryGroup(int width)
+        {
+            string[] names = new string[] { "我的电脑", "我的文档", "我的收藏", "程序目录", "临时目录", "安装目录", "系统目录", "启动菜单" };
+            string[] targets = new string[]
+            {
+                "explorer.exe shell:MyComputerFolder",
+                "explorer.exe shell:Personal",
+                "explorer.exe shell:Favorites",
+                "explorer.exe %ProgramFiles%",
+                "explorer.exe %TEMP%",
+                "explorer.exe %ProgramFiles%",
+                "explorer.exe %WINDIR%",
+                "explorer.exe shell:Startup"
+            };
+            return CreateTunerButtonGroup("常用目录", "tools", width, names, targets, 4, 2);
+        }
+
+        private Control CreateTunerButtonGroup(string caption, string iconKey, int width, string[] names, string[] targets, int columns, int rowsHint)
+        {
+            int headerHeight = 56;
+            int buttonHeight = 42;
+            int gap = 10;
+            int innerLeft = 18;
+            int buttonWidth = Math.Max(132, (width - innerLeft * 2 - gap * (columns - 1)) / columns);
+            int rows = Math.Max(rowsHint, (int)Math.Ceiling(names.Length / (double)columns));
+            int groupHeight = headerHeight + 16 + buttonHeight * rows + gap * Math.Max(0, rows - 1) + 16;
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = groupHeight,
+                Margin = new Padding(0, 0, 0, 16),
+                BackColor = PanelBg,
+                BorderColor = Color.Transparent,
+                Radius = 8
+            };
+            TunerSectionHeader header = new TunerSectionHeader
+            {
+                Left = 0,
+                Top = 0,
+                Width = width,
+                Height = headerHeight,
+                Caption = caption,
+                IconKey = iconKey,
+                Expanded = true,
+                DrawBottomLine = true
+            };
+            panel.Controls.Add(header);
+
+            int top = headerHeight + 16;
+            for (int i = 0; i < names.Length; i++)
+            {
+                int row = i / columns;
+                int col = i % columns;
+                TunerActionButton button = new TunerActionButton
+                {
+                    Left = innerLeft + col * (buttonWidth + gap),
+                    Top = top + row * (buttonHeight + gap),
+                    Width = buttonWidth,
+                    Height = buttonHeight,
+                    Title = names[i],
+                    HideIcon = true,
+                    ActionInfo = new ActionInfo { Action = "cmd", Target = targets[i], Name = names[i] }
+                };
+                button.Click += delegate
+                {
+                    ActionInfo info = button.ActionInfo;
+                    RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+                };
+                panel.Controls.Add(button);
+            }
+            return panel;
+        }
+
+        private void AddTunerEmptyMessage(string message)
+        {
+            int width = Math.Max(520, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            RoundedPanel empty = new RoundedPanel
+            {
+                Width = width,
+                Height = 118,
+                Margin = new Padding(0, 0, 0, 14),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(120, Line),
+                Radius = 8
+            };
+            Label label = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = message,
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 10F, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            empty.Controls.Add(label);
+            content.Controls.Add(empty);
+        }
+
+        private Panel CreateTunerGroup(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index)
+        {
+            int columns = Math.Max(2, Math.Min(4, width / 150));
+            int gap = 8;
+            int buttonHeight = 42;
+            int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
+            int groupHeight = 56 + 16 + rows * buttonHeight + Math.Max(0, rows - 1) * gap + 16;
+
+            RoundedPanel panel = new RoundedPanel
+            {
+                Width = width,
+                Height = groupHeight,
+                Margin = new Padding(0, 0, 0, 12),
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(142, Line),
+                Radius = 8
+            };
+
+            string titleText = GetText(section, "title", "");
+            if (String.IsNullOrWhiteSpace(titleText)) titleText = index == 0 ? CurrentTemplatePageTitle() : "常用工具";
+            TunerSectionHeader heading = new TunerSectionHeader
+            {
+                Left = 0,
+                Top = 0,
+                Width = width,
+                Height = 56,
+                Caption = titleText,
+                IconKey = "gear",
+                Expanded = true,
+                DrawBottomLine = true
+            };
+            panel.Controls.Add(heading);
+
+            int innerLeft = 18;
+            int top = 72;
+            int buttonWidth = Math.Max(118, (width - innerLeft * 2 - gap * (columns - 1)) / columns);
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                int row = i / columns;
+                int col = i % columns;
+                Control button = CreateTunerActionButton(buttons[i], innerLeft + col * (buttonWidth + gap), top + row * (buttonHeight + gap), buttonWidth, buttonHeight, i);
+                panel.Controls.Add(button);
+            }
+            return panel;
+        }
+
+        private Control CreateTunerActionButton(Dictionary<string, object> item, int left, int top, int width, int height, int index)
+        {
+            string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
+            string target = GetTarget(item, action);
+            string customScript = GetText(item, "custom_script", "");
+            string iconUrl = GetText(item, "icon", "");
+            Image icon = GetCachedButtonIcon(iconUrl);
+            TunerActionButton button = new TunerActionButton
+            {
+                Left = left,
+                Top = top,
+                Width = width,
+                Height = height,
+                Title = GetText(item, "name", "未命名"),
+                IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
+                IconImage = icon,
+                HideIcon = true,
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+            };
+            if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
+            button.Click += delegate
+            {
+                ActionInfo info = button.ActionInfo;
+                RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+            };
+            QueueButtonIconLoad(iconUrl, button);
+            return button;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private class MemoryStatusEx
+        {
+            public uint dwLength = (uint)Marshal.SizeOf(typeof(MemoryStatusEx));
+            public uint dwMemoryLoad;
+            public ulong ullTotalPhys;
+            public ulong ullAvailPhys;
+            public ulong ullTotalPageFile;
+            public ulong ullAvailPageFile;
+            public ulong ullTotalVirtual;
+            public ulong ullAvailVirtual;
+            public ulong ullAvailExtendedVirtual;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx lpBuffer);
+
+        [DllImport("kernel32.dll")]
+        private static extern ulong GetTickCount64();
+
+        private static PerformanceCounter studioCpuCounter;
+        private static DateTime studioCpuCounterReadyAt = DateTime.MinValue;
+        private static float studioLastCpuValue = 0F;
+
+        private static string FormatGb(ulong bytes)
+        {
+            return (bytes / 1024.0 / 1024.0 / 1024.0).ToString("0.0") + " GB";
+        }
+
+        private static string RegistryText(string path, string name, string fallback)
+        {
+            try
+            {
+                object value = Registry.GetValue(path, name, null);
+                string text = Convert.ToString(value);
+                return String.IsNullOrWhiteSpace(text) ? fallback : text.Trim();
+            }
+            catch { return fallback; }
+        }
+
+        private static string LocalWindowsName()
+        {
+            string basePath = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+            string product = RegistryText(basePath, "ProductName", Environment.OSVersion.VersionString);
+            string display = RegistryText(basePath, "DisplayVersion", "");
+            if (String.IsNullOrWhiteSpace(display)) display = RegistryText(basePath, "ReleaseId", "");
+            return String.IsNullOrWhiteSpace(display) ? product : product + " " + display;
+        }
+
+        private static string LocalCpuName()
+        {
+            return RegistryText(@"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString", Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? "CPU");
+        }
+
+        private static string LocalGpuName()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Video"))
+                {
+                    if (key != null)
+                    {
+                        foreach (string child in key.GetSubKeyNames())
+                        using (RegistryKey childKey = key.OpenSubKey(child))
+                        {
+                            if (childKey == null) continue;
+                            foreach (string sub in childKey.GetSubKeyNames())
+                            using (RegistryKey video = childKey.OpenSubKey(sub))
+                            {
+                                if (video == null) continue;
+                                string desc = Convert.ToString(video.GetValue("DriverDesc", ""));
+                                if (!String.IsNullOrWhiteSpace(desc) && desc.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) < 0) return desc.Trim();
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return "本机显卡";
+        }
+
+        private static string LocalUptimeText()
+        {
+            try
+            {
+                TimeSpan span = TimeSpan.FromMilliseconds(GetTickCount64());
+                return String.Format("{0} \u5929 {1} \u5c0f\u65f6 {2} \u5206\u949f {3} \u79d2", span.Days, span.Hours, span.Minutes, span.Seconds);
+            }
+            catch
+            {
+                try
+                {
+                    TimeSpan span = TimeSpan.FromMilliseconds(Environment.TickCount & Int32.MaxValue);
+                    return String.Format("{0} \u5929 {1} \u5c0f\u65f6 {2} \u5206\u949f {3} \u79d2", span.Days, span.Hours, span.Minutes, span.Seconds);
+                }
+                catch { return "--"; }
+            }
+        }
+
+        private static float LocalCpuUsagePercent()
+        {
+            try
+            {
+                if (studioCpuCounter == null)
+                {
+                    studioCpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
+                    studioCpuCounter.NextValue();
+                    studioCpuCounterReadyAt = DateTime.Now.AddMilliseconds(650);
+                    return studioLastCpuValue;
+                }
+                if (DateTime.Now < studioCpuCounterReadyAt) return studioLastCpuValue;
+                studioLastCpuValue = Math.Max(0F, Math.Min(100F, studioCpuCounter.NextValue()));
+                return studioLastCpuValue;
+            }
+            catch { return studioLastCpuValue; }
+        }
+
+        private static void LocalMemoryInfo(out ulong total, out ulong used, out float percent)
+        {
+            total = 0; used = 0; percent = 0;
+            try
+            {
+                MemoryStatusEx mem = new MemoryStatusEx();
+                if (GlobalMemoryStatusEx(mem))
+                {
+                    total = mem.ullTotalPhys;
+                    used = mem.ullTotalPhys - mem.ullAvailPhys;
+                    percent = total == 0 ? 0 : (float)(used * 100.0 / total);
+                }
+            }
+            catch { }
+        }
+
+        private static void LocalDriveInfo(out ulong total, out ulong used, out float percent)
+        {
+            total = 0; used = 0; percent = 0;
+            try
+            {
+                DriveInfo drive = new DriveInfo(Path.GetPathRoot(Environment.SystemDirectory));
+                total = (ulong)Math.Max(0L, drive.TotalSize);
+                ulong free = (ulong)Math.Max(0L, drive.AvailableFreeSpace);
+                used = total > free ? total - free : 0;
+                percent = total == 0 ? 0 : (float)(used * 100.0 / total);
+            }
+            catch { }
+        }
+
+        private void RenderStudioOverviewPage()
+        {
+            if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                studioOverviewClockLabel = null;
+                studioOverviewCpuValueLabel = null;
+                studioOverviewCpuSubLabel = null;
+                studioOverviewCpuFillPanel = null;
+                studioOverviewCpuBarPanel = null;
+                studioOverviewMemValueLabel = null;
+                studioOverviewMemSubLabel = null;
+                studioOverviewMemFillPanel = null;
+                studioOverviewMemBarPanel = null;
+                studioOverviewDiskValueLabel = null;
+                studioOverviewDiskSubLabel = null;
+                studioOverviewDiskFillPanel = null;
+                studioOverviewDiskBarPanel = null;
+                studioOverviewUptimeLabel = null;
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
+                int rawWidth = content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8;
+                int available = Math.Max(360, rawWidth);
+                content.Controls.Add(CreateStudioOverviewHeader(available));
+                content.Controls.Add(CreateStudioOverviewGrid(available));
+                UpdateStudioOverviewLiveValues();
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
+
+        private Control CreateStudioOverviewHeader(int width)
+        {
+            Panel panel = new Panel { Width = width, Height = 42, Margin = new Padding(0, 0, 0, 0), BackColor = Bg };
+            Label caption = new Label { Left = 0, Top = 0, Width = Math.Min(130, width), Height = 34, Text = "\u25a3 \u7cfb\u7edf\u6982\u89c8", ForeColor = TextColor, BackColor = Bg, Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = false };
+            studioOverviewClockLabel = new Label { Left = caption.Width + 6, Top = 0, Width = Math.Max(170, width - caption.Width - 6), Height = 34, Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), ForeColor = TextColor, BackColor = Bg, Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = false };
+            panel.Controls.Add(caption);
+            panel.Controls.Add(studioOverviewClockLabel);
+            return panel;
+        }
+
+        private Control CreateStudioOverviewGrid(int width)
+        {
+            int gap = 14;
+            int lowerTop = 176;
+            int hostHeight = 384;
+            Panel host = new Panel { Width = width, Height = hostHeight, Margin = new Padding(0, 0, 0, 16), BackColor = Bg };
+            int topW = Math.Max(110, (width - gap * 2) / 3);
+            int thirdW = Math.Max(110, width - (topW + gap) * 2);
+            host.Controls.Add(CreateStudioMetricCard("CPU \u4f7f\u7528\u7387", Color.FromArgb(35, 123, 255), 0, 0, topW, "cpu"));
+            host.Controls.Add(CreateStudioMetricCard("\u5185\u5b58\u4f7f\u7528\u7387", Color.FromArgb(135, 90, 246), topW + gap, 0, topW, "mem"));
+            host.Controls.Add(CreateStudioMetricCard("C\u76d8\u4f7f\u7528\u7387", Color.FromArgb(249, 115, 22), (topW + gap) * 2, 0, thirdW, "disk"));
+            int quickMin = Math.Min(360, Math.Max(300, (int)(width * 0.36)));
+            int infoW = Math.Max(320, width - quickMin - gap);
+            int quickW = Math.Max(260, width - infoW - gap);
+            host.Controls.Add(CreateStudioSystemInfoCard(0, lowerTop, infoW, 178));
+            host.Controls.Add(CreateStudioQuickAppsCard(infoW + gap, lowerTop, quickW, 178));
+            return host;
+        }
+
+        private Control CreateStudioMetricCard(string caption, Color accentColor, int left, int top, int width, string kind)
+        {
+            int inner = Math.Max(20, width - 32);
+            RoundedPanel card = new RoundedPanel { Left = left, Top = top, Width = width, Height = 160, BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 80 : 70, Line), Radius = 12 };
+            Label titleLabel = new Label { Left = 16, Top = 16, Width = inner, Height = 22, Text = caption, ForeColor = TextColor, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 9F, FontStyle.Bold), AutoEllipsis = true };
+            Label valueLabel = new Label { Left = 16, Top = 52, Width = inner, Height = 42, Text = "--", ForeColor = accentColor, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 20F, FontStyle.Bold), AutoEllipsis = true };
+            Panel barBg = new Panel { Left = 16, Top = 108, Width = inner, Height = 8, BackColor = LightTheme ? Color.FromArgb(226, 232, 240) : Color.FromArgb(58, 70, 85) };
+            Panel fill = new Panel { Left = 0, Top = 0, Width = 1, Height = 8, BackColor = accentColor };
+            Label subLabel = new Label { Left = 16, Top = 126, Width = inner, Height = 24, Text = "--", ForeColor = Muted, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 8.5F), AutoEllipsis = true };
+            barBg.Controls.Add(fill);
+            card.Controls.Add(titleLabel);
+            card.Controls.Add(valueLabel);
+            card.Controls.Add(barBg);
+            card.Controls.Add(subLabel);
+            if (kind == "cpu") { studioOverviewCpuValueLabel = valueLabel; studioOverviewCpuSubLabel = subLabel; studioOverviewCpuBarPanel = barBg; studioOverviewCpuFillPanel = fill; }
+            else if (kind == "mem") { studioOverviewMemValueLabel = valueLabel; studioOverviewMemSubLabel = subLabel; studioOverviewMemBarPanel = barBg; studioOverviewMemFillPanel = fill; }
+            else { studioOverviewDiskValueLabel = valueLabel; studioOverviewDiskSubLabel = subLabel; studioOverviewDiskBarPanel = barBg; studioOverviewDiskFillPanel = fill; }
+            return card;
+        }
+
+        private void SetStudioMetric(Label valueLabel, Label subLabel, Panel barPanel, Panel fillPanel, float percent, string sub)
+        {
+            if (valueLabel != null) valueLabel.Text = percent.ToString("0.0") + "%";
+            if (subLabel != null) subLabel.Text = sub;
+            if (barPanel != null && fillPanel != null)
+            {
+                int w = Math.Max(1, Math.Min(barPanel.Width, (int)(barPanel.Width * Math.Max(0, Math.Min(100, percent)) / 100.0)));
+                fillPanel.Width = w;
+            }
+        }
+
+        private void UpdateStudioOverviewLiveValues()
+        {
+            if (studioOverviewClockLabel != null && !studioOverviewClockLabel.IsDisposed) studioOverviewClockLabel.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            float cpu = LocalCpuUsagePercent();
+            ulong memTotal, memUsed, diskTotal, diskUsed;
+            float memPercent, diskPercent;
+            LocalMemoryInfo(out memTotal, out memUsed, out memPercent);
+            LocalDriveInfo(out diskTotal, out diskUsed, out diskPercent);
+            SetStudioMetric(studioOverviewCpuValueLabel, studioOverviewCpuSubLabel, studioOverviewCpuBarPanel, studioOverviewCpuFillPanel, cpu, "\u6574\u673a\u603b\u5360\u7528");
+            SetStudioMetric(studioOverviewMemValueLabel, studioOverviewMemSubLabel, studioOverviewMemBarPanel, studioOverviewMemFillPanel, memPercent, "\u5df2\u7528 " + FormatGb(memUsed) + " / \u603b\u8ba1 " + FormatGb(memTotal));
+            SetStudioMetric(studioOverviewDiskValueLabel, studioOverviewDiskSubLabel, studioOverviewDiskBarPanel, studioOverviewDiskFillPanel, diskPercent, "\u5df2\u7528 " + FormatGb(diskUsed) + " / \u603b\u8ba1 " + FormatGb(diskTotal));
+            if (studioOverviewUptimeLabel != null && !studioOverviewUptimeLabel.IsDisposed) studioOverviewUptimeLabel.Text = LocalUptimeText();
+        }
+
+        private Control CreateStudioSystemInfoCard(int left, int top, int width, int height)
+        {
+            RoundedPanel card = new RoundedPanel { Left = left, Top = top, Width = width, Height = height, BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 80 : 70, Line), Radius = 12 };
+            ulong memTotal, memUsed;
+            float memPercent;
+            LocalMemoryInfo(out memTotal, out memUsed, out memPercent);
+            string[] names = new string[] { "\u64cd\u4f5c\u7cfb\u7edf", "\u5904\u7406\u5668", "\u5185\u5b58", "\u663e\u5361", "\u8fd0\u884c\u65f6\u95f4" };
+            string[] vals = new string[] { LocalWindowsName(), LocalCpuName(), FormatGb(memTotal), LocalGpuName(), LocalUptimeText() };
+            for (int i = 0; i < names.Length; i++)
+            {
+                int y = 26 + i * 28;
+                card.Controls.Add(new Label { Left = 24, Top = y, Width = 72, Height = 22, Text = names[i], ForeColor = Muted, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 8.5F) });
+                Label value = new Label { Left = 104, Top = y, Width = Math.Max(50, width - 122), Height = 22, Text = vals[i], ForeColor = TextColor, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 9F, FontStyle.Bold), AutoEllipsis = true };
+                if (i == 4) studioOverviewUptimeLabel = value;
+                card.Controls.Add(value);
+            }
+            return card;
+        }
+
+        private Control CreateStudioQuickAppsCard(int left, int top, int width, int height)
+        {
+            RoundedPanel card = new RoundedPanel { Left = left, Top = top, Width = width, Height = height, BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 80 : 70, Line), Radius = 12 };
+            List<Dictionary<string, object>> buttons = StudioOverviewButtons();
+            int columns = 3;
+            int cellW = Math.Max(78, (width - 28) / columns);
+            int cellH = 76;
+            for (int i = 0; i < Math.Min(6, buttons.Count); i++) card.Controls.Add(CreateStudioQuickAppButton(buttons[i], 14 + (i % columns) * cellW, 18 + (i / columns) * cellH, Math.Max(66, cellW - 8), cellH - 2, i));
+            return card;
+        }
+
+        private List<Dictionary<string, object>> StudioOverviewButtons()
+        {
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            Dictionary<string, object> page = pages.ContainsKey(StudioOverviewPageId) ? AsDict(pages[StudioOverviewPageId]) : new Dictionary<string, object>();
+            IList<object> sections = AsList(Get(page, "sections"));
+            List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
+            if (sections.Count > 0) foreach (object obj in AsList(Get(AsDict(sections[0]), "buttons"))) buttons.Add(AsDict(obj));
+            buttons.Sort((a, b) => IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0)));
+            return buttons;
+        }
+
+        private Control CreateStudioQuickAppButton(Dictionary<string, object> item, int left, int top, int width, int height, int index)
+        {
+            TemplateActionButton button = CreateTemplateActionButton(item, index);
+            button.Left = left;
+            button.Top = top;
+            button.Width = width;
+            button.Height = height;
+            button.StudioMode = true;
+            button.OverviewIconMode = true;
+            string overviewIconUrl = GetText(item, "icon", "");
+            if (!String.IsNullOrWhiteSpace(overviewIconUrl))
+            {
+                Image overviewIcon = GetCachedButtonIcon(overviewIconUrl);
+                if (overviewIcon == null) overviewIcon = LoadRemoteImage(overviewIconUrl, 48, 48);
+                if (overviewIcon != null) button.IconImage = overviewIcon;
+            }
+            return button;
         }
 
         private void ShowStudioSettingsPage()
@@ -4112,6 +5453,7 @@ namespace ToolboxClient
             if (recordsPanel != null) recordsPanel.Visible = false;
             if (settingsPanel != null) settingsPanel.Visible = false;
             title.Text = portalVariant ? PortalText("软件大全", "Software Catalog") : "软件大全";
+            if (tunerVariant) status.Text = "软件资源 - 桌面程序";
 
             softwareCatalogLayoutUpdating = true;
             content.SuspendLayout();
@@ -4176,10 +5518,10 @@ namespace ToolboxClient
                 Top = 14,
                 Width = width - 36,
                 Height = 30,
-                Text = "▦  " + heading,
+                Text = tunerVariant ? heading : "▦  " + heading,
                 ForeColor = TextColor,
                 BackColor = Color.Transparent,
-                Font = new Font(Font.FontFamily, studioVariant ? 15F : 16F, FontStyle.Bold),
+                Font = new Font(Font.FontFamily, (studioVariant || tunerVariant) ? 15F : 16F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft
             };
             Label p = new Label
@@ -5793,8 +7135,10 @@ namespace ToolboxClient
                         if (target == null || target.IsDisposed) return;
                         TemplateActionButton templateButton = target as TemplateActionButton;
                         ActionCard actionCard = target as ActionCard;
+                        TunerActionButton tunerButton = target as TunerActionButton;
                         if (templateButton != null) templateButton.IconImage = image;
                         if (actionCard != null) actionCard.IconImage = image;
+                        if (tunerButton != null) tunerButton.IconImage = image;
                         target.Invalidate();
                     }));
                 }
@@ -6539,7 +7883,8 @@ namespace ToolboxClient
 
         private void ShowActiveDownloadView()
         {
-            if (studioVariant) ShowStudioSettingsPage();
+            if (tunerVariant) ShowPage("downloads");
+            else if (studioVariant) ShowStudioSettingsPage();
             else if (portalVariant) ShowTemplateUtilityPage("downloads");
             else ShowDownloadRecordsPanel();
         }
@@ -6865,11 +8210,11 @@ namespace ToolboxClient
                 Interlocked.Exchange(ref task.WorkerRunning, 0);
             }
 
-            BeginInvoke(new Action(delegate
+            BeginInvokeIfReady(delegate
             {
                 task.AbortActiveRequests();
                 FinishControlledDownload(task, failure);
-            }));
+            });
         }
 
         private void DownloadFileSingleConnection(DownloadTask task, int attempt)
@@ -7573,10 +8918,11 @@ namespace ToolboxClient
 
         private void RemoveActiveDownload(DownloadTask task)
         {
+            if (task == null) return;
             lock (activeDownloadsLock) activeDownloads.Remove(task);
             UpdateDownloadBadges();
             SavePausedDownloadTasks();
-            RenderActiveDownloads();
+            SafeRenderActiveDownloads();
         }
 
         private string PausedDownloadsPath()
@@ -7748,30 +9094,55 @@ namespace ToolboxClient
 
         private string LaunchDownloadedFile(string path)
         {
-            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (String.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "文件不存在";
+            string launchPath = path;
+            string ext = Path.GetExtension(launchPath).ToLowerInvariant();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                lock (launchDownloadedFileLock)
+                {
+                    try
+                    {
+                        ProcessStartInfo psi;
+                        if (ext == ".exe")
+                        {
+                            psi = new ProcessStartInfo(launchPath) { UseShellExecute = true, Verb = "runas" };
+                        }
+                        else if (ext == ".msi")
+                        {
+                            psi = new ProcessStartInfo("msiexec.exe", "/i \"" + launchPath + "\"") { UseShellExecute = true, Verb = "runas" };
+                        }
+                        else
+                        {
+                            psi = new ProcessStartInfo("explorer.exe", "/select,\"" + launchPath + "\"") { UseShellExecute = true };
+                        }
+                        Process.Start(psi);
+                    }
+                    catch (Win32Exception ex)
+                    {
+                        if (ex.NativeErrorCode == 1223) BeginInvokeIfReady(delegate { status.Text = "用户取消管理员启动"; });
+                        else BeginInvokeIfReady(delegate { status.Text = "管理员启动失败"; });
+                    }
+                    catch
+                    {
+                        BeginInvokeIfReady(delegate { status.Text = "管理员启动失败"; });
+                    }
+                }
+            });
+            if (ext == ".exe") return "已下载，正在后台启动";
+            if (ext == ".msi") return "已下载，正在后台安装";
+            return "已下载，正在后台打开";
+        }
+
+        private void BeginInvokeIfReady(MethodInvoker action)
+        {
             try
             {
-                if (ext == ".exe")
-                {
-                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas" });
-                    return PortalText("已下载并请求管理员启动", "Downloaded and requested admin launch");
-                }
-                if (ext == ".msi")
-                {
-                    Process.Start(new ProcessStartInfo("msiexec.exe", "/i \"" + path + "\"") { UseShellExecute = true, Verb = "runas" });
-                    return PortalText("已下载并请求管理员安装", "Downloaded and requested admin install");
-                }
-                Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
-                return PortalText("已下载，文件已定位", "Downloaded and selected in folder");
-            }
-            catch (Win32Exception ex)
-            {
-                if (ex.NativeErrorCode == 1223) return PortalText("已下载，用户取消管理员启动", "Downloaded, admin launch canceled");
-                return PortalText("已下载，管理员启动失败", "Downloaded, admin launch failed");
+                if (action == null || IsDisposed || !IsHandleCreated) return;
+                BeginInvoke(action);
             }
             catch
             {
-                return PortalText("已下载，管理员启动失败", "Downloaded, admin launch failed");
             }
         }
 
@@ -7988,6 +9359,7 @@ namespace ToolboxClient
             portalTopMost = !portalTopMost;
             TopMost = portalTopMost;
             UpdateStudioChromeButtons();
+            UpdateTunerChromeButtons();
             status.Text = portalTopMost ? "窗口已置顶" : "已取消窗口置顶";
         }
 
@@ -8001,10 +9373,50 @@ namespace ToolboxClient
             ApplyStudioThemeToShell();
             BuildNav();
             if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase)) RenderStudioSettingsPage();
+            else if (currentPage.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) RenderStudioOverviewPage();
             else if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) RenderSoftwareCatalogPage();
             else RenderCurrentSections();
             UpdateStudioChromeButtons();
             status.Text = nextDark ? "已切换深色模式" : "已切换浅色模式";
+        }
+
+        private void ToggleTunerTheme()
+        {
+            ClientSettings settings = LoadClientSettings();
+            bool nextDark = !IsDarkModeSetting(settings.Theme);
+            settings.Theme = nextDark ? "dark" : "light";
+            SaveClientSettings(settings);
+            string pageBeforeThemeChange = currentPage;
+            ApplyTunerPalette(nextDark);
+            ApplyTunerThemeToShell();
+            currentPage = String.IsNullOrWhiteSpace(pageBeforeThemeChange) ? TunerHomePageId : pageBeforeThemeChange;
+            MarkNavButtonActive(currentPage);
+            UpdateTunerChromeButtons();
+            status.Text = nextDark ? "已切换深色模式" : "已切换浅色模式";
+            ForceTunerLayoutRefresh();
+        }
+
+        private void ForceTunerLayoutRefresh()
+        {
+            if (!tunerVariant || content == null || content.IsDisposed) return;
+            lastResizeRenderPage = "";
+            lastResizeRenderWidth = -1;
+            lastResizeRenderHeight = -1;
+            contentResizeRenderPending = false;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    if (IsDisposed || content == null || content.IsDisposed) return;
+                    lastResizeRenderPage = "";
+                    lastResizeRenderWidth = -1;
+                    lastResizeRenderHeight = -1;
+                    RenderCurrentVisiblePage();
+                }));
+            }
+            catch
+            {
+            }
         }
 
         private void UpdateStudioChromeButtons()
@@ -8029,6 +9441,37 @@ namespace ToolboxClient
             if (contactButton != null) contactButton.Invalidate();
         }
 
+        private void UpdateTunerChromeButtons()
+        {
+            if (!tunerVariant) return;
+            UpdateDownloadBadges();
+            Button[] buttons = new Button[] { downloadTasksButton, recordsButton, topMostButton, contactButton, themeButton };
+            foreach (Button button in buttons)
+            {
+                if (button == null) continue;
+                button.ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238);
+                button.Invalidate();
+            }
+            TunerDownloadChromeButton tunerDownload = downloadTasksButton as TunerDownloadChromeButton;
+            if (tunerDownload != null)
+            {
+                int count = ActiveDownloadCount();
+                tunerDownload.BadgeText = count > 0 ? Math.Min(99, count).ToString() : "";
+                if (topToolTip != null) topToolTip.SetToolTip(downloadTasksButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载页面");
+            }
+            if (recordsButton != null) recordsButton.ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238);
+            if (topMostButton != null) topMostButton.ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238);
+            if (contactButton != null) contactButton.ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238);
+            if (themeButton != null) themeButton.ForeColor = LightTheme ? Color.FromArgb(148, 163, 184) : Color.FromArgb(214, 224, 238);
+            if (topMostButton != null && topToolTip != null) topToolTip.SetToolTip(topMostButton, portalTopMost ? "取消置顶" : "窗口置顶");
+            if (themeButton != null)
+            {
+                TunerChromeButton chrome = themeButton as TunerChromeButton;
+                if (chrome != null) chrome.IconKey = LightTheme ? "moon" : "sun";
+                themeButton.Invalidate();
+            }
+        }
+
         private int ActiveDownloadCount()
         {
             lock (activeDownloadsLock) return activeDownloads.Count;
@@ -8046,6 +9489,19 @@ namespace ToolboxClient
                     if (topToolTip != null)
                     {
                         topToolTip.SetToolTip(downloadTasksButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载任务");
+                    }
+                    chrome.Invalidate();
+                }
+            }
+            if (tunerVariant)
+            {
+                StudioChromeButton chrome = downloadTasksButton as StudioChromeButton;
+                if (chrome != null)
+                {
+                    chrome.BadgeText = count > 0 ? Math.Min(99, count).ToString() : "";
+                    if (topToolTip != null)
+                    {
+                        topToolTip.SetToolTip(downloadTasksButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载任务和记录");
                     }
                     chrome.Invalidate();
                 }
@@ -8659,34 +10115,42 @@ namespace ToolboxClient
         private void QueueDownloadTaskRowUpdate(DownloadTask task)
         {
             if (task == null || IsDisposed) return;
+            BeginInvokeIfReady(delegate { UpdateActiveDownloadTask(task); });
+        }
+
+        private void UpdateActiveDownloadTask(DownloadTask task)
+        {
             try
             {
-                BeginInvoke(new Action(delegate { UpdateActiveDownloadTask(task); }));
+                if (activeDownloadsList == null || activeDownloadsList.IsDisposed || task == null) return;
+                Panel row;
+                if (activeDownloadRows.TryGetValue(task.Id, out row) && row != null && !row.IsDisposed && row.Parent == activeDownloadsList)
+                {
+                    UpdateDownloadTaskRow(task, row);
+                    return;
+                }
+                SafeRenderActiveDownloads();
             }
             catch
             {
             }
         }
 
-        private void UpdateActiveDownloadTask(DownloadTask task)
+        private void SafeRenderActiveDownloads()
         {
-            if (activeDownloadsList == null || task == null) return;
-            Panel row;
-            if (activeDownloadRows.TryGetValue(task.Id, out row) && row != null && !row.IsDisposed && row.Parent == activeDownloadsList)
-            {
-                UpdateDownloadTaskRow(task, row);
-                return;
-            }
-            RenderActiveDownloads();
+            try { RenderActiveDownloads(); }
+            catch { }
         }
 
         private void RenderActiveDownloads()
         {
-            if (activeDownloadsList == null) return;
+            if (activeDownloadsList == null || activeDownloadsList.IsDisposed || !activeDownloadsList.IsHandleCreated) return;
             List<DownloadTask> tasks;
             lock (activeDownloadsLock) tasks = new List<DownloadTask>(activeDownloads);
             Point scrollPosition = activeDownloadsList.AutoScrollPosition;
             Point pageScrollPosition = CaptureContentScroll();
+            try
+            {
             activeDownloadsList.SuspendLayout();
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
             activeDownloadsList.AutoScroll = !studioInline || tasks.Count > 1;
@@ -8747,8 +10211,11 @@ namespace ToolboxClient
             {
                 if (!liveIds.Contains(pair.Key))
                 {
-                    activeDownloadsList.Controls.Remove(pair.Value);
-                    pair.Value.Dispose();
+                    if (pair.Value != null && !pair.Value.IsDisposed)
+                    {
+                        if (pair.Value.Parent == activeDownloadsList) activeDownloadsList.Controls.Remove(pair.Value);
+                        pair.Value.Dispose();
+                    }
                     deadIds.Add(pair.Key);
                 }
             }
@@ -8759,6 +10226,11 @@ namespace ToolboxClient
             activeDownloadsList.ResumeLayout();
             RestoreActiveDownloadScroll(scrollPosition);
             RestoreContentScrollSoon(pageScrollPosition);
+            }
+            catch
+            {
+                try { if (activeDownloadsList != null && !activeDownloadsList.IsDisposed) activeDownloadsList.ResumeLayout(); } catch { }
+            }
         }
 
         private void RestoreActiveDownloadScroll(Point scrollPosition)
@@ -8794,9 +10266,10 @@ namespace ToolboxClient
         private Panel CreateDownloadTaskRow(DownloadTask task)
         {
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
+            bool tunerInline = tunerVariant && currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
             Panel row = new RoundedPanel
             {
-                Width = Math.Max(540, activeDownloadsList.ClientSize.Width - 24),
+                Width = tunerInline ? Math.Max(320, activeDownloadsList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8) : Math.Max(540, activeDownloadsList.ClientSize.Width - 24),
                 Height = 84,
                 Margin = new Padding(0, 0, 0, 8),
                 BackColor = studioInline ? StudioRecordCardBack() : DialogCardBack(),
@@ -9029,26 +10502,35 @@ namespace ToolboxClient
 
         private static Color DialogBodyBack()
         {
+            if (NeutralDialogTheme) return Color.FromArgb(248, 250, 252);
             return LightTheme ? Color.FromArgb(255, 248, 252) : Color.FromArgb(18, 31, 47);
         }
 
         private static Color DialogCardBack()
         {
+            if (NeutralDialogTheme) return Color.White;
             return LightTheme ? Color.FromArgb(255, 244, 250) : Color.FromArgb(25, 41, 61);
         }
 
         private static Color DialogFieldBack()
         {
+            if (NeutralDialogTheme) return Color.FromArgb(248, 250, 252);
             return LightTheme ? Color.FromArgb(255, 252, 254) : Color.FromArgb(18, 31, 47);
         }
 
         private static Color DialogHeaderBack()
         {
+            if (NeutralDialogTheme) return Color.FromArgb(241, 245, 249);
             return LightTheme ? Color.FromArgb(247, 225, 237) : Color.FromArgb(27, 43, 63);
         }
 
         private static Color DialogRowBack(int index, bool selected)
         {
+            if (NeutralDialogTheme)
+            {
+                if (selected) return Color.FromArgb(219, 234, 254);
+                return index % 2 == 0 ? Color.White : Color.FromArgb(248, 250, 252);
+            }
             if (selected) return LightTheme ? Color.FromArgb(232, 132, 180) : Color.FromArgb(37, 82, 112);
             if (LightTheme) return index % 2 == 0 ? Color.FromArgb(255, 250, 253) : Color.FromArgb(252, 239, 247);
             return index % 2 == 0 ? Color.FromArgb(18, 31, 47) : Color.FromArgb(21, 35, 52);
@@ -9056,6 +10538,7 @@ namespace ToolboxClient
 
         private static Color DialogSubText()
         {
+            if (NeutralDialogTheme) return Color.FromArgb(100, 116, 139);
             return LightTheme ? Color.FromArgb(116, 76, 96) : Color.FromArgb(190, 206, 222);
         }
 
@@ -9362,6 +10845,14 @@ namespace ToolboxClient
 
         private void ShowClientSettings()
         {
+            if (tunerVariant)
+            {
+                currentPage = "settings";
+                MarkNavButtonActive("settings");
+                title.Text = "系统设置";
+                RenderTunerSettingsPage();
+                return;
+            }
             if (settingsPanel == null) BuildSettingsPanel();
             FillSettingsPanel();
             settingsPanel.Visible = !settingsPanel.Visible;
@@ -9400,6 +10891,337 @@ namespace ToolboxClient
             if (settingsPanel == null) return;
             settingsPanel.Left = Math.Max(12, ClientSize.Width - settingsPanel.Width - 22);
             settingsPanel.Top = 84;
+        }
+
+        private void RenderTunerSettingsPage()
+        {
+            if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+
+                int available = TunerContentWidth();
+                ClientSettings currentSettings = LoadClientSettings();
+
+                content.Controls.Add(CreateTunerSettingsHeader(available));
+
+                RoundedPanel pathCard = CreateTunerSettingsCard(available, "软件下载保存路径", 96);
+                TextBox pathBox = new TextBox
+                {
+                    Left = 18,
+                    Top = 48,
+                    Width = available - 138,
+                    Height = 28,
+                    Text = GetDownloadDirectory(),
+                    BackColor = LightTheme ? Color.White : PanelBg2,
+                    ForeColor = TextColor,
+                    BorderStyle = BorderStyle.FixedSingle
+                };
+                Button browse = MakeDialogButton("选择");
+                browse.Left = available - 100;
+                browse.Top = 45;
+                browse.Width = 82;
+                browse.Click += delegate
+                {
+                    FolderBrowserDialog folderDialog = new FolderBrowserDialog();
+                    folderDialog.SelectedPath = pathBox.Text;
+                    if (folderDialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        pathBox.Text = folderDialog.SelectedPath;
+                    }
+                };
+                pathCard.Controls.Add(pathBox);
+                pathCard.Controls.Add(browse);
+                content.Controls.Add(pathCard);
+
+                RoundedPanel optionCard = CreateTunerSettingsCard(available, "启动与清理", 78);
+                CheckBox autoStart = new FlatCheckBox
+                {
+                    Left = 16,
+                    Top = 42,
+                    Width = Math.Max(240, (available - 60) / 2),
+                    Height = 26,
+                    Text = "开机自动启动工具箱",
+                    ForeColor = TextColor,
+                    BackColor = optionCard.BackColor,
+                    Checked = currentSettings.AutoStart || IsAutoStartEnabled()
+                };
+                CheckBox cleanOnExit = new FlatCheckBox
+                {
+                    Left = 16 + Math.Max(240, (available - 60) / 2),
+                    Top = 42,
+                    Width = Math.Max(260, (available - 60) / 2),
+                    Height = 26,
+                    Text = "关闭时自动删除已下载文件",
+                    ForeColor = TextColor,
+                    BackColor = optionCard.BackColor,
+                    Checked = currentSettings.DeleteDownloadsOnExit
+                };
+                optionCard.Controls.Add(autoStart);
+                optionCard.Controls.Add(cleanOnExit);
+                content.Controls.Add(optionCard);
+
+                RoundedPanel parallelCard = CreateTunerSettingsCard(available, "同时最多下载", 78);
+                ComboBox parallelBox = new ComboBox
+                {
+                    Left = 18,
+                    Top = 40,
+                    Width = 140,
+                    Height = 28,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = LightTheme ? Color.White : PanelBg2,
+                    ForeColor = TextColor,
+                    FlatStyle = FlatStyle.Flat,
+                    DrawMode = DrawMode.OwnerDrawFixed,
+                    ItemHeight = 22
+                };
+                parallelBox.DrawItem += DrawDarkComboItem;
+                FillMaxParallelDownloadBox(parallelBox, currentSettings.MaxParallelDownloads);
+                parallelCard.Controls.Add(parallelBox);
+                content.Controls.Add(parallelCard);
+
+                FlowLayoutPanel actions = new FlowLayoutPanel
+                {
+                    Width = available,
+                    Height = 40,
+                    Margin = new Padding(0, 2, 0, 10),
+                    FlowDirection = FlowDirection.RightToLeft,
+                    WrapContents = false,
+                    BackColor = Bg
+                };
+                Button save = MakeTunerChromeActionButton("保存设置");
+                Button openFolder = MakeTunerChromeActionButton("打开目录");
+                save.Click += delegate
+                {
+                    currentSettings.DownloadDirectory = pathBox.Text.Trim();
+                    currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
+                    currentSettings.AutoStart = autoStart.Checked;
+                    currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
+                    SaveClientSettings(currentSettings);
+                    SaveDownloadDirectory(pathBox.Text, currentSettings);
+                    SetAutoStart(autoStart.Checked);
+                    status.Text = "设置已保存";
+                };
+                openFolder.Click += delegate { OpenDownloadFolderFromSettings(); };
+                actions.Controls.Add(save);
+                actions.Controls.Add(openFolder);
+                content.Controls.Add(actions);
+                status.Text = "系统设置";
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
+
+        private void RenderTunerDownloadsPage()
+        {
+            if (content == null) return;
+            if (!BeginContentRender()) return;
+            bool oldVisible = content.Visible;
+            content.Visible = false;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                content.BackColor = Bg;
+
+                int available = TunerContentWidth();
+                content.Controls.Add(CreateTunerDownloadsHeader(available));
+
+                RoundedPanel activeCard = new RoundedPanel
+                {
+                    Width = available,
+                    Height = 172,
+                    Margin = new Padding(0, 0, 0, 12),
+                    BackColor = PanelBg,
+                    BorderColor = Color.FromArgb(LightTheme ? 110 : 88, Line),
+                    Radius = 8
+                };
+                Label activeLabel = new Label { Left = 16, Top = 12, Width = available - 32, Height = 20, Text = "当前下载任务", ForeColor = TextColor, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold) };
+                activeDownloadsList = new BufferedFlowLayoutPanel
+                {
+                    Left = 12,
+                    Top = 40,
+                    Width = available - 24,
+                    Height = 122,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    AutoScroll = true,
+                    BackColor = PanelBg,
+                    Padding = new Padding(0, 0, 0, 6),
+                    SuppressFocusAutoScroll = true
+                };
+                activeDownloadsList.HorizontalScroll.Enabled = false;
+                activeCard.Controls.Add(activeLabel);
+                activeCard.Controls.Add(activeDownloadsList);
+                content.Controls.Add(activeCard);
+
+                Label historyLabel = new Label { Width = available, Height = 24, Margin = new Padding(0, 0, 0, 6), Text = "下载记录", ForeColor = TextColor, BackColor = Bg, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold) };
+                content.Controls.Add(historyLabel);
+
+                recordsList = new ListView
+                {
+                    Width = available,
+                    Height = Math.Max(260, ClientSize.Height - 330),
+                    View = View.Details,
+                    FullRowSelect = true,
+                    MultiSelect = true,
+                    HideSelection = false,
+                    BackColor = LightTheme ? Color.White : PanelBg2,
+                    ForeColor = TextColor,
+                    BorderStyle = BorderStyle.None,
+                    HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                    ShowItemToolTips = true,
+                    OwnerDraw = true
+                };
+                recordsList.Columns.Add("时间", 122);
+                recordsList.Columns.Add("结果", 86);
+                recordsList.Columns.Add("名称", 260);
+                recordsList.Columns.Add("保存位置", 300);
+                recordsList.DoubleClick += delegate { OpenSelectedRecordFile(); };
+                recordsList.Resize += delegate { ResizeDownloadRecordColumns(); };
+                recordsList.DrawColumnHeader += DrawDownloadRecordHeader;
+                recordsList.DrawItem += DrawDownloadRecordItem;
+                recordsList.DrawSubItem += DrawDownloadRecordSubItem;
+                AttachDownloadRecordContextMenu(recordsList);
+                content.Controls.Add(recordsList);
+
+                FlowLayoutPanel actions = new FlowLayoutPanel
+                {
+                    Width = available,
+                    Height = 40,
+                    Margin = new Padding(0, 10, 0, 0),
+                    FlowDirection = FlowDirection.RightToLeft,
+                    WrapContents = false,
+                    BackColor = Bg
+                };
+                Button clear = MakeTunerChromeActionButton("清空记录");
+                Button deleteSelected = MakeTunerChromeActionButton("删除选中");
+                Button openFolder = MakeTunerChromeActionButton("打开目录");
+                Button openFile = MakeTunerChromeActionButton("打开文件");
+                openFile.Click += delegate { OpenSelectedRecordFile(); };
+                openFolder.Click += delegate { OpenSelectedRecordFolder(); };
+                deleteSelected.Click += delegate { DeleteSelectedDownloadRecords(); };
+                clear.Click += delegate { ClearDownloadRecords(); };
+                actions.Controls.Add(clear);
+                actions.Controls.Add(deleteSelected);
+                actions.Controls.Add(openFolder);
+                actions.Controls.Add(openFile);
+                content.Controls.Add(actions);
+
+                FillDownloadRecordsIntoList(recordsList);
+                RenderActiveDownloads();
+                status.Text = "下载页面";
+            }
+            finally
+            {
+                content.ResumeLayout();
+                content.Visible = oldVisible;
+                EndContentRender();
+            }
+        }
+
+        private Control CreateTunerDownloadsHeader(int width)
+        {
+            Panel panel = new Panel
+            {
+                Width = width,
+                Height = 48,
+                Margin = new Padding(0, 0, 0, 10),
+                BackColor = Bg
+            };
+            Label heading = new Label
+            {
+                Left = 0,
+                Top = 4,
+                Width = width,
+                Height = 32,
+                Text = "下载页面",
+                ForeColor = TextColor,
+                BackColor = Bg,
+                Font = new Font(Font.FontFamily, 12F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            panel.Controls.Add(heading);
+            return panel;
+        }
+
+        private RoundedPanel CreateTunerSettingsCard(int width, string titleText, int height)
+        {
+            RoundedPanel card = new RoundedPanel
+            {
+                Width = width,
+                Height = height,
+                Margin = new Padding(0, 0, 0, 12),
+                Radius = 8,
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 88, Line)
+            };
+            Label label = new Label
+            {
+                Left = 16,
+                Top = 12,
+                Width = width - 32,
+                Height = 20,
+                Text = titleText,
+                ForeColor = LightTheme ? Color.FromArgb(71, 85, 105) : Color.FromArgb(216, 226, 240),
+                BackColor = Color.Transparent
+            };
+            card.Controls.Add(label);
+            return card;
+        }
+
+        private Control CreateTunerSettingsHeader(int width)
+        {
+            Panel panel = new Panel
+            {
+                Width = width,
+                Height = 48,
+                Margin = new Padding(0, 0, 0, 10),
+                BackColor = Bg
+            };
+            Label heading = new Label
+            {
+                Left = 0,
+                Top = 4,
+                Width = width,
+                Height = 32,
+                Text = "工具箱设置",
+                ForeColor = TextColor,
+                BackColor = Bg,
+                Font = new Font(Font.FontFamily, 12F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            panel.Controls.Add(heading);
+            return panel;
+        }
+
+        private Button MakeTunerChromeActionButton(string text)
+        {
+            Button button = new Button
+            {
+                Width = 88,
+                Height = 30,
+                Margin = new Padding(8, 0, 0, 0),
+                Text = text,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = LightTheme ? Color.White : PanelBg2,
+                ForeColor = TextColor
+            };
+            button.FlatAppearance.BorderColor = Color.FromArgb(LightTheme ? 180 : 110, Line);
+            return button;
         }
 
         private void FillSettingsPanel()
@@ -10481,28 +12303,14 @@ namespace ToolboxClient
 
         private static Color CardAccent(string action, string title, int index)
         {
-            string text = ((title ?? "") + " " + (action ?? "")).ToLowerInvariant();
-            if (text.IndexOf("删除", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("清理", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("禁用", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("关闭", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("防火墙", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("uac", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return Red;
-            }
-
+            // ?????????????????????????/????????????
             Color orange = Color.FromArgb(236, 118, 59);
             Color cyan = Color.FromArgb(31, 180, 172);
             Color pink = Color.FromArgb(220, 86, 148);
             Color lime = Color.FromArgb(133, 185, 48);
-            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime };
-            int seed = StableHash(text) + Math.Max(0, index) * 37;
-            if (action == "cmd") seed += 5;
-            if (action == "download") seed += 11;
-            if (action == "winget") seed += 17;
-            int colorIndex = seed & 0x7fffffff;
-            return palette[colorIndex % palette.Length];
+            Color[] palette = new Color[] { Gold, Green, Accent, orange, Purple, cyan, pink, lime, Red };
+            int safeIndex = Math.Max(0, index);
+            return palette[safeIndex % palette.Length];
         }
 
         private static int StableHash(string value)
@@ -10696,6 +12504,506 @@ namespace ToolboxClient
                 path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
                 path.CloseFigure();
                 return path;
+            }
+        }
+
+        private sealed class TunerSectionHeader : Control
+        {
+            public string Caption = "";
+            public string IconKey = "gear";
+            public bool Expanded = true;
+            public bool DrawBottomLine = true;
+
+            public TunerSectionHeader()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush bg = new SolidBrush(PanelBg))
+                {
+                    e.Graphics.FillRectangle(bg, ClientRectangle);
+                }
+                if (DrawBottomLine)
+                {
+                    using (Pen line = new Pen(Line, 1F))
+                    {
+                        e.Graphics.DrawLine(line, 0, Height - 1, Width, Height - 1);
+                    }
+                }
+                Rectangle iconRect = new Rectangle(18, (Height - 22) / 2, 22, 22);
+                DrawTunerGlyph(e.Graphics, IconKey, iconRect, Accent, 1.8F);
+                Rectangle arrow = new Rectangle(Width - 34, (Height - 16) / 2, 16, 16);
+                using (Pen pen = new Pen(Color.FromArgb(100, 116, 139), 1.35F))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    if (Expanded)
+                    {
+                        e.Graphics.DrawLine(pen, arrow.Left + 3, arrow.Top + 6, arrow.Left + 8, arrow.Top + 11);
+                        e.Graphics.DrawLine(pen, arrow.Left + 8, arrow.Top + 11, arrow.Left + 13, arrow.Top + 6);
+                    }
+                    else
+                    {
+                        e.Graphics.DrawLine(pen, arrow.Left + 6, arrow.Top + 3, arrow.Left + 11, arrow.Top + 8);
+                        e.Graphics.DrawLine(pen, arrow.Left + 11, arrow.Top + 8, arrow.Left + 6, arrow.Top + 13);
+                    }
+                }
+                TextRenderer.DrawText(e.Graphics, Caption, Font, new Rectangle(46, 0, Width - 92, Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private static void DrawTunerGlyph(Graphics g, string key, Rectangle rect, Color color, float stroke)
+        {
+            string value = (key ?? "").ToLowerInvariant();
+            using (Pen pen = new Pen(color, stroke))
+            using (SolidBrush brush = new SolidBrush(color))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                pen.LineJoin = LineJoin.Round;
+                int cx = rect.Left + rect.Width / 2;
+                int cy = rect.Top + rect.Height / 2;
+                if (value == "slider")
+                {
+                    g.DrawLine(pen, rect.Left + 2, rect.Top + 5, rect.Right - 2, rect.Top + 5);
+                    g.DrawLine(pen, rect.Left + 2, cy, rect.Right - 2, cy);
+                    g.DrawLine(pen, rect.Left + 2, rect.Bottom - 5, rect.Right - 2, rect.Bottom - 5);
+                    g.FillEllipse(brush, rect.Left + 6, rect.Top + 2, 5, 5);
+                    g.FillEllipse(brush, rect.Right - 11, cy - 3, 5, 5);
+                    g.FillEllipse(brush, rect.Left + 9, rect.Bottom - 8, 5, 5);
+                    return;
+                }
+                if (value == "cloud")
+                {
+                    g.DrawArc(pen, rect.Left + 3, rect.Top + 7, 8, 8, 170, 190);
+                    g.DrawArc(pen, rect.Left + 7, rect.Top + 4, 9, 9, 190, 170);
+                    g.DrawArc(pen, rect.Left + 13, rect.Top + 8, 7, 7, 240, 160);
+                    g.DrawLine(pen, rect.Left + 5, rect.Bottom - 5, rect.Right - 4, rect.Bottom - 5);
+                    g.DrawLine(pen, cx, rect.Top + 9, cx, rect.Bottom - 4);
+                    g.DrawLine(pen, cx - 4, rect.Bottom - 8, cx, rect.Bottom - 4);
+                    g.DrawLine(pen, cx + 4, rect.Bottom - 8, cx, rect.Bottom - 4);
+                    return;
+                }
+                if (value == "wave")
+                {
+                    for (int i = 0; i < 5; i++)
+                    {
+                        int x = rect.Left + 3 + i * 3;
+                        int h = i == 2 ? rect.Height - 5 : (i == 1 || i == 3 ? rect.Height - 9 : rect.Height - 13);
+                        g.DrawLine(pen, x, cy - h / 2, x, cy + h / 2);
+                    }
+                    return;
+                }
+                if (value == "link")
+                {
+                    g.DrawArc(pen, rect.Left + 2, rect.Top + 4, 11, 11, 120, 280);
+                    g.DrawArc(pen, rect.Right - 13, rect.Bottom - 15, 11, 11, -60, 280);
+                    g.DrawLine(pen, rect.Left + 9, rect.Bottom - 8, rect.Right - 9, rect.Top + 8);
+                    return;
+                }
+                if (value == "tools")
+                {
+                    g.DrawLine(pen, rect.Left + 4, rect.Bottom - 4, rect.Right - 4, rect.Top + 4);
+                    g.DrawLine(pen, rect.Left + 5, rect.Top + 5, rect.Right - 5, rect.Bottom - 5);
+                    g.FillEllipse(brush, rect.Left + 3, rect.Top + 3, 5, 5);
+                    g.FillEllipse(brush, rect.Right - 8, rect.Top + 3, 5, 5);
+                    return;
+                }
+                if (value == "gear")
+                {
+                    g.DrawEllipse(pen, rect.Left + 5, rect.Top + 5, rect.Width - 10, rect.Height - 10);
+                    g.FillEllipse(brush, cx - 2, cy - 2, 4, 4);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = Math.PI * 2 * i / 8D;
+                        int x1 = cx + (int)Math.Round(Math.Cos(a) * (rect.Width / 2 - 5));
+                        int y1 = cy + (int)Math.Round(Math.Sin(a) * (rect.Height / 2 - 5));
+                        int x2 = cx + (int)Math.Round(Math.Cos(a) * (rect.Width / 2 - 1));
+                        int y2 = cy + (int)Math.Round(Math.Sin(a) * (rect.Height / 2 - 1));
+                        g.DrawLine(pen, x1, y1, x2, y2);
+                    }
+                    return;
+                }
+                g.DrawEllipse(pen, rect.Left + 4, rect.Top + 4, rect.Width - 8, rect.Height - 8);
+            }
+        }
+
+        private sealed class TunerActionButton : Control
+        {
+            private bool hovered;
+            public string Title = "";
+            public string IconText = "";
+            public Image IconImage;
+            public ActionInfo ActionInfo;
+            public bool HideIcon;
+
+            public TunerActionButton()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                Font = new Font("Microsoft YaHei UI", 8.8F, FontStyle.Bold);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                Color fill = LightTheme
+                    ? (hovered ? Color.FromArgb(248, 251, 255) : Color.FromArgb(253, 254, 255))
+                    : (hovered ? Color.FromArgb(59, 66, 82) : PanelBg2);
+                using (GraphicsPath path = UiRoundRect(rect, 5))
+                using (SolidBrush bg = new SolidBrush(fill))
+                using (Pen border = new Pen(hovered ? Color.FromArgb(150, Accent) : Color.FromArgb(LightTheme ? 255 : 86, Line), 1F))
+                {
+                    e.Graphics.FillPath(bg, path);
+                    e.Graphics.DrawPath(border, path);
+                }
+
+                int textLeft = HideIcon ? 8 : 12;
+                Rectangle iconRect = new Rectangle(10, (Height - 18) / 2, 18, 18);
+                if (!HideIcon && IconImage != null)
+                {
+                    e.Graphics.DrawImage(IconImage, iconRect);
+                    textLeft = 34;
+                }
+                else if (!HideIcon && !String.IsNullOrWhiteSpace(IconText))
+                {
+                    TextRenderer.DrawText(e.Graphics, IconText, new Font(Font.FontFamily, 8.5F, FontStyle.Bold), iconRect, Accent, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    textLeft = 34;
+                }
+
+                TextRenderer.DrawText(e.Graphics, Title, Font, new Rectangle(textLeft, 0, Width - textLeft - 8, Height), TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private sealed class TunerNavButton : Control
+        {
+            private bool active;
+            private bool hovered;
+            public string Caption = "";
+            public string IconKey = "";
+
+            public bool Active
+            {
+                get { return active; }
+                set { if (active == value) return; active = value; Invalidate(); }
+            }
+
+            public TunerNavButton()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Rectangle rect = new Rectangle(0, 3, Width - 1, Height - 6);
+                if (active || hovered)
+                {
+                    Color fill = active ? Color.FromArgb(45, 145, 245) : (LightTheme ? Color.FromArgb(244, 248, 252) : Color.FromArgb(50, 58, 72));
+                    using (GraphicsPath path = UiRoundRect(rect, 5))
+                    using (SolidBrush bg = new SolidBrush(fill))
+                    {
+                        e.Graphics.FillPath(bg, path);
+                    }
+                }
+                Color iconColor = active ? Color.White : (LightTheme ? Color.FromArgb(71, 85, 105) : Color.FromArgb(154, 181, 212));
+                Color textColor = active ? Color.White : (LightTheme ? Color.FromArgb(51, 65, 85) : Color.FromArgb(216, 226, 240));
+                DrawTunerGlyph(e.Graphics, IconKey, new Rectangle(20, (Height - 18) / 2, 18, 18), iconColor, 1.45F);
+                TextRenderer.DrawText(e.Graphics, Caption, Font, new Rectangle(46, 0, Width - 56, Height), textColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private sealed class TunerStatusLabel : Label
+        {
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(BackColor);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (SolidBrush dot = new SolidBrush(Color.FromArgb(33, 196, 65)))
+                {
+                    e.Graphics.FillEllipse(dot, 2, (Height - 11) / 2, 11, 11);
+                }
+                TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(18, 0, Width - 18, Height), ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private sealed class TunerTextChromeButton : Button
+        {
+            private bool hovered;
+
+            public TunerTextChromeButton()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Color back = EffectiveBackColor(Parent);
+                using (SolidBrush clear = new SolidBrush(back))
+                {
+                    e.Graphics.FillRectangle(clear, ClientRectangle);
+                }
+                if (hovered)
+                {
+                    using (GraphicsPath path = UiRoundRect(new Rectangle(2, 2, Width - 5, Height - 5), 4))
+                    using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76)))
+                    {
+                        e.Graphics.FillPath(bg, path);
+                    }
+                }
+                Color text = LightTheme ? Color.FromArgb(71, 85, 105) : Color.FromArgb(184, 205, 230);
+                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private sealed class TunerChromeButton : Button
+        {
+            private bool hovered;
+            public string IconKey = "";
+
+            public TunerChromeButton()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                e.Graphics.Clear(EffectiveBackColor(Parent));
+                if (hovered)
+                {
+                    using (GraphicsPath path = UiRoundRect(new Rectangle(2, 2, Width - 5, Height - 5), 4))
+                    using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76)))
+                    {
+                        e.Graphics.FillPath(bg, path);
+                    }
+                }
+                DrawTunerChromeIcon(e.Graphics, IconKey, new Rectangle(6, 6, Width - 12, Height - 12), ForeColor, EffectiveBackColor(Parent));
+            }
+
+            private static void DrawTunerChromeIcon(Graphics g, string key, Rectangle box, Color color, Color backColor)
+            {
+                using (Pen pen = new Pen(color, 1.35F))
+                using (SolidBrush brush = new SolidBrush(color))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.LineJoin = LineJoin.Round;
+                    string value = (key ?? "").ToLowerInvariant();
+                    if (value == "trash")
+                    {
+                        g.DrawLine(pen, box.Left + 2, box.Top + 3, box.Right - 2, box.Top + 3);
+                        g.DrawLine(pen, box.Left + 5, box.Top + 1, box.Right - 5, box.Top + 1);
+                        g.DrawLine(pen, box.Left + 4, box.Top + 5, box.Left + 5, box.Bottom - 1);
+                        g.DrawLine(pen, box.Right - 4, box.Top + 5, box.Right - 5, box.Bottom - 1);
+                        g.DrawLine(pen, box.Left + 5, box.Bottom - 1, box.Right - 5, box.Bottom - 1);
+                        g.DrawLine(pen, box.Left + 7, box.Top + 7, box.Left + 7, box.Bottom - 3);
+                        g.DrawLine(pen, box.Right - 7, box.Top + 7, box.Right - 7, box.Bottom - 3);
+                        return;
+                    }
+                    if (value == "lock")
+                    {
+                        g.DrawArc(pen, box.Left + 4, box.Top + 1, box.Width - 8, box.Height - 6, 180, 180);
+                        g.DrawRectangle(pen, box.Left + 3, box.Top + 8, box.Width - 6, box.Height - 9);
+                        return;
+                    }
+                    if (value == "chat")
+                    {
+                        g.FillEllipse(brush, box.Left + 3, box.Top + 6, 2, 2);
+                        g.FillEllipse(brush, box.Left + 7, box.Top + 6, 2, 2);
+                        g.FillEllipse(brush, box.Left + 11, box.Top + 6, 2, 2);
+                        g.DrawEllipse(pen, box.Left + 1, box.Top + 2, box.Width - 2, box.Height - 5);
+                        g.DrawLine(pen, box.Left + 5, box.Bottom - 4, box.Left + 2, box.Bottom - 1);
+                        return;
+                    }
+                    if (value == "moon")
+                    {
+                        using (SolidBrush cut = new SolidBrush(backColor))
+                        {
+                            g.FillEllipse(brush, box.Left + 2, box.Top + 1, box.Width - 4, box.Height - 3);
+                            g.FillEllipse(cut, box.Left + 7, box.Top - 1, box.Width - 3, box.Height - 2);
+                        }
+                        return;
+                    }
+                    if (value == "sun")
+                    {
+                        Rectangle core = new Rectangle(box.Left + 5, box.Top + 5, box.Width - 10, box.Height - 10);
+                        g.DrawEllipse(pen, core);
+                        g.FillEllipse(new SolidBrush(Color.FromArgb(45, color)), core);
+                        g.DrawLine(pen, box.Left + box.Width / 2, box.Top + 1, box.Left + box.Width / 2, box.Top + 3);
+                        g.DrawLine(pen, box.Left + box.Width / 2, box.Bottom - 3, box.Left + box.Width / 2, box.Bottom - 1);
+                        g.DrawLine(pen, box.Left + 1, box.Top + box.Height / 2, box.Left + 3, box.Top + box.Height / 2);
+                        g.DrawLine(pen, box.Right - 3, box.Top + box.Height / 2, box.Right - 1, box.Top + box.Height / 2);
+                        return;
+                    }
+                    if (value == "min")
+                    {
+                        g.DrawLine(pen, box.Left + 2, box.Bottom - 4, box.Right - 2, box.Bottom - 4);
+                        return;
+                    }
+                    if (value == "max")
+                    {
+                        g.DrawRectangle(pen, box.Left + 2, box.Top + 2, box.Width - 4, box.Height - 4);
+                        return;
+                    }
+                    if (value == "close")
+                    {
+                        g.DrawLine(pen, box.Left + 3, box.Top + 3, box.Right - 3, box.Bottom - 3);
+                        g.DrawLine(pen, box.Right - 3, box.Top + 3, box.Left + 3, box.Bottom - 3);
+                    }
+                }
+            }
+        }
+
+        private sealed class TunerDownloadChromeButton : Button
+        {
+            private bool hovered;
+            public string IconKey = "downloads";
+            public string BadgeText = "";
+
+            public TunerDownloadChromeButton()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                e.Graphics.Clear(EffectiveBackColor(Parent));
+                if (hovered)
+                {
+                    using (GraphicsPath path = UiRoundRect(new Rectangle(2, 2, Width - 5, Height - 5), 4))
+                    using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76)))
+                    {
+                        e.Graphics.FillPath(bg, path);
+                    }
+                }
+                DrawDownloadIcon(e.Graphics, new Rectangle(6, 6, Width - 12, Height - 12), ForeColor);
+                DrawBadge(e.Graphics);
+            }
+
+            private void DrawBadge(Graphics g)
+            {
+                if (String.IsNullOrWhiteSpace(BadgeText)) return;
+                string text = BadgeText.Trim();
+                if (text.Length > 2) text = "99";
+                using (Font badgeFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold))
+                {
+                    Size textSize = TextRenderer.MeasureText(g, text, badgeFont, Size.Empty, TextFormatFlags.NoPadding);
+                    int badgeWidth = Math.Max(14, textSize.Width + 6);
+                    int badgeHeight = 14;
+                    Rectangle badge = new Rectangle(Width - badgeWidth - 1, 0, badgeWidth, badgeHeight);
+                    using (GraphicsPath path = RoundRect(badge, 7))
+                    using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(239, 68, 68) : Color.FromArgb(255, 96, 96)))
+                    using (Pen border = new Pen(EffectiveBackColor(Parent), 1F))
+                    {
+                        g.FillPath(bg, path);
+                        g.DrawPath(border, path);
+                    }
+                    TextRenderer.DrawText(g, text, badgeFont, badge, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                }
+            }
+
+            private void DrawDownloadIcon(Graphics g, Rectangle box, Color color)
+            {
+                using (Pen pen = new Pen(color, 1.65F))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    g.DrawLine(pen, box.Left + 10, box.Top + 3, box.Left + 10, box.Top + 12);
+                    g.DrawLine(pen, box.Left + 6, box.Top + 9, box.Left + 10, box.Top + 13);
+                    g.DrawLine(pen, box.Left + 14, box.Top + 9, box.Left + 10, box.Top + 13);
+                    g.DrawLine(pen, box.Left + 5, box.Top + 16, box.Left + 15, box.Top + 16);
+                    g.DrawLine(pen, box.Left + 4, box.Top + 13, box.Left + 4, box.Top + 16);
+                    g.DrawLine(pen, box.Left + 16, box.Top + 13, box.Left + 16, box.Top + 16);
+                }
             }
         }
 
@@ -11098,6 +13406,7 @@ namespace ToolboxClient
         {
             private bool hovered;
             public bool StudioMode = true;
+            public bool OverviewIconMode;
             public string Title = "";
             public string Subtitle = "";
             public string IconText = "";
@@ -11147,6 +13456,33 @@ namespace ToolboxClient
                 {
                     g.FillPath(bg, path);
                     g.DrawPath(border, path);
+                }
+                if (OverviewIconMode)
+                {
+                    int iconSize = Math.Min(34, Math.Max(26, Width - 28));
+                    Rectangle iconRect = new Rectangle((Width - iconSize) / 2, 6, iconSize, iconSize);
+                    if (IconImage != null)
+                    {
+                        double scale = Math.Min((double)iconSize / Math.Max(1, IconImage.Width), (double)iconSize / Math.Max(1, IconImage.Height));
+                        int drawW = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
+                        int drawH = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
+                        g.DrawImage(IconImage, iconRect.Left + (iconSize - drawW) / 2, iconRect.Top + (iconSize - drawH) / 2, drawW, drawH);
+                    }
+                    else
+                    {
+                        using (GraphicsPath iconPath = RoundRect(iconRect, 8))
+                        using (SolidBrush iconBg = new SolidBrush(LightTheme ? Color.FromArgb(232, 242, 255) : Color.FromArgb(44, 65, 86)))
+                        {
+                            g.FillPath(iconBg, iconPath);
+                        }
+                        TextRenderer.DrawText(g, IconText, new Font(Font.FontFamily, 12F, FontStyle.Bold), iconRect, AccentColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    }
+                    Rectangle textRect = new Rectangle(3, iconRect.Bottom + 4, Width - 6, Math.Max(28, Height - iconRect.Bottom - 5));
+                    using (Font nameFont = new Font(Font.FontFamily, 8.2F, FontStyle.Bold))
+                    {
+                        TextRenderer.DrawText(g, Title, nameFont, textRect, TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+                    }
+                    return;
                 }
                 TextRenderer.DrawText(g, Title, Font, new Rectangle(8, 0, Width - 16, Height), TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             }
@@ -11919,4 +14255,5 @@ namespace ToolboxClient
         }
     }
 }
+
 

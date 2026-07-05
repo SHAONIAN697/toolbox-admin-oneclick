@@ -1,23 +1,23 @@
 # 工具箱后台一键部署版
 
-这是一个用于管理 Windows 工具箱客户端的网页后台。后台可以配置工具箱标题、主题、按钮、下载项、系统工具、用户账号、代理邀请码、订单审批、通知、隐藏入口弹窗，并为不同用户生成专属 EXE 客户端。
+这是一个用于管理 Windows 工具箱客户端的网页后台。后台可以配置工具箱标题、主题、按钮、下载项、系统工具、用户账号、邀请码、通知、隐藏入口弹窗，并为不同用户生成专属 EXE 客户端。
 
 ## 最新功能
 
-- 多用户和代理管理：总管理员可管理用户、代理、余额、邀请码和订单。
-- 邀请码订单流程：余额不足时先创建订单，必须总管理员审批后才能生成邀请码。
-- 支付接口配置：系统设置中支持多套支付接口配置，代理端可选择余额或接口支付。
+- 多用户管理：总管理员可管理用户、邀请码和每个用户的工具箱配置。
+- 邀请码注册：支持批量生成邀请码、设置可用次数和使用后保留天数。
+- 支付接口配置：系统设置中支持多套支付接口配置。
 - 通知中心：支持未读状态、登录弹窗、单条删除、全部删除、邮件推送指定通知。
 - 自定义页面和按钮：支持页面位置、按钮分组、下载记录、系统工具和自定义脚本。
 - 隐藏入口弹窗：连续点击客户端左上角 Logo 可打开“联系我们 / 支持作者”弹窗，内容由后台配置。
 - 主题自适配：后台通知框、隐藏入口弹窗和客户端界面跟随当前主题，浅色深色自动适配。
 - 编译校验：后台生成的 EXE 会校验编译签名和文件哈希，防止篡改。
 - 多电脑运行：同一个正版 EXE 可发给多台电脑运行，不绑定下载电脑；旧版 EXE 需要重新下载。
-- 手机端适配：后台表单、通知、邀请码、订单和复制操作已优化移动端显示。
+- 手机端适配：后台表单、通知、邀请码和复制操作已优化移动端显示。
 
 ## 一键部署 / 更新
 
-新部署和已有服务器更新使用同一条命令。更新时会保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
+新部署和已有服务器更新使用同一条命令。更新时会保留服务器上的账号、密码、用户、配置、通知和 `data/` 数据目录。
 
 ```bash
 cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/toolbox-admin-baota-oneclick.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && ls -lh toolbox-admin-oneclick.tar.gz && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
@@ -35,8 +35,8 @@ cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz t
 更新模式会自动识别原部署目录，并保留：
 
 - 后台账号和密码
-- 用户、代理和邀请码
-- 订单、通知、余额记录
+- 用户和邀请码
+- 通知记录
 - 系统设置、邮件设置和支付接口配置
 - 每个用户的工具箱配置
 - `data/` 数据目录
