@@ -30,6 +30,7 @@ namespace ToolboxClient
     internal static class Program
     {
         private const string ConfigUrl = "__CONFIG_URL__";
+        internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
         internal const string BuildId = "__BUILD_ID__";
@@ -1714,7 +1715,7 @@ namespace ToolboxClient
             try
             {
                 TryEnsureRuntimeIntegrity();
-                json = DownloadText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N")));
+                json = NormalizeConfigJson(DownloadText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N"))));
                 EnsureConfigResponse(json);
                 SaveCache(json);
                 if (json == lastConfigJson)
@@ -1754,14 +1755,7 @@ namespace ToolboxClient
                     BeginInvoke(new Action(delegate { status.Text = keepMessage; }));
                     return;
                 }
-                if (!runtimeIntegrityChecked)
-                {
-                    json = null;
-                }
-                else
-                {
-                    json = StripPasswordFromCachedConfig(ReadCache());
-                }
+                json = ReadUsableFallbackConfig();
                 if (portalVariant && IsPortalDemoPlaceholderConfig(json))
                 {
                     json = null;
@@ -1780,11 +1774,11 @@ namespace ToolboxClient
                 }
                 if (json == lastConfigJson)
                 {
-                    string fallback = String.IsNullOrWhiteSpace(lastSyncText) ? "已使用本地缓存" : lastSyncText;
+                    string fallback = String.IsNullOrWhiteSpace(lastSyncText) ? "已使用本机可用配置" : lastSyncText;
                     BeginInvoke(new Action(delegate { status.Text = fallback + "，等待下次刷新"; }));
                     return;
                 }
-                statusMessage = "后台连接失败，已使用本地缓存：" + ex.Message;
+                statusMessage = "后台连接失败，已使用本机可用配置：" + ex.Message;
             }
             finally
             {
@@ -11741,6 +11735,8 @@ namespace ToolboxClient
             request.Timeout = 10000;
             request.ReadWriteTimeout = 10000;
             request.UserAgent = "ToolboxClient";
+            request.Accept = "application/json, text/plain, */*";
+            request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
             request.Headers[HttpRequestHeader.CacheControl] = "no-cache, no-store, must-revalidate";
             request.Headers[HttpRequestHeader.Pragma] = "no-cache";
@@ -12116,10 +12112,102 @@ namespace ToolboxClient
                     value.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
         }
 
+        private string NormalizeConfigJson(string json)
+        {
+            string text = (json ?? "").Trim();
+            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1).TrimStart();
+            if (String.IsNullOrWhiteSpace(text))
+            {
+                AppendConfigLoadLog("empty config response", json);
+                throw new InvalidOperationException("后台没有返回配置内容。");
+            }
+            char first = text[0];
+            if (first != '{' && first != '[')
+            {
+                string preview = ResponsePreview(text);
+                AppendConfigLoadLog("non-json config response", text);
+                if (first == '<')
+                {
+                    throw new InvalidOperationException("后台返回了网页内容，不是 JSON。请检查这台电脑的代理、DNS、Hosts，或服务器 Nginx/CDN 是否放行 /api。响应开头：" + preview);
+                }
+                throw new InvalidOperationException("后台返回的不是 JSON。响应开头：" + preview);
+            }
+            return text;
+        }
+
+        private static string ResponsePreview(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return "";
+            string value = text.Replace((char)13, ' ').Replace((char)10, ' ').Replace((char)9, ' ').Trim();
+            if (value.Length > 220) value = value.Substring(0, 220) + "...";
+            return value;
+        }
+
+        private void AppendConfigLoadLog(string message, string response)
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ToolboxClient");
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "config-load.log");
+                StringBuilder builder = new StringBuilder();
+                builder.AppendLine("[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message);
+                builder.AppendLine("URL: " + configUrl);
+                if (!String.IsNullOrWhiteSpace(response)) builder.AppendLine("Preview: " + ResponsePreview(response));
+                builder.AppendLine();
+                File.AppendAllText(path, builder.ToString(), Encoding.UTF8);
+            }
+            catch
+            {
+            }
+        }
+
+        private string ReadEmbeddedConfig()
+        {
+            string embedded = Program.EmbeddedConfigJson;
+            if (String.IsNullOrWhiteSpace(embedded)) return null;
+            if (embedded.StartsWith("__", StringComparison.Ordinal)) return null;
+            return embedded;
+        }
+
+        private string ReadUsableConfigText(string raw)
+        {
+            try
+            {
+                string text = NormalizeConfigJson(StripPasswordFromCachedConfig(raw));
+                EnsureConfigResponse(text);
+                return text;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private string ReadUsableFallbackConfig()
+        {
+            string cached = ReadUsableConfigText(ReadCache());
+            if (portalVariant && IsPortalDemoPlaceholderConfig(cached)) cached = null;
+            if (!String.IsNullOrWhiteSpace(cached)) return cached;
+            string embedded = ReadUsableConfigText(ReadEmbeddedConfig());
+            if (portalVariant && IsPortalDemoPlaceholderConfig(embedded)) embedded = null;
+            return embedded;
+        }
+
         private void EnsureConfigResponse(string json)
         {
-            object parsed = serializer.DeserializeObject(json);
-            Dictionary<string, object> dict = AsDict(parsed);
+            json = NormalizeConfigJson(json);
+            Dictionary<string, object> dict;
+            try
+            {
+                object parsed = serializer.DeserializeObject(json);
+                dict = AsDict(parsed);
+            }
+            catch (Exception ex)
+            {
+                AppendConfigLoadLog("json parse failed: " + ex.Message, json);
+                throw new InvalidOperationException("后台返回的 JSON 格式无法解析：" + ex.Message);
+            }
             if (dict.ContainsKey("error"))
             {
                 throw new InvalidOperationException(GetText(dict, "error", "工具箱授权校验失败。"));

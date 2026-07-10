@@ -2606,6 +2606,8 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     if cached:
         return cached
     source = source.replace('"__CONFIG_URL__"', csharp_literal(config_url))
+    embedded_config_json = json.dumps(public_toolbox_config(user.get("id")), ensure_ascii=False, separators=(",", ":"))
+    source = source.replace('"__EMBEDDED_CONFIG_JSON__"', csharp_literal(embedded_config_json))
     source = source.replace('"__CLIENT_VARIANT__"', csharp_literal(variant))
     source = source.replace('"__CLIENT_VARIANT_LABEL__"', csharp_literal(variant_label))
     source = source.replace('"__BUILD_ID__"', csharp_literal(build_id))

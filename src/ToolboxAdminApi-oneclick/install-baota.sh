@@ -51,27 +51,34 @@ detect_service_env() {
 }
 
 install_deps() {
-  yellow "正在安装运行依赖：python3..."
+  yellow "正在安装运行依赖：python3、Mono/C# 编译器..."
   if command -v apt >/dev/null 2>&1; then
     apt update
-    DEBIAN_FRONTEND=noninteractive apt install -y python3
+    DEBIAN_FRONTEND=noninteractive apt install -y python3 ca-certificates curl gnupg
+    if ! command -v mcs >/dev/null 2>&1 && ! command -v csc >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt install -y mono-devel || true
+    fi
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y python3
+    dnf install -y python3 ca-certificates curl
+    if ! command -v mcs >/dev/null 2>&1 && ! command -v csc >/dev/null 2>&1; then
+      dnf install -y mono-devel || dnf install -y mono-complete || true
+    fi
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y python3
+    yum install -y python3 ca-certificates curl
+    if ! command -v mcs >/dev/null 2>&1 && ! command -v csc >/dev/null 2>&1; then
+      yum install -y mono-devel || yum install -y mono-complete || true
+    fi
   else
-    red "未识别包管理器，请手动安装 python3 后重试。"
+    red "未识别包管理器，请手动安装 python3 和 mono-devel 后重试。"
     exit 1
   fi
 
   if command -v mcs >/dev/null 2>&1 || command -v csc >/dev/null 2>&1; then
-    green "已检测到 C# 编译器，支持在线生成工具箱 EXE。"
-    return 0
+    green "已检测到 C# 编译器，支持后台在线生成工具箱 EXE。"
+  else
+    yellow "未能自动安装 C# 编译器。后台可以运行，但下载 EXE 前请手动安装 mono-devel/mono-complete 后重启 ${APP_NAME}。"
   fi
-
-  yellow "未检测到 C# 编译器。后台会继续部署；如需在线生成/下载 EXE，请之后手动安装 mono-devel 并重启 ${APP_NAME}。"
 }
-
 copy_source() {
   local src_dir="$1"
   local app_dir="$2"
@@ -100,7 +107,7 @@ copy_source() {
     cp -a "$src_dir/data" "$app_dir/"
   fi
 
-  mkdir -p "$app_dir/data" "$app_dir/data/users"
+  mkdir -p "$app_dir/data" "$app_dir/data/users" "$app_dir/data/client-cache" "$app_dir/data/client-jobs" "$app_dir/data/icon-cache"
 }
 
 write_service() {
