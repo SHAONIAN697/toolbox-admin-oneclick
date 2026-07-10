@@ -12115,7 +12115,7 @@ namespace ToolboxClient
         private string NormalizeConfigJson(string json)
         {
             string text = (json ?? "").Trim();
-            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1).TrimStart();
+            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1).TrimStart(new char[0]);
             if (String.IsNullOrWhiteSpace(text))
             {
                 AppendConfigLoadLog("empty config response", json);
