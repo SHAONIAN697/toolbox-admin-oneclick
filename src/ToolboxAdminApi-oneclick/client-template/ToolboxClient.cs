@@ -1843,7 +1843,11 @@ namespace ToolboxClient
             FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
             title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : appTitle);
-            ApplyAppIcon(GetText(app, "icon", GetText(app, "icon_url", "")), GetText(app, "logo_text", "Y"));
+            ApplyAppIcon(
+                GetText(app, "exe_icon",
+                    GetText(app, "exe_icon_url",
+                        GetText(app, "icon", GetText(app, "icon_url", "")))),
+                GetText(app, "logo_text", "Y"));
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
@@ -7153,9 +7157,13 @@ namespace ToolboxClient
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-                request.Timeout = 1500;
-                request.ReadWriteTimeout = 1500;
+                request.Timeout = 10000;
+                request.ReadWriteTimeout = 10000;
                 request.UserAgent = "ToolboxClient";
+                request.Accept = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
+                request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                request.AllowAutoRedirect = true;
+                request.KeepAlive = false;
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
                 using (Image original = Image.FromStream(stream))
