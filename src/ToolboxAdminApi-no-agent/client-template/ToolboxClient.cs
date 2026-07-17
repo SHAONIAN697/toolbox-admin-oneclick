@@ -8296,19 +8296,8 @@ namespace ToolboxClient
             if (task == null) return;
             if (task.Segmented && task.RestoredSegments.Count > 0)
             {
-                try
-                {
-                    DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    if (ex is OperationCanceledException || task.CancelRequested) throw;
-                    task.RestoredSegments.Clear();
-                    CleanupSegmentedPart(task);
-                    task.StateText = "分片失败，重新尝试32线程";
-                    QueueDownloadTaskRowUpdate(task);
-                }
+                DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
+                return;
             }
 
             SegmentedDownloadPlan plan;
@@ -8471,54 +8460,63 @@ namespace ToolboxClient
         private void DownloadSegmentRange(DownloadTask task, DownloadSegment segment, string partPath, DownloadSegmentRun run)
         {
             if (task.CancelRequested || run.StopRequested != 0) throw new OperationCanceledException();
-            HttpWebRequest request = null;
-            try
+            long expected = segment.End - segment.Start + 1;
+            long received = Math.Max(0, Math.Min(segment.Received, expected));
+            int failuresWithoutProgress = 0;
+            while (received < expected)
             {
-                long expected = segment.End - segment.Start + 1;
-                long received = Math.Max(0, Math.Min(segment.Received, expected));
-                if (received >= expected) return;
+                if (task.CancelRequested || run.StopRequested != 0) throw new OperationCanceledException();
+                HttpWebRequest request = null;
+                long receivedBeforeRequest = received;
                 long rangeStart = segment.Start + received;
-                using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, true, rangeStart, segment.End, out request))
+                try
                 {
-                    if (response.StatusCode != HttpStatusCode.PartialContent)
+                    using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, true, rangeStart, segment.End, out request))
                     {
-                        throw new InvalidOperationException("服务器没有按 Range 返回分片内容。");
-                    }
-                    using (Stream input = response.GetResponseStream())
-                    using (FileStream output = new FileStream(partPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
-                    {
-                        output.Seek(rangeStart, SeekOrigin.Begin);
-                        byte[] buffer = new byte[128 * 1024];
-                        DateTime lastUi = DateTime.MinValue;
-                        while (received < expected)
+                        if (response.StatusCode != HttpStatusCode.PartialContent)
                         {
-                            if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
-                            task.PauseEvent.WaitOne();
-                            if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
-                            int toRead = buffer.Length;
-                            long remaining = expected - received;
-                            if (remaining < toRead) toRead = (int)remaining;
-                            int read = input.Read(buffer, 0, toRead);
-                            if (read <= 0) break;
-                            output.Write(buffer, 0, read);
-                            received += read;
-                            segment.Received = received;
-                            Interlocked.Add(ref task.Received, read);
-                            task.StateText = "分片加速 " + segment.TotalSegments + "线程";
-                            task.UpdateSpeed();
-                            if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                            throw new InvalidOperationException("服务器没有按 Range 返回分片内容。");
+                        }
+                        using (Stream input = response.GetResponseStream())
+                        using (FileStream output = new FileStream(partPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                        {
+                            output.Seek(rangeStart, SeekOrigin.Begin);
+                            byte[] buffer = new byte[256 * 1024];
+                            DateTime lastUi = DateTime.MinValue;
+                            while (received < expected)
                             {
-                                lastUi = DateTime.Now;
-                                QueueDownloadTaskRowUpdate(task);
+                                if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
+                                task.PauseEvent.WaitOne();
+                                if (run.StopRequested != 0 || task.CancelRequested) throw new OperationCanceledException();
+                                int toRead = (int)Math.Min(buffer.Length, expected - received);
+                                int read = input.Read(buffer, 0, toRead);
+                                if (read <= 0) throw new EndOfStreamException("分片连接提前结束。");
+                                output.Write(buffer, 0, read);
+                                received += read;
+                                segment.Received = received;
+                                Interlocked.Add(ref task.Received, read);
+                                task.StateText = "分片加速 " + segment.TotalSegments + "线程";
+                                task.UpdateSpeed();
+                                if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
+                                {
+                                    lastUi = DateTime.Now;
+                                    QueueDownloadTaskRowUpdate(task);
+                                }
                             }
                         }
-                        if (received != expected) throw new IOException("分片内容长度不完整。");
                     }
                 }
-            }
-            finally
-            {
-                if (request != null) task.UntrackRequest(request);
+                catch (Exception ex)
+                {
+                    if (ex is OperationCanceledException || task.CancelRequested || run.StopRequested != 0) throw;
+                    failuresWithoutProgress = received > receivedBeforeRequest ? 0 : failuresWithoutProgress + 1;
+                    if (failuresWithoutProgress >= 6) throw;
+                    Thread.Sleep(Math.Min(2000, 250 * (failuresWithoutProgress + 1)));
+                }
+                finally
+                {
+                    if (request != null) task.UntrackRequest(request);
+                }
             }
         }
 
@@ -8754,10 +8752,13 @@ namespace ToolboxClient
             request.Accept = "*/*";
             request.AllowAutoRedirect = false;
             request.KeepAlive = true;
+            request.Pipelined = false;
             request.CookieContainer = task == null ? new CookieContainer() : task.Cookies;
             request.Timeout = timeout;
             request.ReadWriteTimeout = readWriteTimeout;
             request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+            request.ServicePoint.ConnectionLimit = Math.Max(request.ServicePoint.ConnectionLimit, MaxSegmentedDownloadConnections + 8);
+            request.ServicePoint.UseNagleAlgorithm = false;
             try { request.Headers[HttpRequestHeader.AcceptEncoding] = "identity"; } catch { }
             string referer = task == null ? "" : task.Referer;
             if (String.IsNullOrWhiteSpace(referer) && task != null && !String.IsNullOrWhiteSpace(task.OriginalUrl) && !String.Equals(task.OriginalUrl, url, StringComparison.OrdinalIgnoreCase))
@@ -14108,7 +14109,7 @@ namespace ToolboxClient
             public readonly string Url;
             public readonly string OriginalUrl;
             public readonly string FileName;
-            public readonly string Path;
+            public string Path;
             public string BrowserUrl = "";
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
