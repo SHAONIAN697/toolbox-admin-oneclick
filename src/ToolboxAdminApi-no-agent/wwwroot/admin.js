@@ -697,18 +697,37 @@ async function register() {
   }
 }
 
+const RESET_CODE_COOLDOWN_SECONDS = 60;
+const RESET_CODE_COOLDOWN_KEY = 'toolbox_reset_code_cooldown_until';
+let resetCodeCountdownTimer = null;
+function updateResetCodeCountdown() {
+  const button = $('sendResetCodeBtn');
+  const secondsLeft = Math.max(0, Math.ceil((Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0) - Date.now()) / 1000));
+  if (secondsLeft > 0) { button.disabled = true; button.textContent = `${secondsLeft}秒后重新发送`; return; }
+  localStorage.removeItem(RESET_CODE_COOLDOWN_KEY); button.disabled = false; button.textContent = '重新发送验证码';
+  if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer); resetCodeCountdownTimer = null;
+}
+function startResetCodeCountdown(seconds = RESET_CODE_COOLDOWN_SECONDS) {
+  localStorage.setItem(RESET_CODE_COOLDOWN_KEY, String(Date.now() + seconds * 1000)); updateResetCodeCountdown();
+  if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer); resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
+}
 async function sendResetCode() {
   const email = $('forgotEmail').value.trim();
+  const button = $('sendResetCodeBtn');
   setLoginMessage('');
   if (!email) {
     setLoginMessage('请先输入邮箱。');
     return;
   }
-  const result = await api('/api/password/forgot', {
-    method: 'POST',
-    body: JSON.stringify({ email })
-  });
-  setLoginMessage(result.debugCode ? `${result.message} 验证码：${result.debugCode}` : result.message, result.debugCode ? 'warn' : 'success');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setLoginMessage('请输入正确的邮箱地址。'); return; }
+  button.disabled = true; button.textContent = '发送中...';
+  try {
+    const result = await api('/api/password/forgot', { method: 'POST', body: JSON.stringify({ email }) });
+    setLoginMessage(result.debugCode ? `${result.message} 验证码：${result.debugCode}` : result.message, result.debugCode ? 'warn' : 'success'); startResetCodeCountdown();
+  } catch (error) {
+    const retryAfter = Number(String(error.message || '').match(/(\d+)\s*秒后/)?.[1] || 0);
+    if (retryAfter > 0) startResetCodeCountdown(retryAfter); else { button.disabled = false; button.textContent = '发送验证码'; } throw error;
+  }
 }
 
 async function resetPassword() {
@@ -4500,6 +4519,8 @@ $('showRegisterBtn').onclick = () => setLoginMode('register');
 $('showForgotBtn').onclick = () => setLoginMode('forgot');
 $('registerBtn').onclick = () => register();
 $('sendResetCodeBtn').onclick = () => sendResetCode().catch((error) => setLoginMessage(error.message));
+updateResetCodeCountdown();
+if (Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0) > Date.now()) resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
 $('resetPasswordBtn').onclick = () => resetPassword();
 $('loginPassword').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') login();

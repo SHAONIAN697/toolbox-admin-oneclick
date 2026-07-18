@@ -4,6 +4,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import smtplib
@@ -97,6 +98,8 @@ CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
 RESET_CODES = {}
+RESET_CODE_REQUESTS = {}
+RESET_CODE_COOLDOWN_SECONDS = 60
 DEFAULT_CLIENT_VARIANT = "original"
 CLIENT_VARIANTS = {
     "original": {
@@ -2810,6 +2813,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/password/forgot" and method == "POST":
                 body = self.read_body()
                 email = (body.get("email") or "").strip().lower()
+                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    return self.send_json({"error": "请输入正确的邮箱地址。"}, 400)
+                now = time.time()
+                retry_after = max(0, int(RESET_CODE_REQUESTS.get(email, 0) + RESET_CODE_COOLDOWN_SECONDS - now + 0.999))
+                if retry_after > 0:
+                    return self.send_json({"error": f"请在 {retry_after} 秒后重新发送验证码。", "retryAfter": retry_after}, 429)
+                RESET_CODE_REQUESTS[email] = now
                 user = find_user_by_email(email)
                 if not user or user.get("active", True) is False:
                     return self.send_json({"ok": True, "message": "如果邮箱存在，验证码会发送到邮箱。"})
