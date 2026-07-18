@@ -416,8 +416,10 @@ namespace ToolboxAdminDesktop
                     string name = displayName.Text.Trim();
                     string pass = password.Text;
                     string invite = inviteCode.Text.Trim();
-                    if (user.Length == 0 || pass.Length < 6 || invite.Length == 0)
-                        throw new Exception("请填写用户名、至少 6 位密码和邀请码。");
+                    if (user.Length == 0 || mail.Length == 0 || pass.Length < 6 || invite.Length == 0)
+                        throw new Exception("请填写用户名、邮箱、至少 6 位密码和邀请码。");
+                    if (!Regex.IsMatch(mail, @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
+                        throw new Exception("请输入正确的邮箱地址。");
                     AdminApi.Register(user, mail, name, pass, invite);
                     MessageBox.Show("注册成功，请使用新账号登录。", Program.AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
                     form.DialogResult = DialogResult.OK;
