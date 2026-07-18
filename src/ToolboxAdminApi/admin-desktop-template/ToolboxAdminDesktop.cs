@@ -444,6 +444,27 @@ namespace ToolboxAdminDesktop
             Button sendCode = AddButton(form, "发送验证码", 286);
             sendCode.Left = 26;
             sendCode.Width = 184;
+            System.Windows.Forms.Timer resendTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            int resendSeconds = 0;
+            resendTimer.Tick += delegate
+            {
+                resendSeconds--;
+                if (resendSeconds <= 0)
+                {
+                    resendTimer.Stop();
+                    sendCode.Text = "发送验证码";
+                    sendCode.Enabled = true;
+                }
+                else
+                {
+                    sendCode.Text = resendSeconds.ToString() + " 秒后重发";
+                }
+            };
+            form.FormClosed += delegate
+            {
+                resendTimer.Stop();
+                resendTimer.Dispose();
+            };
             Button reset = AddButton(form, "确认重置", 286);
             reset.Left = 230;
             reset.Width = 184;
@@ -467,6 +488,9 @@ namespace ToolboxAdminDesktop
                         code.Text = result.debugCode;
                     }
                     message.ForeColor = AccentColor;
+                    resendSeconds = 60;
+                    sendCode.Text = "60 秒后重发";
+                    resendTimer.Start();
                 }
                 catch (Exception ex)
                 {
@@ -475,7 +499,7 @@ namespace ToolboxAdminDesktop
                 }
                 finally
                 {
-                    sendCode.Enabled = true;
+                    sendCode.Enabled = resendSeconds <= 0;
                 }
             };
 
