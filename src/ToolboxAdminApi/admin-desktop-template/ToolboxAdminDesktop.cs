@@ -140,7 +140,7 @@ namespace ToolboxAdminDesktop
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(420, 350);
+            ClientSize = new Size(420, 386);
             BackColor = Color.FromArgb(17, 20, 22);
             ForeColor = Color.FromArgb(237, 242, 244);
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -252,10 +252,40 @@ namespace ToolboxAdminDesktop
             loginButton.Click += delegate { LoginAndOpen(); };
             Controls.Add(loginButton);
 
+            LinkLabel registerLink = new LinkLabel
+            {
+                Left = 108,
+                Top = 320,
+                Width = 88,
+                Height = 22,
+                Text = "注册账号",
+                TextAlign = ContentAlignment.MiddleCenter,
+                LinkColor = Color.FromArgb(79, 183, 168),
+                ActiveLinkColor = Color.FromArgb(116, 214, 199),
+                VisitedLinkColor = Color.FromArgb(79, 183, 168)
+            };
+            registerLink.LinkClicked += delegate { AccountDialogs.ShowRegister(this); };
+            Controls.Add(registerLink);
+
+            LinkLabel resetLink = new LinkLabel
+            {
+                Left = 224,
+                Top = 320,
+                Width = 88,
+                Height = 22,
+                Text = "找回密码",
+                TextAlign = ContentAlignment.MiddleCenter,
+                LinkColor = Color.FromArgb(79, 183, 168),
+                ActiveLinkColor = Color.FromArgb(116, 214, 199),
+                VisitedLinkColor = Color.FromArgb(79, 183, 168)
+            };
+            resetLink.LinkClicked += delegate { AccountDialogs.ShowPasswordReset(this); };
+            Controls.Add(resetLink);
+
             messageLabel = new Label
             {
                 Left = 32,
-                Top = 318,
+                Top = 352,
                 Width = 356,
                 Height = 24,
                 ForeColor = Color.FromArgb(228, 93, 93)
@@ -350,6 +380,220 @@ namespace ToolboxAdminDesktop
                 messageLabel.Text = ex.Message;
                 loginButton.Enabled = true;
             }
+        }
+    }
+
+    internal static class AccountDialogs
+    {
+        private static readonly Color BackColor = Color.FromArgb(17, 20, 22);
+        private static readonly Color FieldColor = Color.FromArgb(13, 16, 18);
+        private static readonly Color TextColor = Color.FromArgb(237, 242, 244);
+        private static readonly Color MutedColor = Color.FromArgb(156, 168, 174);
+        private static readonly Color AccentColor = Color.FromArgb(79, 183, 168);
+        private static readonly Color ErrorColor = Color.FromArgb(228, 93, 93);
+
+        internal static void ShowRegister(IWin32Window owner)
+        {
+            Form form = MakeForm("注册后台账号", 440, 486);
+            TextBox username = AddField(form, "用户名", 26, 62, false);
+            TextBox email = AddField(form, "邮箱", 26, 124, false);
+            TextBox displayName = AddField(form, "显示名称", 26, 186, false);
+            TextBox password = AddField(form, "密码（至少 6 位）", 26, 248, true);
+            TextBox inviteCode = AddField(form, "邀请码", 26, 310, false);
+            Label message = AddMessage(form, 374);
+            Button submit = AddButton(form, "注册账号", 410);
+            form.AcceptButton = submit;
+
+            submit.Click += delegate
+            {
+                message.Text = "正在注册...";
+                message.ForeColor = MutedColor;
+                submit.Enabled = false;
+                try
+                {
+                    string user = username.Text.Trim();
+                    string mail = email.Text.Trim();
+                    string name = displayName.Text.Trim();
+                    string pass = password.Text;
+                    string invite = inviteCode.Text.Trim();
+                    if (user.Length == 0 || pass.Length < 6 || invite.Length == 0)
+                        throw new Exception("请填写用户名、至少 6 位密码和邀请码。");
+                    AdminApi.Register(user, mail, name, pass, invite);
+                    MessageBox.Show("注册成功，请使用新账号登录。", Program.AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    form.DialogResult = DialogResult.OK;
+                    form.Close();
+                }
+                catch (Exception ex)
+                {
+                    message.Text = ex.Message;
+                    message.ForeColor = ErrorColor;
+                    submit.Enabled = true;
+                }
+            };
+            form.ShowDialog(owner);
+            form.Dispose();
+        }
+
+        internal static void ShowPasswordReset(IWin32Window owner)
+        {
+            Form form = MakeForm("找回密码", 440, 390);
+            TextBox email = AddField(form, "注册邮箱", 26, 62, false);
+            TextBox code = AddField(form, "邮箱验证码", 26, 124, false);
+            TextBox password = AddField(form, "新密码（至少 6 位）", 26, 186, true);
+            Label message = AddMessage(form, 250);
+            Button sendCode = AddButton(form, "发送验证码", 286);
+            sendCode.Left = 26;
+            sendCode.Width = 184;
+            Button reset = AddButton(form, "确认重置", 286);
+            reset.Left = 230;
+            reset.Width = 184;
+            form.AcceptButton = reset;
+
+            sendCode.Click += delegate
+            {
+                message.Text = "正在发送...";
+                message.ForeColor = MutedColor;
+                sendCode.Enabled = false;
+                try
+                {
+                    string mail = email.Text.Trim();
+                    if (mail.Length == 0) throw new Exception("请输入注册邮箱。");
+                    string response = AdminApi.SendResetCode(mail);
+                    PasswordResetResponse result = null;
+                    try { result = new JavaScriptSerializer().Deserialize<PasswordResetResponse>(response); } catch { }
+                    message.Text = result != null && !String.IsNullOrWhiteSpace(result.message) ? result.message : "验证码已发送，请检查邮箱。";
+                    if (result != null && !String.IsNullOrWhiteSpace(result.debugCode))
+                    {
+                        code.Text = result.debugCode;
+                    }
+                    message.ForeColor = AccentColor;
+                }
+                catch (Exception ex)
+                {
+                    message.Text = ex.Message;
+                    message.ForeColor = ErrorColor;
+                }
+                finally
+                {
+                    sendCode.Enabled = true;
+                }
+            };
+
+            reset.Click += delegate
+            {
+                message.Text = "正在重置...";
+                message.ForeColor = MutedColor;
+                reset.Enabled = false;
+                try
+                {
+                    string mail = email.Text.Trim();
+                    string verifyCode = code.Text.Trim();
+                    string pass = password.Text;
+                    if (mail.Length == 0 || verifyCode.Length == 0 || pass.Length < 6)
+                        throw new Exception("请填写邮箱、验证码和至少 6 位新密码。");
+                    AdminApi.ResetPassword(mail, verifyCode, pass);
+                    MessageBox.Show("密码已重置，请使用新密码登录。", Program.AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    form.DialogResult = DialogResult.OK;
+                    form.Close();
+                }
+                catch (Exception ex)
+                {
+                    message.Text = ex.Message;
+                    message.ForeColor = ErrorColor;
+                    reset.Enabled = true;
+                }
+            };
+            form.ShowDialog(owner);
+            form.Dispose();
+        }
+
+        private static Form MakeForm(string title, int width, int height)
+        {
+            Form form = new Form
+            {
+                Text = title,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(width, height),
+                BackColor = BackColor,
+                ForeColor = TextColor,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point)
+            };
+            Label heading = new Label
+            {
+                Left = 26,
+                Top = 20,
+                Width = width - 52,
+                Height = 30,
+                Text = title,
+                Font = new Font(form.Font.FontFamily, 16F, FontStyle.Bold),
+                ForeColor = Color.White
+            };
+            form.Controls.Add(heading);
+            return form;
+        }
+
+        private static TextBox AddField(Form form, string labelText, int left, int top, bool password)
+        {
+            Label label = new Label
+            {
+                Left = left,
+                Top = top,
+                Width = form.ClientSize.Width - left * 2,
+                Height = 20,
+                Text = labelText,
+                ForeColor = MutedColor
+            };
+            TextBox input = new TextBox
+            {
+                Left = left,
+                Top = top + 22,
+                Width = form.ClientSize.Width - left * 2,
+                Height = 28,
+                UseSystemPasswordChar = password,
+                BorderStyle = BorderStyle.FixedSingle,
+                BackColor = FieldColor,
+                ForeColor = TextColor
+            };
+            form.Controls.Add(label);
+            form.Controls.Add(input);
+            return input;
+        }
+
+        private static Label AddMessage(Form form, int top)
+        {
+            Label message = new Label
+            {
+                Left = 26,
+                Top = top,
+                Width = form.ClientSize.Width - 52,
+                Height = 32,
+                ForeColor = ErrorColor
+            };
+            form.Controls.Add(message);
+            return message;
+        }
+
+        private static Button AddButton(Form form, string text, int top)
+        {
+            Button button = new Button
+            {
+                Left = 26,
+                Top = top,
+                Width = form.ClientSize.Width - 52,
+                Height = 38,
+                Text = text,
+                BackColor = AccentColor,
+                ForeColor = Color.FromArgb(6, 19, 17),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font(form.Font.FontFamily, 10F, FontStyle.Bold)
+            };
+            button.FlatAppearance.BorderSize = 0;
+            form.Controls.Add(button);
+            return button;
         }
     }
 
@@ -876,5 +1120,11 @@ namespace ToolboxAdminDesktop
     internal sealed class ErrorResponse
     {
         public string error { get; set; }
+    }
+
+    internal sealed class PasswordResetResponse
+    {
+        public string message { get; set; }
+        public string debugCode { get; set; }
     }
 }
