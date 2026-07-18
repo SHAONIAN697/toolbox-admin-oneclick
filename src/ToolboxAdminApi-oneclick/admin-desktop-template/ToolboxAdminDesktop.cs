@@ -357,7 +357,7 @@ namespace ToolboxAdminDesktop
     {
         internal static LoginResult Login(string username, string password)
         {
-            return LoginInternal("/api/login", new { username = username, password = password });
+            return LoginInternal("/desktop/login", new { username = username, password = password });
         }
 
         internal static LoginResult Register(string username, string email, string displayName, string password, string inviteCode)
@@ -534,6 +534,7 @@ namespace ToolboxAdminDesktop
     internal sealed class BrowserHostForm : Form
     {
         private const int GWL_STYLE = -16;
+        private const int GWL_EXSTYLE = -20;
         private const int WS_CHILD = 0x40000000;
         private const int WS_VISIBLE = 0x10000000;
         private const int WS_CAPTION = 0x00C00000;
@@ -542,6 +543,14 @@ namespace ToolboxAdminDesktop
         private const int WS_MINIMIZEBOX = 0x00020000;
         private const int WS_MAXIMIZEBOX = 0x00010000;
         private const int WS_POPUP = unchecked((int)0x80000000);
+        private const int WS_EX_DLGMODALFRAME = 0x00000001;
+        private const int WS_EX_WINDOWEDGE = 0x00000100;
+        private const int WS_EX_CLIENTEDGE = 0x00000200;
+        private const int WS_EX_STATICEDGE = 0x00020000;
+        private const uint SWP_NOZORDER = 0x0004;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_FRAMECHANGED = 0x0020;
+        private const int BROWSER_TITLEBAR_HEIGHT = 42;
         private const int SW_SHOW = 5;
         private const int WM_CLOSE = 0x0010;
 
@@ -720,6 +729,12 @@ namespace ToolboxAdminDesktop
             int style = GetWindowLong(browserWindow, GWL_STYLE);
             style = (style | WS_CHILD | WS_VISIBLE) & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME & ~WS_SYSMENU & ~WS_MINIMIZEBOX & ~WS_MAXIMIZEBOX;
             SetWindowLong(browserWindow, GWL_STYLE, style);
+            int exStyle = GetWindowLong(browserWindow, GWL_EXSTYLE);
+            exStyle &= ~WS_EX_DLGMODALFRAME & ~WS_EX_WINDOWEDGE & ~WS_EX_CLIENTEDGE & ~WS_EX_STATICEDGE;
+            SetWindowLong(browserWindow, GWL_EXSTYLE, exStyle);
+            SetWindowPos(browserWindow, IntPtr.Zero, 0, -BROWSER_TITLEBAR_HEIGHT,
+                hostPanel.ClientSize.Width, hostPanel.ClientSize.Height + BROWSER_TITLEBAR_HEIGHT,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             ShowWindow(browserWindow, SW_SHOW);
             ResizeBrowser();
         }
@@ -732,7 +747,8 @@ namespace ToolboxAdminDesktop
                 browserWindow = IntPtr.Zero;
                 return;
             }
-            MoveWindow(browserWindow, 0, 0, hostPanel.ClientSize.Width, hostPanel.ClientSize.Height, true);
+            MoveWindow(browserWindow, 0, -BROWSER_TITLEBAR_HEIGHT,
+                hostPanel.ClientSize.Width, hostPanel.ClientSize.Height + BROWSER_TITLEBAR_HEIGHT, true);
         }
 
         private void CleanupBrowser()
@@ -798,6 +814,9 @@ namespace ToolboxAdminDesktop
 
         [DllImport("user32.dll")]
         private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int width, int height, uint flags);
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
