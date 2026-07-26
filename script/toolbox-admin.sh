@@ -36,14 +36,36 @@ download_source(){
   find "$tmp" -path '*/src/ToolboxAdminApi-oneclick/install-baota.sh' -print -quit | xargs -r dirname
 }
 
+source_matches_installed(){
+  local src="$1" dir="$2" path relative
+  [ -f "$dir/app.py" ] && cmp -s "$src/app.py" "$dir/app.py" || return 1
+  for path in assets client-template wwwroot admin-desktop-template deploy; do
+    [ -d "$src/$path" ] || continue
+    while IFS= read -r -d '' relative; do
+      relative="${relative#"$src/"}"
+      [ -f "$dir/$relative" ] && cmp -s "$src/$relative" "$dir/$relative" || return 1
+    done < <(find "$src/$path" -type f -print0)
+  done
+}
+
 run_install_or_update(){
-  local tmp src
+  local mode="$1" tmp src dir
   ask_proxy
   tmp="$(mktemp -d /tmp/toolbox-admin-manager.XXXXXX)"
   if ! src="$(download_source "$tmp")" || [ -z "$src" ] || [ ! -f "$src/install-baota.sh" ]; then
     red "源码下载失败，请检查网络或输入 GitHub 代理后重试。"
     rm -rf "$tmp"
     return 0
+  fi
+  if [ "$mode" = "update" ]; then
+    dir="$(app_dir)"
+    yellow "正在检查当前版本..."
+    if source_matches_installed "$src" "$dir"; then
+      green "当前已是最新版本，无需更新。"
+      rm -rf "$tmp"
+      return 0
+    fi
+    yellow "检测到新版本，开始更新..."
   fi
   if ! bash "$src/install-baota.sh"; then
     red "安装或更新失败，请查看上方错误信息。"
@@ -58,7 +80,7 @@ install_app(){
     yellow "此位置已经安装，请选择 2 使用更新命令。"
     return
   fi
-  run_install_or_update
+  run_install_or_update install
 }
 
 update_app(){
@@ -66,7 +88,7 @@ update_app(){
     yellow "尚未检测到已安装的 Toolbox Admin，请选择 1 安装。"
     return
   fi
-  run_install_or_update
+  run_install_or_update update
 }
 
 show_status(){ systemctl status "$SERVICE" --no-pager -l || true; }
