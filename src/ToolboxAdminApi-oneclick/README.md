@@ -31,20 +31,17 @@
 
 客户端下载时会创建独立安装包目录，把所有文件保存到同一位置。更新客户端模板后，旧 EXE 必须重新生成和分发。
 
-## 一键部署 / 更新
+## 一键管理脚本
 
-新部署和已有服务器更新使用同一条命令。更新时会保留服务器上的账号、密码、用户、配置、通知和 `data/` 数据目录。
+安装、更新和维护统一使用以下命令：
 
 ```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/toolbox-admin-baota-oneclick.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && ls -lh toolbox-admin-oneclick.tar.gz && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+curl -fsSL "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" > toolbox-admin.sh && sudo bash toolbox-admin.sh
 ```
 
-执行后按提示填写：
+脚本启动后可进行安装、更新、卸载、服务管理、密码管理、数据备份恢复和 GitHub 代理配置。需要加速时，在菜单中选择“配置 GitHub 代理”，填写 `https://gh-proxy.org/`。
 
-- 绑定域名：填写客户自己的域名。
-- 安装目录：首次部署可直接回车，更新时脚本会优先使用原安装目录。
-- 服务端口：默认 `5088`，已有部署会沿用原端口。
-- 管理员密码：首次部署可填写或回车自动生成，更新时保持原密码。
+> 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 
 ## 数据保留
 

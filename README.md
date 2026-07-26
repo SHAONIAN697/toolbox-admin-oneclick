@@ -56,104 +56,17 @@
 
 客户端会把同一按钮下的全部文件保存到 `Toolbox/<安装包文件夹名称>/`。文件名由客户端自动识别，后台不需要重复填写。
 
-## 首次部署
+## 一键管理脚本
 
-新服务器第一次安装可使用下面命令。首次部署会初始化新的 `data/` 数据目录。
-
-```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
-```
-
-## 已部署服务器更新（保留数据）
-
-已部署服务器直接粘贴下面命令即可。它会备份当前程序文件，只替换程序，不清空 `data/`。
+安装、更新和维护统一使用以下命令：
 
 ```bash
-set -e
-SERVICE="toolbox-admin"
-APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
-[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
-BRANCH="main"
-PKG_NAME="toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz"
-URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
-URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
-URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="11948b90f80d3f4ffb1558fe29974ef8498689abe53a8eaf985059859e36b737"
-TS="$(date +%Y%m%d-%H%M%S)"
-PKG="/tmp/toolbox-admin-update-$TS.tar.gz"
-TMP="/tmp/toolbox-admin-update-$TS"
-REPO_TMP="/tmp/toolbox-admin-repo-$TS"
-BACKUP="/www/backup/toolbox-admin-$TS"
-
-mkdir -p "$TMP" "$BACKUP" "$REPO_TMP"
-[ -d "$APP" ] || { echo "APP dir not found: $APP"; exit 1; }
-[ -d "$APP/data" ] || { echo "Existing data dir not found: $APP/data"; exit 1; }
-
-download_codeload() {
-  local repo_pkg="/tmp/toolbox-admin-repo-$TS.tar.gz"
-  echo "Downloading from codeload branch archive..."
-  rm -f "$repo_pkg"
-  rm -rf "$REPO_TMP"
-  mkdir -p "$REPO_TMP"
-  curl -L --fail --retry 2 --connect-timeout 8 --speed-limit 20480 --speed-time 20 --max-time 180 -o "$repo_pkg" "$URL_CODELOAD" || return 1
-  tar -xzf "$repo_pkg" -C "$REPO_TMP" || return 1
-  local found
-  found="$(find "$REPO_TMP" -path "*/packages/$PKG_NAME" -type f | head -n 1)"
-  [ -n "$found" ] || return 1
-  cp "$found" "$PKG"
-}
-
-download_direct() {
-  local url="$1"
-  echo "Downloading direct package: $url"
-  rm -f "$PKG"
-  curl -L --fail --retry 1 --connect-timeout 8 --speed-limit 20480 --speed-time 15 --max-time 60 -o "$PKG" "$url"
-}
-
-download_git() {
-  command -v git >/dev/null 2>&1 || return 1
-  echo "Downloading through git clone fallback..."
-  rm -rf "$REPO_TMP"
-  git clone --depth 1 --branch "$BRANCH" "https://github.com/SHAONIAN697/toolbox-admin-oneclick.git" "$REPO_TMP"
-  [ -f "$REPO_TMP/packages/$PKG_NAME" ] || return 1
-  cp "$REPO_TMP/packages/$PKG_NAME" "$PKG"
-}
-
-download_codeload || download_direct "$URL_RAW" || download_direct "$URL_GITHUB" || download_git || { echo "Download failed from all sources"; exit 1; }
-echo "$SHA  $PKG" | sha256sum -c -
-tar -xzf "$PKG" -C "$TMP"
-SRC="$TMP/ToolboxAdminApi-oneclick"
-python3 -m py_compile "$SRC/app.py"
-
-cd "$APP"
-cp -a app.py server.ps1 wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
-cp -a data "$BACKUP/data.current" 2>/dev/null || true
-
-rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs
-\cp -a "$SRC/app.py" "$APP/app.py"
-[ -f "$SRC/server.ps1" ] && \cp -a "$SRC/server.ps1" "$APP/server.ps1" || true
-\cp -a "$SRC/wwwroot" "$APP/wwwroot"
-\cp -a "$SRC/client-template" "$APP/client-template"
-\cp -a "$SRC/assets" "$APP/assets"
-\cp -a "$SRC/deploy" "$APP/deploy"
-\cp -a "$SRC/admin-desktop-template" "$APP/admin-desktop-template"
-[ -d "$BACKUP/wwwroot/uploads" ] && mkdir -p "$APP/wwwroot" && rm -rf "$APP/wwwroot/uploads" && \cp -a "$BACKUP/wwwroot/uploads" "$APP/wwwroot/uploads"
-
-test -f "$APP/data/users.json"
-test -f "$APP/data/config.json"
-python3 -m json.tool "$APP/data/users.json" >/dev/null
-python3 -m json.tool "$APP/data/config.json" >/dev/null
-python3 -m py_compile "$APP/app.py"
-
-systemctl restart "$SERVICE"
-sleep 2
-systemctl is-active --quiet "$SERVICE"
-curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
-grep -q "function loadOptional" "$APP/wwwroot/admin.js"
-grep -q "adminThemeToggle" "$APP/wwwroot/index.html"
-grep -q "ADMIN_THEME_STORAGE_KEY" "$APP/wwwroot/admin.js"
-echo "OK: toolbox-admin updated, existing data preserved. Backup: $BACKUP"
+curl -fsSL "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" > toolbox-admin.sh && sudo bash toolbox-admin.sh
 ```
+
+脚本启动后可进行安装、更新、卸载、服务管理、密码管理、数据备份恢复和 GitHub 代理配置。需要加速时，在菜单中选择“配置 GitHub 代理”，填写 `https://gh-proxy.org/`。
+
+> 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 
 ## 数据保留
 
