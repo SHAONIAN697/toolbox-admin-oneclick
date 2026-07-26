@@ -36,7 +36,7 @@
 安装、更新和维护统一使用以下命令：
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" > toolbox-admin.sh && sudo bash toolbox-admin.sh
+(curl -fsSL --connect-timeout 5 --max-time 15 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o toolbox-admin.sh || curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o toolbox-admin.sh) && sudo bash toolbox-admin.sh
 ```
 
 选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.org/`。
