@@ -13,6 +13,12 @@ pause(){ read -r -p "按 Enter 返回菜单..." _ || true; }
 need_root(){ [ "$(id -u)" = 0 ] || { red "请使用 sudo bash 执行"; exit 1; }; }
 app_dir(){ systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true; }
 
+is_installed(){
+  local dir
+  dir="$(app_dir)"
+  [ -n "$dir" ] && [ "$dir" != "/" ] && [ -f "$dir/app.py" ]
+}
+
 ask_proxy(){
   PROXY=""
   echo "如需 GitHub 加速，请输入代理地址，例如：https://gh-proxy.org/"
@@ -25,19 +31,42 @@ download_source(){
   local tmp="$1" url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${BRANCH}"
   mkdir -p "$tmp"
   yellow "正在下载最新版源码..." >&2
-  curl -fL --retry 3 --connect-timeout 15 -o "$tmp/source.tar.gz" "${PROXY}${url}"
-  tar -xzf "$tmp/source.tar.gz" -C "$tmp"
+  curl -fL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp/source.tar.gz" "${PROXY}${url}" || return 1
+  tar -xzf "$tmp/source.tar.gz" -C "$tmp" || return 1
   find "$tmp" -path '*/src/ToolboxAdminApi-oneclick/install-baota.sh' -print -quit | xargs -r dirname
 }
 
-install_or_update(){
+run_install_or_update(){
   local tmp src
   ask_proxy
   tmp="$(mktemp -d /tmp/toolbox-admin-manager.XXXXXX)"
-  src="$(download_source "$tmp")"
-  [ -n "$src" ] && [ -f "$src/install-baota.sh" ] || { red "源码下载或目录识别失败"; rm -rf "$tmp"; return 1; }
-  bash "$src/install-baota.sh"
+  if ! src="$(download_source "$tmp")" || [ -z "$src" ] || [ ! -f "$src/install-baota.sh" ]; then
+    red "源码下载失败，请检查网络或输入 GitHub 代理后重试。"
+    rm -rf "$tmp"
+    return 0
+  fi
+  if ! bash "$src/install-baota.sh"; then
+    red "安装或更新失败，请查看上方错误信息。"
+    rm -rf "$tmp"
+    return 0
+  fi
   rm -rf "$tmp"
+}
+
+install_app(){
+  if is_installed; then
+    yellow "此位置已经安装，请选择 2 使用更新命令。"
+    return
+  fi
+  run_install_or_update
+}
+
+update_app(){
+  if ! is_installed; then
+    yellow "尚未检测到已安装的 Toolbox Admin，请选择 1 安装。"
+    return
+  fi
+  run_install_or_update
 }
 
 show_status(){ systemctl status "$SERVICE" --no-pager -l || true; }
@@ -118,7 +147,8 @@ menu(){
     echo
     read -r -p "请输入选项 [0-10]: " choice
     case "$choice" in
-      1|2) install_or_update; pause;;
+      1) install_app; pause;;
+      2) update_app; pause;;
       3) uninstall_app; pause;;
       4) show_status; pause;;
       5) change_password; pause;;
