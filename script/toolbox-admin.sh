@@ -147,27 +147,29 @@ uninstall_app(){
 menu(){
   while true; do
     clear
-    echo "欢迎使用 Toolbox Admin 管理脚本"
+    printf '欢迎使用 \033[36mToolbox Admin\033[0m 管理脚本\n'
     echo
-    green "基础功能："
-    echo "1. 安装 Toolbox Admin"
-    echo "2. 更新 Toolbox Admin"
-    echo "3. 卸载 Toolbox Admin"
-    echo "------------------------"
-    green "服务管理："
-    echo "4. 查看状态"
-    echo "5. 修改总管理员密码"
-    echo "6. 启动服务"
-    echo "7. 停止服务"
-    echo "8. 重启服务"
-    echo "------------------------"
-    green "数据管理："
-    echo "9. 备份数据"
-    echo "10. 恢复数据"
-    echo "------------------------"
-    echo "0. 退出脚本"
+    green "基础功能:------------"
+    green "1. 安装 Toolbox Admin"
+    green "2. 更新 Toolbox Admin"
+    green "3. 卸载 Toolbox Admin"
     echo
-    read -r -p "请输入选项 [0-10]: " choice
+    green "服务管理:------------"
+    green "4. 查看状态"
+    green "5. 修改管理员密码"
+    green "6. 启动服务"
+    green "7. 停止服务"
+    green "8. 重启服务"
+    echo
+    green "配置管理:------------"
+    green "9. 备份数据"
+    green "10. 恢复数据"
+    echo
+    green "----------------------"
+    green "0. 退出脚本"
+    echo
+    printf '请输入选项 \033[1m[0-10]\033[0m: '
+    read -r choice
     case "$choice" in
       1) install_app; pause;;
       2) update_app; pause;;
