@@ -3537,7 +3537,7 @@ namespace ToolboxClient
                 button.Click += delegate
                 {
                     ActionInfo info = button.ActionInfo;
-                    RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+                    RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
                 };
                 panel.Controls.Add(button);
             }
@@ -3632,13 +3632,13 @@ namespace ToolboxClient
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
             {
                 ActionInfo info = button.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
             };
             QueueButtonIconLoad(iconUrl, button);
             return button;
@@ -6576,7 +6576,7 @@ namespace ToolboxClient
                 if (HasDirectDownloadExtension(part)) return part;
             }
 
-            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
+            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|pak|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
             return match.Success ? match.Groups[1].Value : "";
         }
 
@@ -6593,7 +6593,7 @@ namespace ToolboxClient
             return ext == ".exe" || ext == ".msi" || ext == ".msix" || ext == ".appx" ||
                    ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".tar" ||
                    ext == ".gz" || ext == ".tgz" || ext == ".bz2" || ext == ".xz" ||
-                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" ||
+                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" || ext == ".pak" ||
                    ext == ".apk" || ext == ".deb" || ext == ".rpm" || ext == ".msu" ||
                    ext == ".cab" || ext == ".dll" || ext == ".vst3" || ext == ".vst" ||
                    ext == ".aax" || ext == ".component" || ext == ".pdf" || ext == ".bin";
@@ -6967,13 +6967,13 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
             {
                 ActionInfo info = button.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
             };
             QueueButtonIconLoad(iconUrl, button);
             return button;
@@ -7073,13 +7073,13 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
             };
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
             card.Click += delegate
             {
                 ActionInfo info = card.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
             };
             QueueButtonIconLoad(iconUrl, card);
             return card;
@@ -7226,7 +7226,7 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target, string customScript, string name)
+        private void RunAction(string action, string target, string customScript, string name, Dictionary<string, object> item = null)
         {
             try
             {
@@ -7236,7 +7236,8 @@ namespace ToolboxClient
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download") DownloadFile(target, name);
+                if (action == "download" && item != null && GetText(item, "download_mode", "") == "multiple") DownloadPackage(item, name);
+                else if (action == "download") DownloadFile(target, name);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -7463,26 +7464,75 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName)
         {
-            string originalUrl = (url ?? "").Trim();
-            if (String.IsNullOrWhiteSpace(originalUrl)) return;
-            status.Text = PortalText("正在解析下载地址...", "Preparing download...");
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
+            DownloadFile(url, displayName, "", "", null, false);
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName)
+        private void DownloadPackage(Dictionary<string, object> item, string displayName)
+        {
+            List<Dictionary<string, object>> files = new List<Dictionary<string, object>>();
+            foreach (object raw in AsList(Get(item, "files"))) { Dictionary<string, object> file = AsDict(raw); if (!String.IsNullOrWhiteSpace(GetText(file, "url", ""))) files.Add(file); }
+            if (files.Count < 2) { DownloadFile(GetTarget(item, "download"), displayName); return; }
+            string packageName = SafeDownloadFileName(GetText(item, "package_name", displayName));
+            if (String.IsNullOrWhiteSpace(packageName)) packageName = "download-package";
+            string directory = Path.Combine(GetDownloadDirectory(), packageName);
+            Directory.CreateDirectory(directory);
+            DownloadBatch batch = new DownloadBatch { Name = displayName, Directory = directory, Remaining = files.Count };
+            foreach (Dictionary<string, object> file in files) {
+                string configuredName = GetText(file, "name", "").Trim();
+                string fileName = String.IsNullOrWhiteSpace(configuredName) ? "" : SafeDownloadFileName(configuredName);
+                bool primary = BoolValue(file, "primary", false);
+                DownloadFile(GetText(file, "url", ""), displayName, fileName, directory, batch, primary);
+            }
+            status.Text = PortalText("已加入多文件下载：", "Package queued: ") + displayName + " (" + files.Count + ")";
+        }
+
+        private void DownloadFile(string url, string displayName, string desiredName, string directory, DownloadBatch batch, bool batchPrimary)
+        {
+            string originalUrl = (url ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(originalUrl)) { CompleteBatchFile(batch, false); return; }
+            status.Text = PortalText("正在解析下载地址...", "Preparing download...");
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, desiredName, directory, batch, batchPrimary); });
+        }
+
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string desiredName = "", string directory = "", DownloadBatch batch = null, bool batchPrimary = false)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
+            result.Batch = batch;
+            result.BatchPrimary = batchPrimary;
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
-                    result.FileName = SafeDownloadFileName(result.Download.FileName);
-                    string dir = GetDownloadDirectory();
+                    string resolvedName = String.IsNullOrWhiteSpace(desiredName) ? result.Download.FileName : desiredName;
+                    if (batch != null && String.IsNullOrWhiteSpace(desiredName))
+                    {
+                        string urlName = FileNameFromUrl(originalUrl);
+                        if (IsUsefulDownloadFileName(urlName) && !String.IsNullOrWhiteSpace(Path.GetExtension(urlName))) resolvedName = urlName;
+                    }
+                    result.FileName = SafeDownloadFileName(resolvedName);
+                    string dir = String.IsNullOrWhiteSpace(directory) ? GetDownloadDirectory() : directory;
                     Directory.CreateDirectory(dir);
                     result.Path = Path.Combine(dir, result.FileName);
+                    if (batch != null)
+                    {
+                        lock (batch)
+                        {
+                            string basePath = result.Path;
+                            string stem = Path.GetFileNameWithoutExtension(basePath);
+                            string extension = Path.GetExtension(basePath);
+                            int suffix = 2;
+                            while (batch.ReservedPaths.Contains(result.Path))
+                            {
+                                result.Path = Path.Combine(dir, stem + " (" + suffix++ + ")" + extension);
+                            }
+                            batch.ReservedPaths.Add(result.Path);
+                            result.FileName = Path.GetFileName(result.Path);
+                            if (batchPrimary) batch.PrimaryPath = result.Path;
+                        }
+                    }
                     result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
                 }
             }
@@ -7505,6 +7555,7 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
+                CompleteBatchFile(result.Batch, false);
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
@@ -7512,12 +7563,14 @@ namespace ToolboxClient
             DownloadRequest download = result.Download;
             if (download == null)
             {
+                CompleteBatchFile(result.Batch, false);
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
             if (download.BrowserOnly)
             {
+                CompleteBatchFile(result.Batch, false);
                 DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
@@ -7539,14 +7592,17 @@ namespace ToolboxClient
             DownloadRecord existingRecord = result.ExistingRecord;
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
-                string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
+                string launchStatus = result.Batch == null ? LaunchDownloadedFile(existingRecord.SavedPath) : PortalText("文件已存在", "File already exists");
                 status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
+                CompleteBatchFile(result.Batch, true);
                 FillDownloadRecords();
                 return;
             }
             DownloadTask existingTask = FindActiveDownload(result.OriginalUrl, path);
             if (existingTask == null) existingTask = FindActiveDownload(download.Url, path);
-            if (existingTask == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
+            // Package files often share a long base name (setup.exe, setup_01.pak, ...).
+            // Fuzzy name matching would incorrectly collapse them into one task.
+            if (existingTask == null && result.Batch == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
             if (existingTask != null)
             {
                 ResumeMatchedDownloadTask(existingTask);
@@ -7554,6 +7610,8 @@ namespace ToolboxClient
             }
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
+            task.Batch = result.Batch;
+            task.BatchPrimary = result.BatchPrimary;
             task.BrowserUrl = download.BrowserUrl;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
@@ -8319,6 +8377,19 @@ namespace ToolboxClient
             DownloadFileSegmented(task, plan, attempt);
         }
 
+        private void CompleteBatchFile(DownloadBatch batch, bool success)
+        {
+            if (batch == null) return;
+            bool complete;
+            lock (batch) { if (!success) batch.Failed = true; if (batch.Remaining > 0) batch.Remaining--; complete = batch.Remaining == 0; }
+            if (!complete) return;
+            if (!batch.Failed && !String.IsNullOrWhiteSpace(batch.PrimaryPath) && File.Exists(batch.PrimaryPath)) {
+                string launchStatus = LaunchDownloadedFile(batch.PrimaryPath);
+                status.Text = PortalText("多文件安装包已下载完成：", "Package download complete: ") + batch.Name + " - " + launchStatus;
+            } else if (batch.Failed) status.Text = PortalText("安装包有文件下载失败，已保留完成的文件。", "Some package files failed; completed files were kept.");
+            else status.Text = PortalText("安装包已下载完成，但未找到主程序。", "Package downloaded, but the primary file was not found.");
+        }
+
         private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)
         {
             plan = null;
@@ -8875,6 +8946,7 @@ namespace ToolboxClient
 
             if (cancelled)
             {
+                CompleteBatchFile(task.Batch, false);
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
                 string cancelMessage = task.Segmented ? "已取消分片下载，临时文件已清理，下次点击会重新开始下载。" : "已保留未完成文件，下次点击会继续下载。";
@@ -8890,16 +8962,18 @@ namespace ToolboxClient
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
                 UpdateActiveDownloadTask(task);
-                string launchStatus = LaunchDownloadedFile(task.Path);
+                string launchStatus = task.Batch == null ? LaunchDownloadedFile(task.Path) : PortalText("下载完成", "Complete");
                 status.Text = launchStatus + "：" + task.FileName;
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
                 RemoveActiveDownload(task);
+                CompleteBatchFile(task.Batch, true);
                 FillDownloadRecords();
                 StartQueuedDownloads();
                 return;
             }
 
             CleanupSegmentedPart(task);
+            CompleteBatchFile(task.Batch, false);
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
             AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。");
             RemoveActiveDownload(task);
@@ -13638,6 +13712,7 @@ namespace ToolboxClient
             public string Target;
             public string CustomScript;
             public string Name;
+            public Dictionary<string, object> Item;
         }
 
         private sealed class SoftwareCatalogEntry
@@ -14062,6 +14137,18 @@ namespace ToolboxClient
             public string Path = "";
             public DownloadRecord ExistingRecord;
             public Exception Error;
+            public DownloadBatch Batch;
+            public bool BatchPrimary;
+        }
+
+        private sealed class DownloadBatch
+        {
+            public string Name = "";
+            public string Directory = "";
+            public string PrimaryPath = "";
+            public int Remaining;
+            public bool Failed;
+            public readonly HashSet<string> ReservedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         private sealed class CommandRunResult
@@ -14132,6 +14219,8 @@ namespace ToolboxClient
             public volatile string LastResolvedUrl = "";
             public volatile string Referer = "";
             public volatile bool RestoredPaused;
+            public DownloadBatch Batch;
+            public bool BatchPrimary;
             public int WorkerRunning;
             public long Received;
             public long Total = -1;

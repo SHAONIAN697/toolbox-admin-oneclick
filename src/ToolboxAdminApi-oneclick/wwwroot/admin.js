@@ -2682,38 +2682,20 @@ function renderButtonEditRow(tr, button) {
   const enabled = button.enabled !== false;
   const moveScopeValue = positionValueForButton(button);
   tr.className = enabled ? 'button-edit-row' : 'button-edit-row button-disabled-row';
-  tr.innerHTML = `
-    <td>
-      <select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select>
-      <select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select>
-    </td>
-    <td><input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></td>
-    <td><input value="${escapeAttr(button.name || '')}" data-field="name"></td>
-    <td>
-      <div class="icon-field">
-        <span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span>
-        <input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接">
-      </div>
-    </td>
-    <td><input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></td>
-    <td>
-      <select data-field="action">
-        ${ACTIONS.map(([action, label]) =>
-          `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`
-        ).join('')}
-      </select>
-    </td>
-    <td>
-      <span class="target-control">${targetControlHtml(button.action, button.target)}</span>
-      <small class="target-note"></small>
-    </td>
-    <td class="actions">
-      <button data-action="save">保存</button>
-      <button data-action="cancel">取消</button>
-      <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
-      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
-    </td>
-  `;
+  tr.innerHTML = `<td colspan="8"><div class="button-edit-panel">
+    <div class="button-edit-title"><strong>编辑按钮：${escapeHtml(button.name || '未命名')}</strong><span>${escapeHtml(button.area || '')} / ${escapeHtml(button.section || '')}</span></div>
+    <div class="button-edit-grid">
+      <label>页面<select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select></label>
+      <label>分组<select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select></label>
+      <label>排序<input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></label>
+      <label>按钮名称<input value="${escapeAttr(button.name || '')}" data-field="name"></label>
+      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"></div></label>
+      <label>说明<input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></label>
+      <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+    </div>
+    <label class="button-edit-target">下载 / 目标<span class="target-control">${targetControlHtml(button.action, button.target, button.raw || button)}</span><small class="target-note"></small></label>
+    <div class="button-edit-actions"><button data-action="save">保存</button><button data-action="cancel">取消</button><button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}</div>
+  </div></td>`;
 
   updateRowTargetState(tr, button);
   tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
@@ -2844,7 +2826,64 @@ function scriptOptionsHtml(selected = '') {
   return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option><option value="" disabled>────────────</option>${options}`;
 }
 
-function targetControlHtml(action, target = '') {
+function downloadFileRowHtml(file = {}, index = 0) {
+  return `<div class="download-file-row">
+    <input data-download-url value="${escapeAttr(file.url || '')}" placeholder="文件下载地址">
+    <label class="download-primary" title="全部文件下载完成后自动运行此文件"><input type="radio" data-download-primary name="download-primary-${Date.now()}-${Math.random()}" ${file.primary || index === 0 ? 'checked' : ''}> 完成后运行</label>
+    <button type="button" class="danger" data-remove-download title="删除此文件">×</button>
+  </div>`;
+}
+
+function downloadControlHtml(target = '', data = {}) {
+  const files = Array.isArray(data.files) && data.files.length ? data.files : [{ name: '', url: target || '', primary: true }];
+  const multiple = data.download_mode === 'multiple' || files.length > 1;
+  return `<div class="download-target-control">
+    <select data-download-mode><option value="single" ${multiple ? '' : 'selected'}>单文件</option><option value="multiple" ${multiple ? 'selected' : ''}>多文件安装包</option></select>
+    <div data-download-single ${multiple ? 'hidden' : ''}><input data-field="target" value="${escapeAttr(target || files[0]?.url || '')}" placeholder="文件下载地址"></div>
+    <div class="download-multiple" data-download-multiple ${multiple ? '' : 'hidden'}>
+      <input data-package-name value="${escapeAttr(data.package_name || data.name || '')}" placeholder="安装包文件夹名称">
+      <div data-download-files>${files.map(downloadFileRowHtml).join('')}</div>
+      <button type="button" data-add-download>＋ 添加文件</button>
+      <small>所有文件下载到同一目录；全部成功后运行标记为主程序的文件。</small>
+    </div>
+  </div>`;
+}
+
+function bindDownloadControl(root) {
+  const control = root.querySelector('.download-target-control');
+  if (!control || control.dataset.ready) return;
+  control.dataset.ready = '1';
+  const mode = control.querySelector('[data-download-mode]');
+  const single = control.querySelector('[data-download-single]');
+  const multiple = control.querySelector('[data-download-multiple]');
+  const sync = () => { single.hidden = mode.value !== 'single'; multiple.hidden = mode.value !== 'multiple'; };
+  const bindRows = () => {
+    [...control.querySelectorAll('.download-file-row')].forEach((row) => {
+      row.querySelector('[data-remove-download]').onclick = () => {
+        if (control.querySelectorAll('.download-file-row').length <= 1) return;
+        const wasPrimary = row.querySelector('[data-download-primary]').checked;
+        row.remove();
+        if (wasPrimary) control.querySelector('[data-download-primary]')?.click();
+      };
+      row.querySelector('[data-download-primary]').onchange = (event) => {
+        if (!event.target.checked) return;
+        control.querySelectorAll('[data-download-primary]').forEach((radio) => { if (radio !== event.target) radio.checked = false; });
+      };
+    });
+  };
+  mode.onchange = sync;
+  control.querySelector('[data-add-download]').onclick = () => { control.querySelector('[data-download-files]').insertAdjacentHTML('beforeend', downloadFileRowHtml({}, 1)); bindRows(); };
+  bindRows(); sync();
+}
+
+function readDownloadConfig(root) {
+  const control = root.querySelector('.download-target-control');
+  if (!control || control.querySelector('[data-download-mode]').value !== 'multiple') return {};
+  const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
+  return { download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
+}
+
+function targetControlHtml(action, target = '', data = {}) {
   if (action === 'script') {
     const scriptId = normalizeScriptTarget(target);
     const effectiveScriptId = scriptId || SCRIPT_OPTIONS[0]?.value || '';
@@ -2856,6 +2895,7 @@ function targetControlHtml(action, target = '') {
       </div>
     `;
   }
+  if (action === 'download') return downloadControlHtml(target, data);
   return `<input class="target-input" value="${escapeAttr(target || '')}" data-field="target" title="${escapeAttr(target || '')}">`;
 }
 
@@ -2864,8 +2904,9 @@ function updateRowTargetState(row, button) {
   const holder = row.querySelector('.target-control');
   const note = row.querySelector('.target-note');
   const currentTarget = readRowTarget(row) || button.target || '';
-  if (holder) holder.innerHTML = targetControlHtml(action, currentTarget);
+  if (holder) holder.innerHTML = targetControlHtml(action, currentTarget, button.raw || button);
   bindScriptTargetControl(row);
+  bindDownloadControl(row);
   if (note && action !== 'script') note.textContent = '';
 }
 
@@ -2891,7 +2932,15 @@ function updateAddTargetState() {
   if (!target) return;
   const label = target.closest('label');
   const help = $('buttonScriptHelp');
-  if (action === 'script') {
+  label.classList.toggle('download-config-field', action === 'download');
+  if (action === 'download') {
+    const current = target?.value?.trim() || '';
+    label.innerHTML = `下载配置${downloadControlHtml(current, {})}`;
+    const singleInput = label.querySelector('[data-field="target"]');
+    if (singleInput) singleInput.id = 'addTarget';
+    bindDownloadControl(label);
+    if (help) help.hidden = true;
+  } else if (action === 'script') {
     const selected = normalizeScriptTarget(readAddTarget()) || SCRIPT_OPTIONS[0]?.value || '';
     const custom = selected && !SCRIPT_LABELS[selected];
     label.innerHTML = `
@@ -2903,6 +2952,9 @@ function updateAddTargetState() {
     `;
     bindAddScriptTargetControl();
     if (label?.firstChild?.nodeType === Node.TEXT_NODE) label.firstChild.textContent = '内置功能';
+  } else if (label.querySelector('.download-target-control')) {
+    label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
+    if (help) help.hidden = true;
   } else if (target.tagName === 'SELECT') {
     label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
     if (help) help.hidden = true;
@@ -2933,6 +2985,8 @@ function readAddTarget() {
     if (select?.value === CUSTOM_SCRIPT_VALUE) return $('addCustomScript')?.value.trim() || '';
     return select?.value.trim() || '';
   }
+  const downloadControl = $('addTarget')?.closest('label')?.querySelector('.download-target-control');
+  if ($('addAction')?.value === 'download' && downloadControl?.querySelector('[data-download-mode]')?.value === 'multiple') return downloadControl.querySelector('[data-download-url]')?.value.trim() || '';
   return $('addTarget')?.value.trim() || '';
 }
 
@@ -3216,6 +3270,8 @@ async function addButton() {
       enabled: true
     }
   };
+  if (action === 'download') Object.assign(request.button, readDownloadConfig($('addTarget').closest('label')));
+  if (request.button.download_mode === 'multiple' && request.button.files.length < 2) { setStatus('多文件安装包请至少填写两个有效下载地址。', true); return; }
 
   if (scope === 'toolbox') request.tabIndex = Number(id);
   else request.pageId = id;
@@ -3229,7 +3285,9 @@ async function addButton() {
   if ($('addSort')) $('addSort').value = '0';
   $('addIcon').value = '';
   $('addDescription').value = '';
-  $('addTarget').value = '';
+  const addTargetLabel = $('addTarget')?.closest('label');
+  if (addTargetLabel && $('addAction').value === 'download') { addTargetLabel.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">'; updateAddTargetState(); }
+  else if ($('addTarget')) $('addTarget').value = '';
   await reloadConfigAndButtons('按钮已新增。');
 }
 
@@ -3252,6 +3310,7 @@ async function saveButton(ref, row) {
       enabled: ref.enabled !== false
     }
   };
+  if (request.button.action === 'download') Object.assign(request.button, readDownloadConfig(row));
 
   await api(buttonsApiPath(), {
     method: 'PATCH',
@@ -3269,7 +3328,7 @@ function readRowTarget(row) {
     }
     return target.value.trim();
   }
-  return target.value.trim();
+  return target?.value.trim() || row.querySelector('[data-download-url]')?.value.trim() || '';
 }
 
 async function toggleButtonEnabled(ref) {
@@ -3295,6 +3354,7 @@ async function toggleButtonEnabled(ref) {
       enabled: nextEnabled
     }
   };
+  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; }
 
   await api(buttonsApiPath(), {
     method: 'PATCH',

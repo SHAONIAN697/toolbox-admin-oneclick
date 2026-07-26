@@ -835,6 +835,10 @@ def normalize_client_config(cfg):
         action = button.get("action", "link")
         target = get_target(button)
         if action == "download":
+            files = normalize_download_files(button.get("files"))
+            if files:
+                button["files"] = files
+                button["download_mode"] = "multiple" if len(files) > 1 or button.get("download_mode") == "multiple" else "single"
             button["download_url"] = target
             button.setdefault("url", target)
             button.setdefault("target", target)
@@ -1945,6 +1949,28 @@ def get_target(button):
     return button.get("url") or button.get("target") or ""
 
 
+def normalize_download_files(value):
+    files = []
+    if not isinstance(value, list):
+        return files
+    for raw in value[:50]:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or raw.get("download_url") or "").strip()
+        name = Path(str(raw.get("name") or raw.get("filename") or "").strip()).name
+        if url:
+            files.append({"name": name, "url": url, "primary": raw.get("primary") is True})
+    if files and not any(item["primary"] for item in files):
+        files[0]["primary"] = True
+    primary_seen = False
+    for item in files:
+        if item["primary"] and not primary_seen:
+            primary_seen = True
+        elif item["primary"]:
+            item["primary"] = False
+    return files
+
+
 def new_button(body):
     action = body.get("action", "link")
     target = body.get("target") or body.get("url") or ""
@@ -1961,6 +1987,12 @@ def new_button(body):
         item["description"] = body.get("description") or body.get("intro") or body.get("remark")
     if action == "download":
         item["download_url"] = target
+        files = normalize_download_files(body.get("files"))
+        if (body.get("download_mode") == "multiple" or len(files) > 1) and files:
+            item["download_mode"] = "multiple"
+            item["package_name"] = str(body.get("package_name") or body.get("name") or "").strip()
+            item["files"] = files
+            item["download_url"] = files[0]["url"]
     elif action == "cmd":
         item["command"] = target
     elif action == "script":
