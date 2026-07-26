@@ -149,19 +149,22 @@ menu(){
     clear
     printf '欢迎使用 \033[1;96mToolbox Admin\033[0m 管理脚本\n'
     echo
-    green "基础功能:------------"
+    green "基础功能:"
+    green "----------------------"
     green "1. 安装 Toolbox Admin"
     green "2. 更新 Toolbox Admin"
     green "3. 卸载 Toolbox Admin"
     echo
-    green "服务管理:------------"
+    green "服务管理:"
+    green "----------------------"
     green "4. 查看状态"
     green "5. 修改管理员密码"
     green "6. 启动服务"
     green "7. 停止服务"
     green "8. 重启服务"
     echo
-    green "配置管理:------------"
+    green "配置管理:"
+    green "----------------------"
     green "9. 备份数据"
     green "10. 恢复数据"
     echo
