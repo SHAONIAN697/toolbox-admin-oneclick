@@ -6,7 +6,7 @@ REPO="SHAONIAN697/toolbox-admin-oneclick"
 BRANCH="main"
 PROXY=""
 
-green(){ printf '\033[32m%s\033[0m\n' "$*"; }
+green(){ printf '\033[1;92m%s\033[0m\n' "$*"; }
 yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 pause(){ read -r -p "按 Enter 返回菜单..." _ || true; }
@@ -147,7 +147,7 @@ uninstall_app(){
 menu(){
   while true; do
     clear
-    printf '欢迎使用 \033[36mToolbox Admin\033[0m 管理脚本\n'
+    printf '欢迎使用 \033[1;96mToolbox Admin\033[0m 管理脚本\n'
     echo
     green "基础功能:------------"
     green "1. 安装 Toolbox Admin"
