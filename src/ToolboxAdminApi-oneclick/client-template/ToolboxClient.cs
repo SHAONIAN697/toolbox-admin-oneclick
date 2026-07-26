@@ -33,6 +33,7 @@ namespace ToolboxClient
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
+        internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
         internal const string BuildId = "__BUILD_ID__";
         internal const string BuildStamp = "__BUILD_STAMP__";
         internal const string IntegritySeed = "__INTEGRITY_SEED__";
@@ -189,6 +190,7 @@ namespace ToolboxClient
         private bool loadingConfig = false;
         private bool configApplied = false;
         private bool updatePromptShown = false;
+        private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly object launchDownloadedFileLock = new object();
@@ -7236,8 +7238,7 @@ namespace ToolboxClient
             {
                 if (item != null && GetText(item, "id", "").Equals("client_update_download", StringComparison.OrdinalIgnoreCase))
                 {
-                    Open(target);
-                    BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+                    OpenUpdateTarget(target);
                     return;
                 }
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
@@ -7263,6 +7264,132 @@ namespace ToolboxClient
         {
             if (String.IsNullOrWhiteSpace(target)) return;
             Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+        }
+
+        private void OpenUpdateTarget(string target)
+        {
+            if (IsDirectExeUrl(target))
+            {
+                DownloadAndReplaceCurrentExe(target);
+                return;
+            }
+            Open(target);
+            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+        }
+
+        private static bool IsDirectExeUrl(string target)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((target ?? "").Trim(), UriKind.Absolute, out uri)) return false;
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+            string path = Uri.UnescapeDataString(uri.AbsolutePath ?? "");
+            return path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void DownloadAndReplaceCurrentExe(string url)
+        {
+            if (selfUpdateDownloading) return;
+            selfUpdateDownloading = true;
+            string currentExe = Application.ExecutablePath;
+            string tempExe = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".exe");
+            status.Text = "正在下载工具箱更新...";
+            Form updateWindow = new Form();
+            updateWindow.Text = "工具箱更新";
+            updateWindow.FormBorderStyle = FormBorderStyle.FixedDialog;
+            updateWindow.StartPosition = FormStartPosition.CenterParent;
+            updateWindow.ClientSize = new Size(430, 132);
+            updateWindow.MaximizeBox = false;
+            updateWindow.MinimizeBox = false;
+            updateWindow.ControlBox = false;
+            Label updateTitle = new Label { Text = "正在下载最新版工具箱", Left = 20, Top = 18, Width = 390, Height = 24, Font = new Font(Font.FontFamily, 11F, FontStyle.Bold) };
+            ProgressBar updateProgress = new ProgressBar { Left = 20, Top = 54, Width = 390, Height = 22, Minimum = 0, Maximum = 100, Value = 0 };
+            Label updateDetail = new Label { Text = "正在连接下载服务器...", Left = 20, Top = 88, Width = 390, Height = 22 };
+            updateWindow.Controls.Add(updateTitle);
+            updateWindow.Controls.Add(updateProgress);
+            updateWindow.Controls.Add(updateDetail);
+            updateWindow.Show(this);
+            WebClient client = new WebClient();
+            client.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 ToolboxUpdater/1.0";
+            client.DownloadProgressChanged += delegate(object sender, DownloadProgressChangedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    int percent = Math.Max(0, Math.Min(100, e.ProgressPercentage));
+                    status.Text = "正在下载工具箱更新 " + percent + "%";
+                    updateProgress.Value = percent;
+                    updateDetail.Text = FormatUpdateBytes(e.BytesReceived) + " / " + FormatUpdateBytes(e.TotalBytesToReceive) + "  (" + percent + "%)";
+                }));
+            };
+            client.DownloadFileCompleted += delegate(object sender, AsyncCompletedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    selfUpdateDownloading = false;
+                    client.Dispose();
+                    updateWindow.Close();
+                    if (e.Cancelled || e.Error != null)
+                    {
+                        updatePromptShown = false;
+                        TryDeleteFile(tempExe);
+                        MessageBox.Show("更新下载失败：" + (e.Error == null ? "下载已取消" : e.Error.Message), "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!IsWindowsExecutable(tempExe))
+                    {
+                        updatePromptShown = false;
+                        TryDeleteFile(tempExe);
+                        MessageBox.Show("更新地址返回的不是有效 Windows EXE，请检查直链。", "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    LaunchSelfUpdater(tempExe, currentExe);
+                }));
+            };
+            try { client.DownloadFileAsync(new Uri(url), tempExe); }
+            catch (Exception ex)
+            {
+                selfUpdateDownloading = false;
+                updatePromptShown = false;
+                client.Dispose();
+                updateWindow.Close();
+                TryDeleteFile(tempExe);
+                MessageBox.Show("更新下载失败：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private static string FormatUpdateBytes(long value)
+        {
+            if (value < 0) return "未知大小";
+            if (value >= 1024L * 1024L * 1024L) return (value / (1024d * 1024d * 1024d)).ToString("0.00") + " GB";
+            if (value >= 1024L * 1024L) return (value / (1024d * 1024d)).ToString("0.00") + " MB";
+            if (value >= 1024L) return (value / 1024d).ToString("0.0") + " KB";
+            return value + " B";
+        }
+
+        private static bool IsWindowsExecutable(string path)
+        {
+            try
+            {
+                using (FileStream stream = File.OpenRead(path)) return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z';
+            }
+            catch { return false; }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        private void LaunchSelfUpdater(string downloadedExe, string currentExe)
+        {
+            string script = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".cmd");
+            string body = "@echo off\r\nsetlocal\r\nset /a tries=0\r\n:retry\r\nset /a tries+=1\r\ncopy /Y \"" + downloadedExe + "\" \"" + currentExe + "\" >nul 2>&1\r\nif not errorlevel 1 goto done\r\nif %tries% GEQ 120 goto failed\r\nping 127.0.0.1 -n 2 >nul\r\ngoto retry\r\n:done\r\ndel /F /Q \"" + downloadedExe + "\" >nul 2>&1\r\nstart \"\" \"" + currentExe + "\"\r\ndel \"%~f0\"\r\nexit /b 0\r\n:failed\r\nstart \"\" explorer.exe /select,\"" + downloadedExe + "\"\r\nexit /b 1\r\n";
+            File.WriteAllText(script, body, Encoding.Default);
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            Process.Start(psi);
+            Close();
+            Application.Exit();
         }
 
         private void RunCommand(string command, bool hidden)
@@ -7479,23 +7606,36 @@ namespace ToolboxClient
 
         private bool EnforceUpdatePolicy(Dictionary<string, object> app)
         {
-            if (!BoolValue(app, "update_force", false)) return false;
             string updateUrl = GetText(app, "update_url", GetText(app, "client_update_url", "")).Trim();
             string minimum = GetText(app, "update_min_version", "").Trim();
-            if (String.IsNullOrWhiteSpace(minimum)) minimum = GetText(app, "version", "").Trim();
-            Version required;
-            Version current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
-            if (String.IsNullOrWhiteSpace(updateUrl) || !TryParseVersion(minimum, out required) || current.CompareTo(required) >= 0) return false;
-            if (updatePromptShown) return true;
+            string latest = GetText(app, "version", "").Trim();
+            Version configuredMinimum;
+            Version configuredLatest;
+            bool hasMinimum = TryParseVersion(minimum, out configuredMinimum);
+            bool hasLatest = TryParseVersion(latest, out configuredLatest);
+            Version required = hasMinimum && (!hasLatest || configuredMinimum.CompareTo(configuredLatest) > 0) ? configuredMinimum : configuredLatest;
+            Version current;
+            if (!TryParseVersion(Program.ClientAppVersion, out current)) current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            bool force = BoolValue(app, "update_force", false);
+            if (String.IsNullOrWhiteSpace(updateUrl) || (!hasMinimum && !hasLatest) || current.CompareTo(required) >= 0) return false;
+            if (updatePromptShown) return force;
             updatePromptShown = true;
             string titleText = GetText(app, "update_title", "工具箱更新").Trim();
-            string message = "当前版本 " + DisplayVersion(current) + " 已停止使用，必须更新到 " + DisplayVersion(required) + " 或更高版本。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。";
-            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
-            if (result == DialogResult.OK)
+            string message = force
+                ? "当前版本 " + DisplayVersion(current) + " 已停止使用，必须更新到 " + DisplayVersion(required) + " 或更高版本。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。"
+                : "发现新版本 " + DisplayVersion(required) + "，当前版本为 " + DisplayVersion(current) + "。\r\n\r\n点击“是”立即更新；点击“否”继续使用当前版本。";
+            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, force ? MessageBoxButtons.OKCancel : MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            bool accepted = force ? result == DialogResult.OK : result == DialogResult.Yes;
+            if (accepted)
             {
-                try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); }
+                try
+                {
+                    OpenUpdateTarget(updateUrl);
+                    if (IsDirectExeUrl(updateUrl)) return true;
+                }
                 catch (Exception ex) { MessageBox.Show("无法打开更新地址：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             }
+            if (!force) return false;
             BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
             return true;
         }

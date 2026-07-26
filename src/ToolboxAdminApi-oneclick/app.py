@@ -826,8 +826,6 @@ def public_toolbox_config(user_id):
 
 
 def normalize_client_config(cfg):
-    inject_update_entry(cfg)
-
     def visible_buttons(buttons):
         return [button for button in buttons or [] if (button or {}).get("enabled", True) is not False]
 
@@ -876,32 +874,8 @@ def normalize_client_config(cfg):
 
 
 def inject_update_entry(cfg):
-    app = cfg.get("app") or {}
-    update_url = (app.get("update_url") or app.get("client_update_url") or "").strip()
-    if not update_url:
-        return
-    title = (app.get("update_title") or "工具箱更新").strip() or "工具箱更新"
-    button_name = (app.get("update_button") or "下载最新版").strip() or "下载最新版"
-    page_id = "__client_update"
-    sidebar = cfg.setdefault("sidebar", [])
-    sidebar[:] = [item for item in sidebar if item.get("id") != page_id]
-    sidebar.insert(0, {"id": page_id, "name": title})
-    pages = cfg.setdefault("pages", {})
-    pages[page_id] = {
-        "title": title,
-        "sections": [{
-            "title": "",
-            "buttons": [{
-                "id": "client_update_download",
-                "name": button_name,
-                "action": "download",
-                "download_url": update_url,
-                "url": update_url,
-                "target": update_url,
-                "description": "下载并安装最新版工具箱"
-            }]
-        }]
-    }
+    # 更新由客户端启动时的版本弹窗处理，不再向侧栏注入独立更新页面。
+    return
 
 
 def public_brand_config():
@@ -2666,6 +2640,7 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EMBEDDED_CONFIG_JSON__"', csharp_literal(embedded_config_json))
     source = source.replace('"__CLIENT_VARIANT__"', csharp_literal(variant))
     source = source.replace('"__CLIENT_VARIANT_LABEL__"', csharp_literal(variant_label))
+    source = source.replace('"__CLIENT_APP_VERSION__"', csharp_literal(app_config.get("version") or "1.0"))
     source = source.replace('"__BUILD_ID__"', csharp_literal(build_id))
     source = source.replace('"__BUILD_STAMP__"', csharp_literal(build_stamp))
     build_signature = sign_client_build(user.get("id"), api_key, build_id, build_stamp, integrity_seed, base_url, "")

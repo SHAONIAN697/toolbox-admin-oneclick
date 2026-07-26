@@ -1301,7 +1301,7 @@ function ensureUpdateFields() {
   if (!grid) return;
   const updateUrl = document.createElement('label');
   updateUrl.className = 'wide';
-  updateUrl.innerHTML = '工具箱更新链接<input id="appUpdateUrl" placeholder="粘贴新版 EXE 下载地址，留空不显示更新入口">';
+  updateUrl.innerHTML = '工具箱更新链接<input id="appUpdateUrl" placeholder="EXE 直链将自动替换主程序；网盘或网页链接将跳转浏览器">';
   const updateTitle = document.createElement('label');
   updateTitle.innerHTML = '更新入口标题<input id="appUpdateTitle" placeholder="例如：工具箱更新">';
   const updateButton = document.createElement('label');
