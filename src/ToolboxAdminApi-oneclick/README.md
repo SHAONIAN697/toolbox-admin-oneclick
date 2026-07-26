@@ -36,10 +36,10 @@
 安装、更新和维护统一使用以下命令：
 
 ```bash
-curl -fsSL "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" > toolbox-admin.sh && sudo bash toolbox-admin.sh
+curl -fsSL "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" > toolbox-admin.sh && sudo bash toolbox-admin.sh
 ```
 
-脚本启动后可进行安装、更新、卸载、服务管理、密码管理、数据备份恢复和 GitHub 代理配置。需要加速时，在菜单中选择“配置 GitHub 代理”，填写 `https://gh-proxy.org/`。
+选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.org/`。
 
 > 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 

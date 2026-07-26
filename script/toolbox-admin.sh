@@ -4,9 +4,7 @@ set -euo pipefail
 SERVICE="toolbox-admin"
 REPO="SHAONIAN697/toolbox-admin-oneclick"
 BRANCH="main"
-CONF="/etc/toolbox-admin-manager.conf"
 PROXY=""
-[ -f "$CONF" ] && . "$CONF"
 
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
 yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
@@ -15,18 +13,12 @@ pause(){ read -r -p "按 Enter 返回菜单..." _ || true; }
 need_root(){ [ "$(id -u)" = 0 ] || { red "请使用 sudo bash 执行"; exit 1; }; }
 app_dir(){ systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true; }
 
-set_proxy(){
-  echo "代理填写前缀并以 / 结尾，例如：https://gh-proxy.org/"
-  echo "直接回车保留当前配置，输入 none 清除代理。"
-  read -r -p "GitHub 代理 [$PROXY]: " value || true
-  if [ "$value" = "none" ]; then
-    PROXY=""
-  elif [ -n "$value" ]; then
-    PROXY="$value"
-  fi
+ask_proxy(){
+  PROXY=""
+  echo "如需 GitHub 加速，请输入代理地址，例如：https://gh-proxy.org/"
+  read -r -p "代理地址（直接回车不使用代理）: " PROXY || true
   [ -z "$PROXY" ] || PROXY="${PROXY%/}/"
-  printf 'PROXY=%q\n' "$PROXY" > "$CONF"
-  green "代理已保存：${PROXY:-不使用代理}"
+  [ -n "$PROXY" ] && green "本次使用代理：$PROXY" || green "本次不使用代理"
 }
 
 download_source(){
@@ -40,6 +32,7 @@ download_source(){
 
 install_or_update(){
   local tmp src
+  ask_proxy
   tmp="$(mktemp -d /tmp/toolbox-admin-manager.XXXXXX)"
   src="$(download_source "$tmp")"
   [ -n "$src" ] && [ -f "$src/install-baota.sh" ] || { red "源码下载或目录识别失败"; rm -rf "$tmp"; return 1; }
@@ -117,14 +110,13 @@ menu(){
     echo "7. 停止服务"
     echo "8. 重启服务"
     echo "------------------------"
-    green "配置管理："
-    echo "9. 配置 GitHub 代理"
-    echo "10. 备份数据"
-    echo "11. 恢复数据"
+    green "数据管理："
+    echo "9. 备份数据"
+    echo "10. 恢复数据"
     echo "------------------------"
     echo "0. 退出脚本"
     echo
-    read -r -p "请输入选项 [0-11]: " choice
+    read -r -p "请输入选项 [0-10]: " choice
     case "$choice" in
       1|2) install_or_update; pause;;
       3) uninstall_app; pause;;
@@ -133,9 +125,8 @@ menu(){
       6) service_action start; pause;;
       7) service_action stop; pause;;
       8) service_action restart; pause;;
-      9) set_proxy; pause;;
-      10) backup_data; pause;;
-      11) restore_data; pause;;
+      9) backup_data; pause;;
+      10) restore_data; pause;;
       0) exit 0;;
       *) red "无效选项"; sleep 1;;
     esac
