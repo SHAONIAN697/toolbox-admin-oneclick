@@ -188,6 +188,7 @@ namespace ToolboxClient
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
+        private bool updatePromptShown = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly object launchDownloadedFileLock = new object();
@@ -1810,6 +1811,9 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
+            Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
+            if (EnforceUpdatePolicy(updateApp)) return;
+
             SuspendLayout();
             side.SuspendLayout();
             nav.SuspendLayout();
@@ -7230,6 +7234,12 @@ namespace ToolboxClient
         {
             try
             {
+                if (item != null && GetText(item, "id", "").Equals("client_update_download", StringComparison.OrdinalIgnoreCase))
+                {
+                    Open(target);
+                    BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+                    return;
+                }
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
                 if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(customScript))
                 {
@@ -7465,6 +7475,48 @@ namespace ToolboxClient
         private void DownloadFile(string url, string displayName)
         {
             DownloadFile(url, displayName, "", "", null, false);
+        }
+
+        private bool EnforceUpdatePolicy(Dictionary<string, object> app)
+        {
+            if (!BoolValue(app, "update_force", false)) return false;
+            string updateUrl = GetText(app, "update_url", GetText(app, "client_update_url", "")).Trim();
+            string minimum = GetText(app, "update_min_version", "").Trim();
+            if (String.IsNullOrWhiteSpace(minimum)) minimum = GetText(app, "version", "").Trim();
+            Version required;
+            Version current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            if (String.IsNullOrWhiteSpace(updateUrl) || !TryParseVersion(minimum, out required) || current.CompareTo(required) >= 0) return false;
+            if (updatePromptShown) return true;
+            updatePromptShown = true;
+            string titleText = GetText(app, "update_title", "工具箱更新").Trim();
+            string message = "当前版本 " + DisplayVersion(current) + " 已停止使用，必须更新到 " + DisplayVersion(required) + " 或更高版本。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。";
+            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (result == DialogResult.OK)
+            {
+                try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); }
+                catch (Exception ex) { MessageBox.Show("无法打开更新地址：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            }
+            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+            return true;
+        }
+
+        private static bool TryParseVersion(string value, out Version version)
+        {
+            version = null;
+            string text = (value ?? "").Trim();
+            if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase)) text = text.Substring(1);
+            Match match = Regex.Match(text, @"\d+(?:\.\d+){0,3}");
+            if (!match.Success) return false;
+            string normalized = match.Value.IndexOf('.') >= 0 ? match.Value : match.Value + ".0";
+            return Version.TryParse(normalized, out version);
+        }
+
+        private static string DisplayVersion(Version version)
+        {
+            if (version == null) return "0.0";
+            if (version.Revision > 0) return version.ToString(4);
+            if (version.Build > 0) return version.ToString(3);
+            return version.ToString(2);
         }
 
         private void DownloadPackage(Dictionary<string, object> item, string displayName)

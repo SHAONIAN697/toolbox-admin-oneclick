@@ -1039,6 +1039,8 @@ function renderApp() {
   $('appUpdateUrl').value = app.update_url || '';
   $('appUpdateTitle').value = app.update_title || '工具箱更新';
   $('appUpdateButton').value = app.update_button || '下载最新版';
+  $('appUpdateMinVersion').value = app.update_min_version || '';
+  $('appUpdateForce').checked = app.update_force === true;
   $('appExeTitle').value = app.exe_title || app.title || '';
   $('appExeDescription').value = app.exe_description || app.subtitle || '';
   $('appExeProduct').value = app.exe_product || app.title || '';
@@ -1108,7 +1110,7 @@ function organizeOverviewCards() {
   moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
   moveLabels(grid, passwordPanel.querySelector('.form-grid'), ['appPasswordEnabled', 'appPassword']);
   moveLabels(grid, propertyPanel.querySelector('.form-grid'), ['appExeTitle', 'appExeDescription', 'appExeProduct', 'appExeVersion', 'appExeCompany', 'appExeCopyright']);
-  moveLabels(grid, updatePanel.querySelector('.form-grid'), ['appUpdateUrl', 'appUpdateTitle', 'appUpdateButton']);
+  moveLabels(grid, updatePanel.querySelector('.form-grid'), ['appUpdateUrl', 'appUpdateTitle', 'appUpdateButton', 'appUpdateMinVersion', 'appUpdateForce']);
 }
 
 function createPopupOverviewPanel() {
@@ -1304,9 +1306,16 @@ function ensureUpdateFields() {
   updateTitle.innerHTML = '更新入口标题<input id="appUpdateTitle" placeholder="例如：工具箱更新">';
   const updateButton = document.createElement('label');
   updateButton.innerHTML = '更新按钮文字<input id="appUpdateButton" placeholder="例如：下载最新版">';
+  const updateMinVersion = document.createElement('label');
+  updateMinVersion.innerHTML = '最低可用版本<input id="appUpdateMinVersion" placeholder="例如：3.0；留空则使用上方版本号">';
+  const updateForce = document.createElement('label');
+  updateForce.className = 'toggle-line';
+  updateForce.innerHTML = '强制更新<span><input id="appUpdateForce" type="checkbox"> 低于最低版本时禁止使用</span>';
   grid.appendChild(updateUrl);
   grid.appendChild(updateTitle);
   grid.appendChild(updateButton);
+  grid.appendChild(updateMinVersion);
+  grid.appendChild(updateForce);
 }
 
 function renderAccount() {
@@ -3107,10 +3116,18 @@ async function saveAppExeSettings() {
 }
 
 async function saveAppUpdateSettings() {
+  const updateUrl = $('appUpdateUrl')?.value.trim() || '';
+  const updateForce = Boolean($('appUpdateForce')?.checked);
+  if (updateForce && !updateUrl) {
+    setStatus('开启强制更新前必须填写工具箱更新链接。', true);
+    return;
+  }
   await saveAppPatch({
-    update_url: $('appUpdateUrl')?.value.trim() || '',
+    update_url: updateUrl,
     update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
-    update_button: $('appUpdateButton')?.value.trim() || '下载最新版'
+    update_button: $('appUpdateButton')?.value.trim() || '下载最新版',
+    update_min_version: $('appUpdateMinVersion')?.value.trim() || '',
+    update_force: updateForce
   }, '更新入口已保存。');
 }
 

@@ -1,0 +1,41 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到工具箱后台目录：$APP"; exit 1; }
+
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-forced-online-update-$TS.tar.gz"
+TMP="/tmp/toolbox-forced-online-update-$TS"
+BACKUP="/www/backup/toolbox-forced-online-update-$TS"
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-forced-online-update-20260726.tar.gz"
+SHA256="80be04cd4d2e8933dc0169ae6679d45870fefa9fe52cb664f8f140798782e068"
+
+mkdir -p "$TMP" "$BACKUP/wwwroot" "$BACKUP/client-template"
+cp -a "$APP/app.py" "$BACKUP/"
+cp -a "$APP/wwwroot/admin.js" "$BACKUP/wwwroot/"
+cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+
+curl -fL --retry 5 --retry-delay 2 --connect-timeout 20 "$URL" -o "$PKG"
+echo "$SHA256  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$TMP"
+SRC="$TMP/ToolboxAdminApi-oneclick"
+[ -f "$SRC/app.py" ] && [ -f "$SRC/wwwroot/admin.js" ] && [ -f "$SRC/client-template/ToolboxClient.cs" ] || { echo "更新包内容不完整"; exit 1; }
+
+cp -a "$SRC/app.py" "$APP/app.py"
+cp -a "$SRC/wwwroot/admin.js" "$APP/wwwroot/admin.js"
+cp -a "$SRC/client-template/ToolboxClient.cs" "$APP/client-template/ToolboxClient.cs"
+python3 -m py_compile "$APP/app.py"
+
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"
+mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"
+sleep 3
+systemctl is-active --quiet "$SERVICE"
+curl -fsS "http://127.0.0.1:5088/api/public/brand" >/dev/null
+grep -q "EnforceUpdatePolicy" "$APP/client-template/ToolboxClient.cs"
+grep -q "appUpdateMinVersion" "$APP/wwwroot/admin.js"
+
+rm -rf "$TMP"
+rm -f "$PKG"
+echo "强制在线更新功能替换完成。原文件备份：$BACKUP"
