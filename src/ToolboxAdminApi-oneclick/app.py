@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import hmac
+import base64
 import json
 import mimetypes
 import os
@@ -38,6 +39,7 @@ CLIENT_ICON = ROOT / "assets" / "toolbox-default.ico"
 CLIENT_CACHE = DATA / "client-cache"
 CLIENT_JOBS = DATA / "client-jobs"
 CLIENT_INTEGRITY_PATH = DATA / "client-integrity.json"
+VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
@@ -1058,6 +1060,16 @@ def default_system_settings():
             "cleanupIntervalMinutes": 360,
             "maxCacheEntries": 30,
         },
+        "clientVariants": {
+            variant_id: {
+                "name": variant.get("label", ""),
+                "badge": "",
+                "description": variant.get("description", ""),
+                "coverMode": "default",
+                "coverUrl": "",
+            }
+            for variant_id, variant in CLIENT_VARIANTS.items()
+        },
         "integrity": {
             "enabled": True,
             "secret": "",
@@ -1242,7 +1254,7 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
-    for section in ("locations", "pay", "integrity", "clientBuild"):
+    for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -1282,6 +1294,28 @@ def write_system_settings(body):
                     current["clientBuild"]["maxCacheEntries"] = max(1, min(200, int(patch.get("maxCacheEntries") or 30)))
                 except Exception:
                     current["clientBuild"]["maxCacheEntries"] = 30
+            continue
+        if section == "clientVariants":
+            variants = current.setdefault("clientVariants", {})
+            for variant_id, values in patch.items():
+                if variant_id not in CLIENT_VARIANTS or not isinstance(values, dict):
+                    continue
+                existing = variants.setdefault(variant_id, {})
+                mode = str(values.get("coverMode") or existing.get("coverMode") or "default").strip()
+                cover_url = str(values.get("coverUrl") or "").strip()
+                if mode not in ("default", "upload", "url"):
+                    mode = "default"
+                if mode == "url" and not http_url(cover_url):
+                    cover_url = ""
+                if mode == "upload" and not cover_url.startswith("/uploads/variant-covers/"):
+                    cover_url = ""
+                variants[variant_id] = {
+                    "name": str(values.get("name") or CLIENT_VARIANTS[variant_id].get("label") or "").strip()[:80],
+                    "badge": str(values.get("badge") or "").strip()[:80],
+                    "description": str(values.get("description") or "").strip()[:500],
+                    "coverMode": mode,
+                    "coverUrl": cover_url,
+                }
             continue
         for key, value in patch.items():
             if isinstance(current.get(section, {}).get(key), dict) and isinstance(value, dict):
@@ -3078,6 +3112,35 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_system_settings())
             if method == "PATCH":
                 return self.send_json(write_system_settings(self.read_body()))
+        if path == "/api/super/system/variant-cover" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有超级管理员可以上传工具箱封面。"}, 403)
+            body = self.read_body()
+            variant_id = str(body.get("variantId") or "").strip()
+            if variant_id not in CLIENT_VARIANTS:
+                return self.send_json({"error": "工具箱版本不存在。"}, 400)
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            if not match:
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+            try:
+                image_data = base64.b64decode(match.group(2), validate=True)
+            except Exception:
+                return self.send_json({"error": "封面图片数据无效。"}, 400)
+            if not image_data or len(image_data) > 5 * 1024 * 1024:
+                return self.send_json({"error": "封面图片不能超过 5MB。"}, 400)
+            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            signatures = {
+                "png": image_data.startswith(b"\x89PNG\r\n\x1a\n"),
+                "jpg": image_data.startswith(b"\xff\xd8\xff"),
+                "webp": image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP",
+                "gif": image_data.startswith((b"GIF87a", b"GIF89a")),
+            }
+            if not signatures.get(extension, False):
+                return self.send_json({"error": "图片内容与文件格式不匹配。"}, 400)
+            VARIANT_COVER_DIR.mkdir(parents=True, exist_ok=True)
+            file_name = f"{variant_id}-{int(time.time())}-{random_hex(4)}.{extension}"
+            (VARIANT_COVER_DIR / file_name).write_bytes(image_data)
+            return self.send_json({"url": f"/uploads/variant-covers/{file_name}"})
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
         if path == "/api/super/orders":

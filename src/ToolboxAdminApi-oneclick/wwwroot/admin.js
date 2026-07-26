@@ -1768,7 +1768,56 @@ function renderSystemSettings() {
   if ($('payWechatOrder')) $('payWechatOrder').value = Number(pay.wechatOrder || 10);
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
   renderPayGatewayCards();
+  renderClientVariantSettings();
   renderOrders();
+}
+
+function variantSettings(variant) {
+  return state.system?.clientVariants?.[variant.id] || {};
+}
+
+function renderClientVariantSettings() {
+  const wrap = $('clientVariantSettings');
+  if (!wrap || !isSuper()) return;
+  wrap.innerHTML = CLIENT_VARIANTS.map((variant) => {
+    const config = variantSettings(variant);
+    const mode = config.coverMode || 'default';
+    return `<article class="variant-setting" data-variant-setting="${escapeAttr(variant.id)}">
+      <div class="variant-setting-preview">${mode !== 'default' && config.coverUrl ? `<img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}">` : clientPreviewMarkup(variant.preview)}</div>
+      <div class="variant-setting-fields">
+        <label>名称<input data-variant-field="name" value="${escapeAttr(config.name || variant.label)}"></label>
+        <label>角标<input data-variant-field="badge" value="${escapeAttr(config.badge || variant.badge)}"></label>
+        <label class="wide">介绍<textarea data-variant-field="description" rows="3">${escapeHtml(config.description || variant.description)}</textarea></label>
+        <label>封面来源<select data-variant-field="coverMode"><option value="default" ${mode === 'default' ? 'selected' : ''}>默认封面</option><option value="upload" ${mode === 'upload' ? 'selected' : ''}>上传服务器</option><option value="url" ${mode === 'url' ? 'selected' : ''}>图床地址</option></select></label>
+        <label class="wide variant-cover-url">图床 / 封面地址<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/cover.png"></label>
+        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button data-variant-upload-btn type="button">上传图片</button></div>
+      </div>
+    </article>`;
+  }).join('');
+  wrap.querySelectorAll('[data-variant-upload-btn]').forEach((button) => {
+    button.onclick = () => uploadVariantCover(button.closest('[data-variant-setting]')).catch((error) => setStatus(error.message, true));
+  });
+}
+
+async function uploadVariantCover(card) {
+  const file = card?.querySelector('[data-variant-upload]')?.files?.[0];
+  if (!file) throw new Error('请先选择封面图片。');
+  if (file.size > 5 * 1024 * 1024) throw new Error('封面图片不能超过 5MB。');
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const result = await api('/api/super/system/variant-cover', { method: 'POST', body: JSON.stringify({ variantId: card.dataset.variantSetting, dataUrl }) });
+  card.querySelector('[data-variant-field="coverMode"]').value = 'upload';
+  card.querySelector('[data-variant-field="coverUrl"]').value = result.url;
+  setStatus('封面已上传，请点击保存。');
+}
+
+async function saveClientVariants() {
+  const clientVariants = {};
+  document.querySelectorAll('[data-variant-setting]').forEach((card) => {
+    const value = (field) => card.querySelector(`[data-variant-field="${field}"]`)?.value.trim() || '';
+    clientVariants[card.dataset.variantSetting] = { name: value('name'), badge: value('badge'), description: value('description'), coverMode: value('coverMode'), coverUrl: value('coverUrl') };
+  });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ clientVariants }) });
+  renderSystemSettings(); renderClientVariants(); setStatus('工具箱封面与介绍已保存。');
 }
 
 function renderPopupSettings() {
@@ -2102,21 +2151,24 @@ function renderClientVariants() {
   const grid = $('clientVariantGrid');
   if (!grid) return;
   const editing = isTemplateMode();
-  grid.innerHTML = CLIENT_VARIANTS.map((variant) => `
+  grid.innerHTML = CLIENT_VARIANTS.map((variant) => {
+    const config = variantSettings(variant);
+    const cover = config.coverMode !== 'default' && config.coverUrl ? `<div class="client-preview custom-client-cover"><img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}"></div>` : clientPreviewMarkup(variant.preview);
+    return `
     <article class="client-variant-card" data-client-variant="${escapeAttr(variant.id)}">
-      ${clientPreviewMarkup(variant.preview)}
+      ${cover}
       <div class="client-variant-info">
         <div>
-          <strong>${escapeHtml(variant.label)}</strong>
-          <span>${escapeHtml(variant.badge)}</span>
+          <strong>${escapeHtml(config.name || variant.label)}</strong>
+          <span>${escapeHtml(config.badge || variant.badge)}</span>
         </div>
-        <p>${escapeHtml(variant.description)}</p>
+        <p>${escapeHtml(config.description || variant.description)}</p>
         <button type="button" data-action="download-client-variant" data-variant="${escapeAttr(variant.id)}" ${editing ? 'disabled' : ''}>
           ${editing ? '模板不能下载' : '下载这个版本'}
         </button>
       </div>
     </article>
-  `).join('');
+  `; }).join('');
   grid.querySelectorAll('[data-action="download-client-variant"]').forEach((button) => {
     button.onclick = () => downloadClient('', button.dataset.variant || 'original').catch((error) => setStatus(error.message, true));
   });
@@ -4649,6 +4701,7 @@ if ($('sendNoticeBtn')) $('sendNoticeBtn').onclick = () => sendNotice().catch((e
 if ($('markAllNoticeReadBtn')) $('markAllNoticeReadBtn').onclick = () => markAllNoticesRead().catch((error) => setStatus(error.message, true));
 if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAllNotices().catch((error) => setStatus(error.message, true));
 if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
+if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
 if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));

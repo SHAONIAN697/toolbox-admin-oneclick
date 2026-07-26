@@ -1906,6 +1906,18 @@ tr.row-highlight {
   gap: 8px;
 }
 
+.custom-client-cover img,
+.variant-setting-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.variant-settings-grid { display: grid; gap: 14px; margin-top: 16px; }
+.variant-setting { display: grid; grid-template-columns: minmax(260px, 38%) 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel-2); }
+.variant-setting-preview { height: 220px; overflow: hidden; background: #eef2f6; }
+.variant-setting-preview .client-preview { height: 220px; border-bottom: 0; }
+.variant-setting-fields { padding: 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-content: start; }
+.variant-setting-fields .wide, .variant-upload-row { grid-column: 1 / -1; }
+.variant-upload-row { display: flex; gap: 10px; align-items: center; }
+.variant-upload-row input { min-width: 0; flex: 1; }
+@media (max-width: 800px) { .variant-setting { grid-template-columns: 1fr; } .variant-setting-fields { grid-template-columns: 1fr; } .variant-setting-fields .wide, .variant-upload-row { grid-column: auto; } }
+
 .download-target-control { display: grid; gap: 8px; min-width: 420px; }
 #view-buttons .form-grid > label.download-config-field { grid-column: 1 / -1; min-width: 0; }
 #view-buttons .form-grid > label.download-config-field .download-target-control { min-width: 0; width: 100%; }

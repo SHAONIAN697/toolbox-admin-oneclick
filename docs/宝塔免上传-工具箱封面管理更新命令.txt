@@ -1,0 +1,25 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "Project directory not found: $APP"; exit 1; }
+
+TS="$(date +%Y%m%d-%H%M%S)"
+PKG="/tmp/toolbox-variant-cover-management-$TS.tar.gz"
+BACKUP="/www/backup/toolbox-variant-cover-management-$TS"
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/packages/toolbox-variant-cover-management-20260726.tar.gz"
+SHA256="e2359cd438ae106bc9115393db065b9313e8cc736cb667330e0150b27bf09337"
+
+mkdir -p "$BACKUP/wwwroot"
+cp -a "$APP/app.py" "$BACKUP/"
+cp -a "$APP/wwwroot/admin.js" "$APP/wwwroot/index.html" "$APP/wwwroot/styles.css" "$BACKUP/wwwroot/"
+
+curl -fL --retry 3 --connect-timeout 20 "$URL" -o "$PKG"
+echo "$SHA256  $PKG" | sha256sum -c -
+tar -xzf "$PKG" -C "$APP"
+python3 -m py_compile "$APP/app.py"
+systemctl restart "$SERVICE"
+sleep 3
+systemctl status "$SERVICE" --no-pager -l
+rm -f "$PKG"
+echo "工具箱封面管理功能更新完成，原文件备份：$BACKUP"
