@@ -10,8 +10,18 @@ green(){ printf '\033[1;92m%s\033[0m\n' "$*"; }
 yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 pause(){ read -r -p "按 Enter 返回菜单..." _ || true; }
-need_root(){ [ "$(id -u)" = 0 ] || { red "请使用 sudo bash 执行"; exit 1; }; }
+need_root(){ [ "$(id -u)" = 0 ] || { red "请使用 sudo toolbox-admin 执行"; exit 1; }; }
 app_dir(){ systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true; }
+
+install_manager_command(){
+  local target="/usr/local/bin/toolbox-admin" source
+  source="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+  if [ "$source" != "$target" ]; then
+    install -m 755 "$source" "$target"
+  else
+    chmod 755 "$target"
+  fi
+}
 
 is_installed(){
   local dir
@@ -191,4 +201,5 @@ menu(){
 }
 
 need_root
+install_manager_command
 menu
