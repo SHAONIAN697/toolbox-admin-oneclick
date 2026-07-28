@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -816,7 +817,7 @@ def public_toolbox_config(user_id):
     app = cfg.setdefault("app", {})
     if app.get("password_enabled") is False:
         app["password"] = ""
-    normalize_client_config(cfg)
+    normalize_client_config(cfg, user_id=user_id)
     path = user_config_path(user_id)
     meta = dict(cfg.get("_sync") or {})
     meta["userId"] = user_id
@@ -825,7 +826,77 @@ def public_toolbox_config(user_id):
     return cfg
 
 
-def normalize_client_config(cfg):
+GLOBAL_BUILTIN_PREFIX = "builtin:"
+
+
+def builtin_function_rows(include_urls=False):
+    rows = []
+    configured = {
+        str(item.get("id")): item
+        for item in read_system_settings().get("builtinFunctions") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    for function_id, label in SCRIPT_LABELS.items():
+        item = configured.pop(function_id, {})
+        row = {"id": function_id, "name": str(item.get("name") or label),
+               "enabled": item.get("enabled", True) is not False, "builtIn": True,
+               "action": str(item.get("action") or "script")}
+        if not include_urls and not row["enabled"]:
+            continue
+        if include_urls:
+            row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
+            row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+        rows.append(row)
+    for function_id, item in configured.items():
+        if item.get("enabled", True) is False:
+            continue
+        row = {"id": function_id, "name": str(item.get("name") or "未命名功能"), "enabled": True,
+               "builtIn": False, "action": str(item.get("action") or "download")}
+        if include_urls:
+            row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
+            row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+        rows.append(row)
+    return rows
+
+
+def find_builtin_function(function_id):
+    return next((item for item in builtin_function_rows(True) if item.get("id") == function_id), None)
+
+
+def proxy_builtin_download(handler):
+    api_key = (handler.query.get("key", [""])[0] or handler.headers.get("X-Client-Api-Key", "")).strip()
+    if not find_user_by_api_key(api_key):
+        return handler.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
+    item = find_builtin_function((handler.query.get("id", [""])[0] or "").strip())
+    if not item:
+        return handler.send_json({"error": "内置功能不存在或已停用。"}, 404)
+    headers = {"User-Agent": "ToolboxClient/1.0"}
+    if handler.headers.get("Range"):
+        headers["Range"] = handler.headers.get("Range")
+    request = urllib.request.Request(item.get("target") or item.get("downloadUrl"), headers=headers)
+    try:
+        upstream = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        upstream = exc
+    status = getattr(upstream, "status", None) or upstream.getcode()
+    if status >= 400:
+        upstream.close()
+        return handler.send_json({"error": "下载源暂时不可用。"}, 502)
+    handler.send_response(status)
+    for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition", "ETag", "Last-Modified"):
+        value = upstream.headers.get(header)
+        if value:
+            handler.send_header(header, value)
+    if not upstream.headers.get("Content-Type"):
+        handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Cache-Control", "private, no-store")
+    handler.end_headers()
+    if handler.command.upper() != "HEAD":
+        shutil.copyfileobj(upstream, handler.wfile, length=1024 * 256)
+    upstream.close()
+
+
+def normalize_client_config(cfg, user_id=""):
     def visible_buttons(buttons):
         return [button for button in buttons or [] if (button or {}).get("enabled", True) is not False]
 
@@ -843,6 +914,27 @@ def normalize_client_config(cfg):
             button.setdefault("url", target)
             button.setdefault("target", target)
         elif action == "script":
+            if str(target).startswith(GLOBAL_BUILTIN_PREFIX) or str(target) in SCRIPT_LABELS:
+                function_id = str(target)[len(GLOBAL_BUILTIN_PREFIX):] if str(target).startswith(GLOBAL_BUILTIN_PREFIX) else str(target)
+                item = find_builtin_function(function_id)
+                if item and item.get("action") == "download" and (item.get("target") or item.get("downloadUrl")):
+                    user = find_user_by_id(user_id) if user_id else None
+                    api_key = (user or {}).get("apiKey") or ""
+                    button["action"] = "download"
+                    button["download_url"] = "/api/toolbox/builtin-download?id=" + quote(function_id) + "&key=" + quote(api_key)
+                    button["url"] = button["download_url"]
+                    button["target"] = button["download_url"]
+                    button["name"] = button.get("name") or item.get("name")
+                    return
+                if item and item.get("action") not in ("", "script") and item.get("target"):
+                    global_action = item.get("action")
+                    global_target = item.get("target")
+                    button["action"] = global_action
+                    button["target"] = global_target
+                    if global_action == "link": button["url"] = global_target
+                    elif global_action == "cmd": button["command"] = global_target
+                    elif global_action == "winget": button["package_id"] = global_target
+                    return
             button["script_id"] = target
             button.setdefault("script", target)
             if target not in SCRIPT_LABELS:
@@ -1006,6 +1098,7 @@ def handle_desktop_login(handler):
 
 def default_system_settings():
     return {
+        "builtinFunctions": [],
         "locations": {
             "noticeAreaTitle": "全部未读",
             "adminSystemName": "系统管理",
@@ -1220,6 +1313,7 @@ def public_system_settings():
     data = read_system_settings()
     public = json.loads(json.dumps(data, ensure_ascii=False))
     public.pop("popup", None)
+    public["builtinFunctions"] = builtin_function_rows(True)
     if isinstance(public.get("integrity"), dict):
         public["integrity"]["secret"] = ""
         public["integrity"]["secretConfigured"] = True
@@ -1228,6 +1322,33 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
+    if isinstance(body.get("builtinFunctions"), list):
+        rows = []
+        used = set()
+        for source in body.get("builtinFunctions"):
+            if not isinstance(source, dict):
+                continue
+            function_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("builtin")
+            if function_id in used:
+                raise ValueError("内置功能 ID 不能重复。")
+            name = str(source.get("name") or "").strip()
+            action = str(source.get("action") or ("script" if function_id in SCRIPT_LABELS else "download"))
+            if action not in ("link", "download", "cmd", "script", "winget"):
+                raise ValueError("不支持的内置功能动作。")
+            target = str(source.get("target") or source.get("downloadUrl") or "").strip()
+            if action in ("link", "download") and target and not http_url(target):
+                raise ValueError("网页和下载动作必须填写 HTTP/HTTPS 地址。")
+            if not name:
+                raise ValueError("内置功能名称不能为空。")
+            if action != "script" and not target:
+                raise ValueError("内置功能的目标内容不能为空。")
+            if action == "script" and function_id not in SCRIPT_LABELS and not target:
+                raise ValueError("自定义内置功能请选择或填写要执行的内置功能。")
+            used.add(function_id)
+            rows.append({"id": function_id, "name": name, "action": action, "target": target,
+                         "downloadUrl": target if action == "download" else "",
+                         "enabled": source.get("enabled", True) is not False})
+        current["builtinFunctions"] = rows
     for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants"):
         patch = body.get(section)
         if not isinstance(patch, dict):
@@ -2791,6 +2912,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.dispatch()
 
+    def do_HEAD(self):
+        self.dispatch()
+
     def do_POST(self):
         self.dispatch()
 
@@ -2825,6 +2949,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
+            if path == "/api/toolbox/builtin-download" and method in ("GET", "HEAD"):
+                return proxy_builtin_download(self)
             if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
@@ -3362,6 +3488,8 @@ class Handler(BaseHTTPRequestHandler):
             if changed:
                 write_config_for_actor(cfg, user_id, auth["user"])
             return self.send_json(rows)
+        if path == "/api/admin/builtin-functions" and method == "GET":
+            return self.send_json({"functions": builtin_function_rows(is_super(auth["user"]))})
         return self.send_json({"error": "接口不存在"}, 404)
 
     def base_url(self):

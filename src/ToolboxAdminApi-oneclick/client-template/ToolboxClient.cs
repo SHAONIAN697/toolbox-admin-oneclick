@@ -7248,7 +7248,7 @@ namespace ToolboxClient
                     return;
                 }
                 if (action == "download" && item != null && GetText(item, "download_mode", "") == "multiple") DownloadPackage(item, name);
-                else if (action == "download") DownloadFile(target, name);
+                else if (action == "download") DownloadFile(ResolveServerUrl(target), name);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -7258,6 +7258,17 @@ namespace ToolboxClient
             {
                 MessageBox.Show(ex.Message, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+
+        private string ResolveServerUrl(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || !value.StartsWith("/")) return value;
+            Uri configUri;
+            if (Uri.TryCreate(configUrl, UriKind.Absolute, out configUri))
+            {
+                return configUri.GetLeftPart(UriPartial.Authority) + value;
+            }
+            return value;
         }
 
         private void Open(string target)

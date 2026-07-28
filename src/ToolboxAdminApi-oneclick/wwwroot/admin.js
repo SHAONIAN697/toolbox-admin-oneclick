@@ -10,6 +10,7 @@
   agentOrders: [],
   mail: null,
   system: null,
+  builtinFunctions: [],
   templateMode: false,
   notices: [],
   config: null,
@@ -574,6 +575,7 @@ async function loadAll() {
       state.users = [];
     }
     await loadNotices();
+    await loadBuiltinFunctions();
 
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
@@ -1779,6 +1781,84 @@ function renderSystemSettings() {
   renderPayGatewayCards();
   renderClientVariantSettings();
   renderOrders();
+  renderBuiltinFunctions();
+}
+
+function renderBuiltinFunctions() {
+  const root = $('builtinFunctionRows');
+  if (!root || !isSuper()) return;
+  const rows = state.system?.builtinFunctions || [];
+  root.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>动作</th><th>状态</th><th>类型</th><th>操作</th></tr></thead><tbody>${rows.map((item, index) => `
+    <tr data-builtin-index="${index}">
+      <td><strong>${escapeHtml(item.name || '')}</strong></td>
+      <td>${escapeHtml(ACTION_LABELS[item.action || (item.builtIn ? 'script' : 'download')] || '内置功能')}</td>
+      <td>${item.enabled !== false ? '启用' : '停用'}</td>
+      <td>${item.builtIn ? '系统内置' : '自定义'}</td>
+      <td class="actions"><button data-builtin-edit type="button">编辑</button>${item.builtIn ? '' : '<button class="danger" data-builtin-delete type="button">删除</button>'}</td>
+    </tr>`).join('')}</tbody></table></div>` : '<p class="empty">暂无全局内置功能。</p>';
+  root.querySelectorAll('[data-builtin-edit]').forEach((button) => button.onclick = () => renderBuiltinEditRow(Number(button.closest('tr').dataset.builtinIndex)));
+  root.querySelectorAll('[data-builtin-delete]').forEach((button) => button.onclick = () => {
+    rows.splice(Number(button.closest('tr').dataset.builtinIndex), 1);
+    renderBuiltinFunctions();
+  });
+}
+
+function renderBuiltinEditRow(index) {
+  const item = state.system?.builtinFunctions?.[index];
+  const row = document.querySelector(`#builtinFunctionRows tr[data-builtin-index="${index}"]`);
+  if (!item || !row) return;
+  const action = item.action || (item.builtIn ? 'script' : 'download');
+  row.className = 'button-edit-row';
+  row.innerHTML = `<td colspan="5"><div class="button-edit-panel">
+    <div class="button-edit-title"><strong>编辑功能：${escapeHtml(item.name || '')}</strong><span>${item.builtIn ? '系统内置功能' : '总管理员自定义功能'}</span></div>
+    <div class="button-edit-grid">
+      <label>功能名称<input data-builtin-name value="${escapeAttr(item.name || '')}"></label>
+      <label>动作<select data-builtin-action>${ACTIONS.map(([value, label]) => `<option value="${value}" ${value === action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="toggle-line">状态<span><input data-builtin-enabled type="checkbox" ${item.enabled !== false ? 'checked' : ''}> 启用</span></label>
+    </div>
+    <label class="button-edit-target"><span data-builtin-target-label>${action === 'download' ? '私密下载链接' : '目标内容'}</span><input data-builtin-target value="${escapeAttr(item.target || item.downloadUrl || '')}" placeholder="${action === 'script' ? '系统内置功能可留空' : '填写网址、命令或软件包 ID'}"></label>
+    <div class="button-edit-actions"><button data-builtin-apply type="button">确定</button><button data-builtin-cancel type="button">取消</button></div>
+  </div></td>`;
+  const actionSelect = row.querySelector('[data-builtin-action]');
+  actionSelect.onchange = () => {
+    row.querySelector('[data-builtin-target-label]').textContent = actionSelect.value === 'download' ? '私密下载链接（仅总管理员可见）' : '目标内容';
+  };
+  row.querySelector('[data-builtin-apply]').onclick = () => {
+    item.name = row.querySelector('[data-builtin-name]').value.trim();
+    item.action = actionSelect.value;
+    item.target = row.querySelector('[data-builtin-target]').value.trim();
+    item.downloadUrl = item.action === 'download' ? item.target : '';
+    item.enabled = row.querySelector('[data-builtin-enabled]').checked;
+    renderBuiltinFunctions();
+  };
+  row.querySelector('[data-builtin-cancel]').onclick = renderBuiltinFunctions;
+}
+
+function addBuiltinFunctionRow() {
+  if (!state.system) return;
+  const rows = state.system.builtinFunctions || (state.system.builtinFunctions = []);
+  rows.push({ id: `builtin_${Date.now().toString(36)}`, name: '新内置功能', action: 'download', target: '', downloadUrl: '', enabled: true, builtIn: false });
+  renderBuiltinFunctions();
+  renderBuiltinEditRow(rows.length - 1);
+}
+
+async function saveBuiltinFunctions() {
+  const functions = (state.system?.builtinFunctions || []).map((item) => ({
+    id: item.id, name: item.name, action: item.action,
+    target: item.target || item.downloadUrl || '', enabled: item.enabled !== false
+  }));
+  state.system = await api('/api/super/system', {
+    method: 'PATCH',
+    body: JSON.stringify({ builtinFunctions: functions })
+  });
+  await loadBuiltinFunctions();
+  renderAll();
+  setStatus('全局内置功能已保存。');
+}
+
+async function loadBuiltinFunctions() {
+  const result = await api('/api/admin/builtin-functions');
+  state.builtinFunctions = result.functions || [];
 }
 
 function variantSettings(variant) {
@@ -2861,6 +2941,11 @@ function updateIconPreview(row) {
 function displayTarget(button) {
   if (button.action === 'script') {
     const scriptId = normalizeScriptTarget(button.target);
+    const catalogItem = state.builtinFunctions.find((item) => item.id === scriptId || `builtin:${item.id}` === scriptId);
+    if (catalogItem) return catalogItem.name;
+    if (scriptId.startsWith('builtin:')) {
+      return state.builtinFunctions.find((item) => `builtin:${item.id}` === scriptId)?.name || '全局内置功能';
+    }
     return SCRIPT_LABELS[scriptId] || (button.target ? `自定义：${button.target}` : '');
   }
   return button.target || '';
@@ -2881,10 +2966,15 @@ function scriptOptionsHtml(selected = '') {
   const selectedValue = normalizeScriptTarget(selected);
   const effectiveValue = selectedValue || SCRIPT_OPTIONS[0]?.value || '';
   const options = SCRIPT_OPTIONS.map(({ value, label }) =>
-    `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(label)}</option>`
+    `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(state.builtinFunctions.find((item) => item.id === value)?.name || label)}</option>`
   ).join('');
-  const customSelected = effectiveValue && !SCRIPT_LABELS[effectiveValue] ? 'selected' : '';
-  return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option><option value="" disabled>────────────</option>${options}`;
+  const customSelected = effectiveValue && !SCRIPT_LABELS[effectiveValue] && !effectiveValue.startsWith('builtin:') ? 'selected' : '';
+  const globalOptions = state.builtinFunctions.filter((item) => !item.builtIn).map((item) => {
+    const value = `builtin:${item.id}`;
+    return `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(item.name)}</option>`;
+  }).join('');
+  const globals = globalOptions ? `<option value="" disabled>── 总管理员提供 ──</option>${globalOptions}` : '';
+  return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option>${globals}<option value="" disabled>── 系统功能 ──</option>${options}`;
 }
 
 function downloadFileRowHtml(file = {}, index = 0) {
@@ -2948,7 +3038,7 @@ function targetControlHtml(action, target = '', data = {}) {
   if (action === 'script') {
     const scriptId = normalizeScriptTarget(target);
     const effectiveScriptId = scriptId || SCRIPT_OPTIONS[0]?.value || '';
-    const custom = effectiveScriptId && !SCRIPT_LABELS[effectiveScriptId];
+    const custom = effectiveScriptId && !SCRIPT_LABELS[effectiveScriptId] && !effectiveScriptId.startsWith('builtin:');
     return `
       <div class="script-target-control">
         <select class="target-input" data-field="target">${scriptOptionsHtml(effectiveScriptId)}</select>
@@ -3003,7 +3093,7 @@ function updateAddTargetState() {
     if (help) help.hidden = true;
   } else if (action === 'script') {
     const selected = normalizeScriptTarget(readAddTarget()) || SCRIPT_OPTIONS[0]?.value || '';
-    const custom = selected && !SCRIPT_LABELS[selected];
+    const custom = selected && !SCRIPT_LABELS[selected] && !selected.startsWith('builtin:');
     label.innerHTML = `
       内置功能
       <div id="addScriptControl" class="script-target-control">
@@ -4718,6 +4808,8 @@ if ($('sendNoticeBtn')) $('sendNoticeBtn').onclick = () => sendNotice().catch((e
 if ($('markAllNoticeReadBtn')) $('markAllNoticeReadBtn').onclick = () => markAllNoticesRead().catch((error) => setStatus(error.message, true));
 if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAllNotices().catch((error) => setStatus(error.message, true));
 if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
+if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
+if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
