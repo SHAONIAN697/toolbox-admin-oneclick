@@ -2662,20 +2662,26 @@ function renderManagedSectionName() {
 
 function renderSelectors() {
   const scope = $('addScope');
+  const previousScope = scope.value;
+  const previousSection = $('addSection')?.value || '';
   scope.innerHTML = '';
 
-  getPositions().forEach((item) => {
+  const positions = getPositions();
+  positions.forEach((item) => {
     const opt = document.createElement('option');
     opt.value = item.value;
     opt.textContent = item.label;
     scope.appendChild(opt);
   });
 
-  scope.onchange = renderSectionSelector;
-  renderSectionSelector();
+  if (positions.some((item) => item.value === previousScope)) {
+    scope.value = previousScope;
+  }
+  scope.onchange = () => renderSectionSelector();
+  renderSectionSelector(previousSection);
 }
 
-function renderSectionSelector() {
+function renderSectionSelector(preferredSection = '') {
   const section = $('addSection');
   const target = currentAddTarget();
   section.innerHTML = '';
@@ -2693,6 +2699,10 @@ function renderSectionSelector() {
     opt.value = '0';
     opt.textContent = '默认分组';
     section.appendChild(opt);
+  }
+
+  if ([...section.options].some((option) => option.value === preferredSection)) {
+    section.value = preferredSection;
   }
 }
 

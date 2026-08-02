@@ -2220,6 +2220,46 @@ def find_button_slot(config, body):
     return section, int(body["buttonIndex"])
 
 
+def target_button_section(config, body):
+    target_scope = body.get("targetScope") or body.get("scope")
+    if target_scope == "toolbox":
+        tab_index = body.get("targetTabIndex")
+        if tab_index in (None, ""):
+            tab_index = body.get("tabIndex", 0)
+        container = config["toolbox_tabs"][int(tab_index)]
+    else:
+        page_id = body.get("targetPageId") or body.get("pageId")
+        container = config["pages"][page_id]
+
+    section_index = body.get("targetSectionIndex")
+    if section_index in (None, ""):
+        section_index = body.get("sectionIndex", 0)
+    section_index = max(0, int(section_index))
+    sections = container.setdefault("sections", [])
+    while len(sections) <= section_index:
+        sections.append({"title": "默认分组", "buttons": []})
+    return sections[section_index]
+
+
+def update_button(config, body):
+    source_section, button_index = find_button_slot(config, body)
+    source_buttons = source_section.setdefault("buttons", [])
+    old_button = source_buttons[button_index]
+    old_id = old_button.get("id") or body.get("id")
+    payload = dict(body.get("button") or body)
+    if old_id:
+        payload["id"] = old_id
+    updated_button = new_button(payload)
+    target_section = target_button_section(config, body)
+
+    if target_section is source_section:
+        source_buttons[button_index] = updated_button
+    else:
+        del source_buttons[button_index]
+        target_section.setdefault("buttons", []).append(updated_button)
+    return updated_button
+
+
 def clean_invite_prefix(value):
     text = "".join(ch for ch in str(value or "YQ").upper() if ch.isalnum() or ch in "-_").strip("-_")
     return (text or "YQ")[:18]
@@ -3080,14 +3120,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = dict(body.get("button") or body)
                     sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
                 elif method == "PATCH":
-                    section, button_index = find_button_slot(cfg, body)
-                    button = section["buttons"][button_index]
-                    old_id = button.get("id") or body.get("id")
-                    payload = dict(body.get("button") or body)
-                    if old_id:
-                        payload["id"] = old_id
-                    button.clear()
-                    button.update(new_button(payload))
+                    update_button(cfg, body)
                 elif method == "DELETE":
                     section, button_index = find_button_slot(cfg, body)
                     if (section["buttons"][button_index] or {}).get("action") == "script":
@@ -3470,14 +3503,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = dict(body.get("button") or body)
                 sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
             elif method == "PATCH":
-                section, button_index = find_button_slot(cfg, body)
-                button = section["buttons"][button_index]
-                old_id = button.get("id") or body.get("id")
-                payload = dict(body.get("button") or body)
-                if old_id:
-                    payload["id"] = old_id
-                button.clear()
-                button.update(new_button(payload))
+                update_button(cfg, body)
             elif method == "DELETE":
                 section, button_index = find_button_slot(cfg, body)
                 if (section["buttons"][button_index] or {}).get("action") == "script":
