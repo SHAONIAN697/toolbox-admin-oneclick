@@ -325,6 +325,7 @@ def default_config():
         "popup": default_popup_settings(),
         "features": {"software_catalog_enabled": True},
         "page_locks": {},
+        "page_lock_groups": {},
         "sidebar": [],
         "toolbox_tabs": [],
         "pages": {},
@@ -405,6 +406,51 @@ def normalize_page_locks(config):
             if lock.get("title") != title:
                 lock["title"] = title
                 changed = True
+    return changed
+
+
+def normalize_page_lock_groups(config):
+    changed = False
+    groups = config.get("page_lock_groups")
+    if not isinstance(groups, dict):
+        groups = {}
+        config["page_lock_groups"] = groups
+        changed = True
+    for raw_group_id in list(groups.keys()):
+        group_id = str(raw_group_id or "").strip()
+        if not group_id:
+            groups.pop(raw_group_id, None)
+            changed = True
+            continue
+        if group_id != raw_group_id:
+            groups[group_id] = groups.pop(raw_group_id)
+            changed = True
+        group = groups.get(group_id)
+        if not isinstance(group, dict):
+            group = {"title": "", "password": "", "pages": []}
+            groups[group_id] = group
+            changed = True
+        password = str(group.get("password") or "").strip()
+        if password and not password.startswith("sha256$"):
+            password = stored_password(password)
+        if group.get("password") != password:
+            group["password"] = password
+            changed = True
+        pages = group.get("pages")
+        if not isinstance(pages, list):
+            pages = []
+        normalized_pages = []
+        for page_id in pages:
+            page_id = str(page_id or "").strip()
+            if page_id and page_id not in normalized_pages:
+                normalized_pages.append(page_id)
+        if group.get("pages") != normalized_pages:
+            group["pages"] = normalized_pages
+            changed = True
+        title = str(group.get("title") or "").strip()
+        if group.get("title") != title:
+            group["title"] = title
+            changed = True
     return changed
 
 
@@ -562,6 +608,8 @@ def ensure_config_defaults(config):
     if normalize_feature_settings(config):
         changed = True
     if normalize_page_locks(config):
+        changed = True
+    if normalize_page_lock_groups(config):
         changed = True
     if ensure_studio_overview_page(config):
         changed = True

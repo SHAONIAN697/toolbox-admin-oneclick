@@ -2468,6 +2468,19 @@ function ensurePageLocks() {
   return state.config.page_locks;
 }
 
+function ensurePageLockGroups() {
+  if (!state.config.page_lock_groups || typeof state.config.page_lock_groups !== 'object' || Array.isArray(state.config.page_lock_groups)) {
+    state.config.page_lock_groups = {};
+  }
+  if (!state.config.page_lock_groups.default || typeof state.config.page_lock_groups.default !== 'object' || Array.isArray(state.config.page_lock_groups.default)) {
+    state.config.page_lock_groups.default = { title: '合并页面密码', password: '', pages: [] };
+  }
+  const group = state.config.page_lock_groups.default;
+  if (!Array.isArray(group.pages)) group.pages = [];
+  if (!group.title) group.title = '合并页面密码';
+  return state.config.page_lock_groups;
+}
+
 function getLockablePages() {
   const rows = [{ id: 'software_catalog', title: '软件大全', type: '内置页面' }];
   const seen = new Set(rows.map((item) => item.id));
@@ -2514,10 +2527,18 @@ function ensurePageAccessPanel() {
     </div>
     <div class="form-grid compact page-feature-grid">
       <label class="toggle-line">软件大全页面<span><input id="softwareCatalogEnabled" type="checkbox"> 显示</span></label>
+      <label class="toggle-line">工具箱资源搜索<span><input id="resourceSearchEnabled" type="checkbox"> 开启</span></label>
+    </div>
+    <div class="page-lock-group-box">
+      <div>
+        <strong>合并页面密码</strong>
+        <small>选择“合并密码”的页面共用此密码，用户输入一次后可访问组内其他页面。</small>
+      </div>
+      <input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码">
     </div>
     <div class="table-wrap page-lock-wrap">
       <table class="page-lock-table">
-        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>页面密码</th><th>状态</th></tr></thead>
+        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>密码方式</th><th>页面密码</th><th>状态</th></tr></thead>
         <tbody id="pageLockRows"></tbody>
       </table>
     </div>
@@ -2533,31 +2554,58 @@ function renderPageAccessControls() {
   if (!panel || !state.config) return;
   const features = ensureFeatureSettings();
   const locks = ensurePageLocks();
+  const groups = ensurePageLockGroups();
+  const mergedGroup = groups.default;
+  const mergedPages = new Set(mergedGroup.pages.map((id) => String(id || '')));
+  const mergedPassword = $('mergedPageLockPassword');
+  if (mergedPassword) {
+    mergedPassword.value = '';
+    mergedPassword.placeholder = mergedGroup.password ? '已设置，留空不修改' : '输入合并密码';
+  }
   const softwareEnabled = $('softwareCatalogEnabled');
   if (softwareEnabled) softwareEnabled.checked = features.software_catalog_enabled !== false;
+  const resourceSearchEnabled = $('resourceSearchEnabled');
+  if (resourceSearchEnabled) resourceSearchEnabled.checked = features.resource_search_enabled === true;
   const tbody = $('pageLockRows');
   if (!tbody) return;
   tbody.innerHTML = getLockablePages().map((page) => {
     const lock = locks[page.id] && typeof locks[page.id] === 'object' ? locks[page.id] : {};
     const enabled = lock.enabled === true;
     const hasPassword = !!lock.password;
+    const merged = mergedPages.has(page.id) || lock.group === 'default' || (!hasPassword && !lock.group);
+    const effectivePassword = merged ? !!mergedGroup.password : hasPassword;
     return `
       <tr data-page-lock-id="${escapeAttr(page.id)}" data-page-lock-title="${escapeAttr(page.title)}">
         <td><strong>${escapeHtml(page.title)}</strong><small>${escapeHtml(page.id)}</small></td>
         <td>${escapeHtml(page.type)}</td>
         <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
-        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入页面密码'}"></td>
-        <td><span class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置密码' : '未设置密码'}</span></td>
+        <td><select data-page-lock-mode><option value="merged" ${merged ? 'selected' : ''}>合并密码</option><option value="independent" ${merged ? '' : 'selected'}>独立密码</option></select></td>
+        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}" ${merged ? 'disabled' : ''}></td>
+        <td><span class="${effectivePassword ? 'muted-pill' : 'danger-pill'}">${merged ? (effectivePassword ? '使用合并密码' : '合并密码未设置') : (hasPassword ? '已设置独立密码' : '未设置独立密码')}</span></td>
       </tr>
     `;
   }).join('');
+  tbody.querySelectorAll('[data-page-lock-mode]').forEach((select) => {
+    select.addEventListener('change', () => {
+      const row = select.closest('[data-page-lock-id]');
+      const password = row?.querySelector('[data-page-lock-password]');
+      if (password) password.disabled = select.value === 'merged';
+    });
+  });
 }
 
 async function savePageAccess() {
   const features = ensureFeatureSettings();
   features.software_catalog_enabled = $('softwareCatalogEnabled')?.checked !== false;
+  features.resource_search_enabled = $('resourceSearchEnabled')?.checked === true;
 
   const locks = ensurePageLocks();
+  const groups = ensurePageLockGroups();
+  const mergedGroup = groups.default;
+  const mergedPassword = $('mergedPageLockPassword')?.value.trim() || '';
+  if (mergedPassword) mergedGroup.password = mergedPassword;
+  mergedGroup.title = '合并页面密码';
+  const mergedPages = [];
   let missingPasswordFor = '';
   document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
     if (missingPasswordFor) return;
@@ -2566,22 +2614,34 @@ async function savePageAccess() {
     const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
     const next = { ...current };
     const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
+    const merged = row.querySelector('[data-page-lock-mode]')?.value !== 'independent';
     next.enabled = row.querySelector('[data-page-lock-enabled]')?.checked === true;
     next.title = title;
-    if (password) next.password = password;
-    if (next.enabled && !next.password) {
+    if (merged) {
+      next.group = 'default';
+      mergedPages.push(pageId);
+    } else {
+      delete next.group;
+      if (password) next.password = password;
+    }
+    if (next.enabled && merged && !mergedGroup.password) {
+      missingPasswordFor = '合并页面密码';
+      return;
+    }
+    if (next.enabled && !merged && !next.password) {
       missingPasswordFor = title;
       return;
     }
     locks[pageId] = next;
   });
+  mergedGroup.pages = mergedPages;
 
   if (missingPasswordFor) {
-    setStatus(`请先给「${missingPasswordFor}」填写页面密码。`, true);
+    setStatus(`请先填写「${missingPasswordFor}」。`, true);
     return;
   }
 
-  await saveWholeConfig('页面权限已保存。');
+  await saveWholeConfig('页面权限已保存；合并组内页面输入一次密码即可全部解锁。');
 }
 
 function parsePositionValue(value) {

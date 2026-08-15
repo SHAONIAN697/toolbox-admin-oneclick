@@ -2830,26 +2830,35 @@ namespace ToolboxClient
             return AsDict(Get(locks, id));
         }
 
+        private Dictionary<string, object> PageLockGroupConfig(string groupId)
+        {
+            Dictionary<string, object> groups = AsDict(Get(config, "page_lock_groups"));
+            return AsDict(Get(groups, groupId));
+        }
+
         private bool EnsurePageUnlocked(string id)
         {
             if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) return true;
             Dictionary<string, object> lockConfig = PageLockConfig(id);
             if (!BoolValue(lockConfig, "enabled", false)) return true;
-            string stored = GetText(lockConfig, "password", "");
+            string groupId = GetText(lockConfig, "group", "").Trim();
+            Dictionary<string, object> groupConfig = String.IsNullOrWhiteSpace(groupId) ? new Dictionary<string, object>() : PageLockGroupConfig(groupId);
+            string stored = String.IsNullOrWhiteSpace(groupId) ? GetText(lockConfig, "password", "") : GetText(groupConfig, "password", "");
+            string unlockKey = String.IsNullOrWhiteSpace(groupId) ? id : "group:" + groupId;
             if (String.IsNullOrWhiteSpace(stored))
             {
                 status.Text = "页面锁已启用，但后台未设置密码。";
                 return false;
             }
             string unlockedHash;
-            if (unlockedPagePasswords.TryGetValue(id, out unlockedHash) && unlockedHash.Equals(stored, StringComparison.Ordinal))
+            if (unlockedPagePasswords.TryGetValue(unlockKey, out unlockedHash) && unlockedHash.Equals(stored, StringComparison.Ordinal))
             {
                 return true;
             }
             status.Text = "页面已上锁，请输入密码。";
             if (PromptPassword(stored, "页面访问密码", "请输入该页面的访问密码"))
             {
-                unlockedPagePasswords[id] = stored;
+                unlockedPagePasswords[unlockKey] = stored;
                 status.Text = "页面已解锁。";
                 return true;
             }

@@ -1819,12 +1819,44 @@ td small {
 }
 
 .page-lock-table {
-  min-width: 780px;
+  min-width: 980px;
 }
 
 .page-lock-table input[type="password"] {
   width: 100%;
   min-width: 220px;
+}
+
+.page-lock-table select {
+  min-width: 112px;
+}
+
+.page-lock-group-box {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(280px, 520px);
+  gap: 18px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.page-lock-group-box small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.page-lock-group-box input {
+  width: 100%;
+}
+
+@media (max-width: 860px) {
+  .page-lock-group-box {
+    grid-template-columns: 1fr;
+  }
 }
 
 .page-lock-note {
