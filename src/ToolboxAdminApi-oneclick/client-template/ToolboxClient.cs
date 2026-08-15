@@ -1242,24 +1242,10 @@ namespace ToolboxClient
             };
             sideLayout.Controls.Add(nav, 0, 1);
 
-            Button records = new PortalBadgeSideButton
-            {
-                Dock = DockStyle.Fill,
-                Margin = new Padding(6, 2, 6, 2),
-                Text = "",
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(14, 0, 0, 0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = portalSideBack,
-                ForeColor = Color.FromArgb(15, 23, 42),
-                Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
-            };
-            records.FlatAppearance.BorderSize = 0;
-            records.FlatAppearance.BorderColor = portalSideBack;
-            records.FlatAppearance.MouseOverBackColor = Color.FromArgb(238, 242, 247);
+            Button records = CreatePortalBottomNavButton("download");
             records.Click += delegate { ShowTemplateUtilityPage("downloads"); };
             sideLayout.Controls.Add(records, 0, 2);
-            Button settings = MakePortalSideButton("");
+            Button settings = CreatePortalBottomNavButton("settings");
             settings.Click += delegate { ShowTemplateUtilityPage("settings"); };
             sideLayout.Controls.Add(settings, 0, 3);
 
@@ -1630,23 +1616,109 @@ namespace ToolboxClient
             return button;
         }
 
+        private Button CreatePortalBottomNavButton(string iconKey)
+        {
+            PortalBadgeSideButton button = new PortalBadgeSideButton
+            {
+                Width = 180,
+                Height = 38,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 5, 0, 5),
+                Padding = Padding.Empty,
+                Text = "",
+                TextAlign = ContentAlignment.MiddleLeft,
+                ImageAlign = ContentAlignment.MiddleLeft,
+                TextImageRelation = TextImageRelation.ImageBeforeText,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = SideBg,
+                ForeColor = TextColor,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
+                IconKey = iconKey
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.BorderColor = SideBg;
+            button.FlatAppearance.MouseOverBackColor = PortalHoverBack();
+            button.FlatAppearance.MouseDownBackColor = Blend(PortalHoverBack(), Accent, 0.08);
+            return button;
+        }
+
         private sealed class PortalBadgeSideButton : Button
         {
             public string BadgeText = "";
+            public string IconKey = "download";
+            private bool active;
+            private bool hovered;
+            private bool pressed;
+
+            public bool Active
+            {
+                get { return active; }
+                set { if (active == value) return; active = value; Invalidate(); }
+            }
 
             public PortalBadgeSideButton()
             {
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                pressed = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left) pressed = true;
+                Invalidate();
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                pressed = false;
+                Invalidate();
+                base.OnMouseUp(e);
             }
 
             protected override void OnPaint(PaintEventArgs pevent)
             {
-                base.OnPaint(pevent);
+                Graphics g = pevent.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                Rectangle rect = new Rectangle(0, 1, Width - 1, Height - 2);
+                Color fill = active ? PortalSoftAccentBack() : (pressed ? Blend(PortalHoverBack(), Accent, 0.08) : (hovered ? PortalHoverBack() : SideBg));
+                using (GraphicsPath path = UiRoundRect(rect, 4))
+                using (SolidBrush bg = new SolidBrush(fill))
+                {
+                    g.FillPath(bg, path);
+                }
+                if (active)
+                {
+                    using (SolidBrush beam = new SolidBrush(Accent))
+                    {
+                        g.FillRectangle(beam, new Rectangle(0, 6, 3, Height - 12));
+                    }
+                }
+
+                Color iconColor = active ? Accent : Muted;
+                Rectangle iconRect = new Rectangle(15, (Height - 16) / 2, 16, 16);
+                DrawPortalBottomIcon(g, IconKey, iconRect, iconColor);
+                Rectangle textRect = new Rectangle(38, 0, Width - 50, Height);
+                TextRenderer.DrawText(g, Text, Font, textRect, TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+
                 if (String.IsNullOrWhiteSpace(BadgeText)) return;
                 string text = BadgeText.Trim();
                 if (text.Length > 2) text = "99";
-                Graphics g = pevent.Graphics;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
                 using (Font badgeFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold))
                 {
                     Size textSize = TextRenderer.MeasureText(g, text, badgeFont, Size.Empty, TextFormatFlags.NoPadding);
@@ -1661,6 +1733,39 @@ namespace ToolboxClient
                         g.DrawPath(border, path);
                     }
                     TextRenderer.DrawText(g, text, badgeFont, badge, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                }
+            }
+
+            private static void DrawPortalBottomIcon(Graphics g, string iconKey, Rectangle rect, Color color)
+            {
+                using (Pen pen = new Pen(color, 1.5F))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.LineJoin = LineJoin.Round;
+                    if (String.Equals(iconKey, "settings", StringComparison.OrdinalIgnoreCase))
+                    {
+                        PointF center = new PointF(rect.Left + 8F, rect.Top + 8F);
+                        g.DrawEllipse(pen, center.X - 4.5F, center.Y - 4.5F, 9F, 9F);
+                        g.DrawEllipse(pen, center.X - 1.5F, center.Y - 1.5F, 3F, 3F);
+                        for (int i = 0; i < 8; i++)
+                        {
+                            double angle = Math.PI * i / 4D;
+                            float x1 = center.X + (float)Math.Cos(angle) * 5.5F;
+                            float y1 = center.Y + (float)Math.Sin(angle) * 5.5F;
+                            float x2 = center.X + (float)Math.Cos(angle) * 7F;
+                            float y2 = center.Y + (float)Math.Sin(angle) * 7F;
+                            g.DrawLine(pen, x1, y1, x2, y2);
+                        }
+                        return;
+                    }
+                    float centerX = rect.Left + 8F;
+                    g.DrawLine(pen, centerX, rect.Top + 2F, centerX, rect.Top + 10F);
+                    g.DrawLine(pen, centerX, rect.Top + 10F, rect.Left + 4.5F, rect.Top + 6.5F);
+                    g.DrawLine(pen, centerX, rect.Top + 10F, rect.Right - 4.5F, rect.Top + 6.5F);
+                    g.DrawLine(pen, rect.Left + 2.5F, rect.Top + 11F, rect.Left + 2.5F, rect.Top + 14F);
+                    g.DrawLine(pen, rect.Left + 2.5F, rect.Top + 14F, rect.Right - 2.5F, rect.Top + 14F);
+                    g.DrawLine(pen, rect.Right - 2.5F, rect.Top + 14F, rect.Right - 2.5F, rect.Top + 11F);
                 }
             }
         }
@@ -3149,6 +3254,16 @@ namespace ToolboxClient
                 if (templateItem != null) templateItem.Active = active;
                 if (tunerItem != null) tunerItem.Active = active;
             }
+            UpdatePortalBottomNavState(id);
+        }
+
+        private void UpdatePortalBottomNavState(string id)
+        {
+            if (!portalVariant) return;
+            PortalBadgeSideButton downloads = recordsButton as PortalBadgeSideButton;
+            PortalBadgeSideButton settings = settingsButton as PortalBadgeSideButton;
+            if (downloads != null) downloads.Active = String.Equals(id, "downloads", StringComparison.OrdinalIgnoreCase);
+            if (settings != null) settings.Active = String.Equals(id, "settings", StringComparison.OrdinalIgnoreCase);
         }
 
         private string TemplateNavIcon(string label, string id)
@@ -3282,6 +3397,7 @@ namespace ToolboxClient
                 return;
             }
             currentPage = id;
+            UpdatePortalBottomNavState(id);
             foreach (KeyValuePair<string, Control> pair in navButtons)
             {
                 NavItemControl navItem = pair.Value as NavItemControl;
@@ -5576,8 +5692,8 @@ namespace ToolboxClient
                 Text = titleText;
             }
             if (brandSubtitle != null) brandSubtitle.Text = PortalLabel(portalBrandSubtitleSource, "app.subtitle");
-            if (recordsButton != null) recordsButton.Text = "↓  " + PortalText("下载管理", "Download Manager");
-            if (settingsButton != null) settingsButton.Text = "⚙  " + PortalText("全局设置", "Global Settings");
+            if (recordsButton != null) recordsButton.Text = PortalText("下载管理", "Downloads");
+            if (settingsButton != null) settingsButton.Text = PortalText("全局设置", "Settings");
             UpdateDownloadBadges();
             if (topToolTip != null)
             {
