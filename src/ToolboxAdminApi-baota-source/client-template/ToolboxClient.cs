@@ -7332,7 +7332,6 @@ namespace ToolboxClient
             resourceSearchBox.ForeColor = TextColor;
             if (studioVariant)
             {
-                resourceSearchButton.Tag = "resource_search_icon_only";
                 resourceSearchButton.TabStop = false;
                 resourceSearchButton.Invalidate();
             }
@@ -10126,13 +10125,7 @@ namespace ToolboxClient
             if (contactButton != null) contactButton.Invalidate();
             if (resourceSearchButton != null)
             {
-                Color searchChromeBack = resourceSearchButtonHost != null ? resourceSearchButtonHost.BackColor : Bg;
-                resourceSearchButton.BackColor = searchChromeBack;
                 resourceSearchButton.ForeColor = TextColor;
-                resourceSearchButton.FlatAppearance.BorderSize = 0;
-                resourceSearchButton.FlatAppearance.BorderColor = searchChromeBack;
-                resourceSearchButton.FlatAppearance.MouseOverBackColor = searchChromeBack;
-                resourceSearchButton.FlatAppearance.MouseDownBackColor = searchChromeBack;
                 resourceSearchButton.Invalidate();
             }
         }
@@ -13853,7 +13846,7 @@ namespace ToolboxClient
 
             public StudioChromeButton()
             {
-                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
                 Cursor = Cursors.Hand;
                 FlatStyle = FlatStyle.Flat;
                 FlatAppearance.BorderSize = 0;
@@ -13874,34 +13867,10 @@ namespace ToolboxClient
                 base.OnMouseLeave(e);
             }
 
-            protected override void OnPaintBackground(PaintEventArgs e)
-            {
-                if (String.Equals(IconKey, "search", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (Parent != null)
-                    {
-                        GraphicsState state = e.Graphics.Save();
-                        e.Graphics.TranslateTransform(-Left, -Top);
-                        Rectangle parentClip = new Rectangle(Left, Top, Width, Height);
-                        PaintEventArgs parentArgs = new PaintEventArgs(e.Graphics, parentClip);
-                        InvokePaintBackground(Parent, parentArgs);
-                        InvokePaint(Parent, parentArgs);
-                        e.Graphics.Restore(state);
-                    }
-                    return;
-                }
-                base.OnPaintBackground(e);
-            }
-
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 bool searchIcon = String.Equals(IconKey, "search", StringComparison.OrdinalIgnoreCase);
-                if (searchIcon)
-                {
-                    DrawIcon(e.Graphics);
-                    return;
-                }
                 Color chromeBack = EffectiveBackColor(Parent);
                 e.Graphics.Clear(chromeBack);
                 using (SolidBrush clear = new SolidBrush(chromeBack))
@@ -13911,7 +13880,7 @@ namespace ToolboxClient
 
                 Rectangle rect = new Rectangle(1, 1, Width - 3, Height - 3);
                 Color fill = LightTheme ? Color.FromArgb(240, 244, 249) : Color.FromArgb(42, 51, 63);
-                if (hovered)
+                if (hovered && !searchIcon)
                 {
                     using (GraphicsPath path = RoundRect(rect, 5))
                     using (SolidBrush bg = new SolidBrush(fill))
