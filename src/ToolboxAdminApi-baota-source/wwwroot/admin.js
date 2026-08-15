@@ -2389,15 +2389,17 @@ function ensurePageAccessPanel() {
       <label class="toggle-line">工具箱资源搜索<span><input id="resourceSearchEnabled" type="checkbox"> 开启</span></label>
     </div>
     <div class="page-lock-group-box">
-      <div>
+      <div class="page-lock-group-head">
         <strong>合并页面密码</strong>
-        <small>选择“合并密码”的页面共用此密码，用户输入一次后可访问组内其他页面。</small>
+        <small>从现有页面中逐个选择；这些页面输入一次密码后全部解锁。</small>
       </div>
       <input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码">
+      <div id="mergedPageLockSelectors" class="page-lock-group-selectors"></div>
+      <button id="addMergedPageLockBtn" class="page-lock-group-add" type="button">＋ 添加页面</button>
     </div>
     <div class="table-wrap page-lock-wrap">
       <table class="page-lock-table">
-        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>密码方式</th><th>页面密码</th><th>状态</th></tr></thead>
+        <thead><tr><th>页面</th><th>类型</th><th>访问限制</th><th>页面密码</th><th>状态</th></tr></thead>
         <tbody id="pageLockRows"></tbody>
       </table>
     </div>
@@ -2408,6 +2410,81 @@ function ensurePageAccessPanel() {
   return panel;
 }
 
+function renderMergedPageLockSelectors(pages, locks, mergedGroup) {
+  const host = $('mergedPageLockSelectors');
+  const addButton = $('addMergedPageLockBtn');
+  if (!host || !addButton) return;
+  const validIds = new Set(pages.map((page) => page.id));
+  mergedGroup.pages = [...new Set([
+    ...mergedGroup.pages.map((id) => String(id || '')),
+    ...Object.entries(locks).filter(([, lock]) => lock?.group === 'default').map(([id]) => id)
+  ])].filter((id) => !id || validIds.has(id));
+  if (!mergedGroup.pages.length) mergedGroup.pages.push('');
+
+  const draw = () => {
+    host.innerHTML = mergedGroup.pages.map((selectedId, index) => {
+      const used = new Set(mergedGroup.pages.filter((id, itemIndex) => itemIndex !== index && id));
+      const options = pages.filter((page) => !used.has(page.id)).map((page) =>
+        `<option value="${escapeAttr(page.id)}" ${page.id === selectedId ? 'selected' : ''}>${escapeHtml(page.title)} / ${escapeHtml(page.id)}</option>`
+      ).join('');
+      return `
+        <div class="page-lock-group-row" data-merged-page-row="${index}">
+          <select data-merged-page-select><option value="">请选择页面</option>${options}</select>
+          <button data-remove-merged-page type="button" title="移除此页面">删除</button>
+        </div>
+      `;
+    }).join('');
+    host.querySelectorAll('[data-merged-page-row]').forEach((row) => {
+      const index = Number(row.dataset.mergedPageRow);
+      row.querySelector('[data-merged-page-select]')?.addEventListener('change', (event) => {
+        mergedGroup.pages[index] = event.target.value;
+        draw();
+        refreshMergedPageLockRows(locks, mergedGroup);
+      });
+      row.querySelector('[data-remove-merged-page]')?.addEventListener('click', () => {
+        mergedGroup.pages.splice(index, 1);
+        draw();
+        refreshMergedPageLockRows(locks, mergedGroup);
+      });
+    });
+    const selected = new Set(mergedGroup.pages.filter(Boolean));
+    addButton.disabled = selected.size >= pages.length;
+  };
+
+  addButton.onclick = () => {
+    mergedGroup.pages.push('');
+    draw();
+  };
+  draw();
+}
+
+function refreshMergedPageLockRows(locks, mergedGroup) {
+  const mergedPages = new Set(mergedGroup.pages.filter(Boolean));
+  const hasMergedPassword = !!mergedGroup.password || !!$('mergedPageLockPassword')?.value.trim();
+  document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
+    const pageId = row.dataset.pageLockId || '';
+    const merged = mergedPages.has(pageId);
+    const enabled = row.querySelector('[data-page-lock-enabled]');
+    const password = row.querySelector('[data-page-lock-password]');
+    const status = row.querySelector('[data-page-lock-status]');
+    const hasIndependentPassword = !!locks[pageId]?.password;
+    if (enabled) {
+      if (merged && row.dataset.pageLockMerged !== '1') row.dataset.independentEnabled = enabled.checked ? '1' : '0';
+      if (merged) enabled.checked = true;
+      if (!merged && row.dataset.pageLockMerged === '1') enabled.checked = row.dataset.independentEnabled === '1';
+      enabled.disabled = merged;
+    }
+    row.dataset.pageLockMerged = merged ? '1' : '0';
+    if (password) password.disabled = merged;
+    if (status) {
+      status.className = (merged ? hasMergedPassword : hasIndependentPassword) ? 'muted-pill' : 'danger-pill';
+      status.textContent = merged
+        ? (hasMergedPassword ? '使用合并密码' : '合并密码未设置')
+        : (hasIndependentPassword ? '已设置独立密码' : '未设置独立密码');
+    }
+  });
+}
+
 function renderPageAccessControls() {
   const panel = ensurePageAccessPanel();
   if (!panel || !state.config) return;
@@ -2415,7 +2492,7 @@ function renderPageAccessControls() {
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
   const mergedGroup = groups.default;
-  const mergedPages = new Set(mergedGroup.pages.map((id) => String(id || '')));
+  const lockablePages = getLockablePages();
   const mergedPassword = $('mergedPageLockPassword');
   if (mergedPassword) {
     mergedPassword.value = '';
@@ -2427,30 +2504,22 @@ function renderPageAccessControls() {
   if (resourceSearchEnabled) resourceSearchEnabled.checked = features.resource_search_enabled === true;
   const tbody = $('pageLockRows');
   if (!tbody) return;
-  tbody.innerHTML = getLockablePages().map((page) => {
+  tbody.innerHTML = lockablePages.map((page) => {
     const lock = locks[page.id] && typeof locks[page.id] === 'object' ? locks[page.id] : {};
     const enabled = lock.enabled === true;
     const hasPassword = !!lock.password;
-    const merged = mergedPages.has(page.id) || lock.group === 'default' || (!hasPassword && !lock.group);
-    const effectivePassword = merged ? !!mergedGroup.password : hasPassword;
     return `
-      <tr data-page-lock-id="${escapeAttr(page.id)}" data-page-lock-title="${escapeAttr(page.title)}">
+      <tr data-page-lock-id="${escapeAttr(page.id)}" data-page-lock-title="${escapeAttr(page.title)}" data-independent-enabled="${enabled ? '1' : '0'}">
         <td><strong>${escapeHtml(page.title)}</strong><small>${escapeHtml(page.id)}</small></td>
         <td>${escapeHtml(page.type)}</td>
         <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
-        <td><select data-page-lock-mode><option value="merged" ${merged ? 'selected' : ''}>合并密码</option><option value="independent" ${merged ? '' : 'selected'}>独立密码</option></select></td>
-        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}" ${merged ? 'disabled' : ''}></td>
-        <td><span class="${effectivePassword ? 'muted-pill' : 'danger-pill'}">${merged ? (effectivePassword ? '使用合并密码' : '合并密码未设置') : (hasPassword ? '已设置独立密码' : '未设置独立密码')}</span></td>
+        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}"></td>
+        <td><span data-page-lock-status class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置独立密码' : '未设置独立密码'}</span></td>
       </tr>
     `;
   }).join('');
-  tbody.querySelectorAll('[data-page-lock-mode]').forEach((select) => {
-    select.addEventListener('change', () => {
-      const row = select.closest('[data-page-lock-id]');
-      const password = row?.querySelector('[data-page-lock-password]');
-      if (password) password.disabled = select.value === 'merged';
-    });
-  });
+  renderMergedPageLockSelectors(lockablePages, locks, mergedGroup);
+  refreshMergedPageLockRows(locks, mergedGroup);
 }
 
 async function savePageAccess() {
@@ -2464,7 +2533,9 @@ async function savePageAccess() {
   const mergedPassword = $('mergedPageLockPassword')?.value.trim() || '';
   if (mergedPassword) mergedGroup.password = mergedPassword;
   mergedGroup.title = '合并页面密码';
-  const mergedPages = [];
+  const validPageIds = new Set(getLockablePages().map((page) => page.id));
+  const mergedPages = [...new Set(mergedGroup.pages.map((id) => String(id || '')).filter((id) => validPageIds.has(id)))];
+  const mergedPageSet = new Set(mergedPages);
   let missingPasswordFor = '';
   document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
     if (missingPasswordFor) return;
@@ -2473,17 +2544,16 @@ async function savePageAccess() {
     const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
     const next = { ...current };
     const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
-    const merged = row.querySelector('[data-page-lock-mode]')?.value !== 'independent';
-    next.enabled = row.querySelector('[data-page-lock-enabled]')?.checked === true;
+    const merged = mergedPageSet.has(pageId);
+    next.enabled = merged || row.querySelector('[data-page-lock-enabled]')?.checked === true;
     next.title = title;
     if (merged) {
       next.group = 'default';
-      mergedPages.push(pageId);
     } else {
       delete next.group;
       if (password) next.password = password;
     }
-    if (next.enabled && merged && !mergedGroup.password) {
+    if (merged && !mergedGroup.password) {
       missingPasswordFor = '合并页面密码';
       return;
     }
