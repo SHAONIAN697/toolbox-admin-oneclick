@@ -13027,13 +13027,12 @@ namespace ToolboxClient
 
         private string ReadUsableFallbackConfig()
         {
-            string embedded = null;
-            try { embedded = NormalizeConfigJson(ReadEmbeddedConfig()); } catch { }
-            if (portalVariant && IsPortalDemoPlaceholderConfig(embedded)) embedded = null;
-            if (!String.IsNullOrWhiteSpace(embedded)) return embedded;
             string cached = ReadUsableConfigText(ReadCache());
             if (portalVariant && IsPortalDemoPlaceholderConfig(cached)) cached = null;
-            return cached;
+            if (!String.IsNullOrWhiteSpace(cached)) return cached;
+            string embedded = ReadUsableConfigText(ReadEmbeddedConfig());
+            if (portalVariant && IsPortalDemoPlaceholderConfig(embedded)) embedded = null;
+            return embedded;
         }
 
         private void ApplyInitialEmbeddedConfig()
