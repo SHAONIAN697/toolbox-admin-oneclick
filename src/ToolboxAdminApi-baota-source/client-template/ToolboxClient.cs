@@ -2820,7 +2820,7 @@ namespace ToolboxClient
         private bool DeleteDownloadsOnExitEnabled()
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
-            return BoolValue(features, "delete_downloads_on_exit", true);
+            return BoolValue(features, "delete_downloads_on_exit", false);
         }
 
         private bool SoftwareCatalogAutoWingetEnabled()

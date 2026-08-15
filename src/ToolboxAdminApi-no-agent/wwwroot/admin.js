@@ -2535,7 +2535,7 @@ function renderPageAccessControls() {
   const resourceSearchEnabled = $('resourceSearchEnabled');
   if (resourceSearchEnabled) resourceSearchEnabled.checked = features.resource_search_enabled === true;
   const deleteDownloadsOnExit = $('deleteDownloadsOnExit');
-  if (deleteDownloadsOnExit) deleteDownloadsOnExit.checked = features.delete_downloads_on_exit !== false;
+  if (deleteDownloadsOnExit) deleteDownloadsOnExit.checked = features.delete_downloads_on_exit === true;
   const tbody = $('pageLockRows');
   if (!tbody) return;
   tbody.innerHTML = lockablePages.map((page) => {
