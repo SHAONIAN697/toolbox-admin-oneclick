@@ -13872,8 +13872,16 @@ namespace ToolboxClient
             {
                 if (String.Equals(IconKey, "search", StringComparison.OrdinalIgnoreCase))
                 {
-                    using (SolidBrush background = new SolidBrush(EffectiveBackColor(Parent)))
-                        e.Graphics.FillRectangle(background, ClientRectangle);
+                    if (Parent != null)
+                    {
+                        GraphicsState state = e.Graphics.Save();
+                        e.Graphics.TranslateTransform(-Left, -Top);
+                        Rectangle parentClip = new Rectangle(Left, Top, Width, Height);
+                        PaintEventArgs parentArgs = new PaintEventArgs(e.Graphics, parentClip);
+                        InvokePaintBackground(Parent, parentArgs);
+                        InvokePaint(Parent, parentArgs);
+                        e.Graphics.Restore(state);
+                    }
                     return;
                 }
                 base.OnPaintBackground(e);
