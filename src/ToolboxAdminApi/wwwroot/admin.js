@@ -1123,6 +1123,7 @@ function organizeOverviewCards() {
 
   const saveButton = $('saveAppBtn');
   if (saveButton) saveButton.textContent = '保存基础信息';
+  ensureDownloadCleanupBasicField(grid);
 
   const stats = view.querySelector('.stats');
   const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel', 'saveAppPasswordBtn', '保存启动密码');
@@ -1244,6 +1245,14 @@ function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') 
   const action = saveButtonId ? `<button id="${saveButtonId}" type="button">${saveText}</button>` : '';
   panel.innerHTML = `<div class="panel-head"><h2>${title}</h2>${action}</div><div class="form-grid"></div>`;
   return panel;
+}
+
+function ensureDownloadCleanupBasicField(grid) {
+  if (!grid || $('deleteDownloadsOnExit')) return;
+  const label = document.createElement('label');
+  label.className = 'toggle-line';
+  label.innerHTML = '关闭时自动删除已下载文件<span><input id="deleteDownloadsOnExit" type="checkbox"> 开启</span>';
+  grid.appendChild(label);
 }
 
 function moveLabels(sourceGrid, targetGrid, ids) {
@@ -2423,7 +2432,6 @@ function ensurePageAccessPanel() {
     <div class="form-grid compact page-feature-grid">
       <label class="toggle-line">软件大全页面<span><input id="softwareCatalogEnabled" type="checkbox"> 显示</span></label>
       <label class="toggle-line">工具箱资源搜索<span><input id="resourceSearchEnabled" type="checkbox"> 开启</span></label>
-      <label class="toggle-line">允许关闭时自动删除已下载文件<span><input id="deleteDownloadsOnExit" type="checkbox"> 开启</span></label>
     </div>
     <div class="page-lock-group-box">
       <div class="page-lock-group-head">
@@ -2579,7 +2587,6 @@ async function savePageAccess() {
   const features = ensureFeatureSettings();
   features.software_catalog_enabled = $('softwareCatalogEnabled')?.checked !== false;
   features.resource_search_enabled = $('resourceSearchEnabled')?.checked === true;
-  features.delete_downloads_on_exit = $('deleteDownloadsOnExit')?.checked === true;
 
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
@@ -3131,6 +3138,7 @@ async function saveAppPatch(patch, message) {
 }
 
 async function saveAppBasicSettings() {
+  const deleteDownloadsOnExit = $('deleteDownloadsOnExit')?.checked === true;
   await saveAppPatch({
     title: $('appTitle').value.trim(),
     subtitle: $('appSubtitle').value.trim(),
@@ -3144,7 +3152,9 @@ async function saveAppBasicSettings() {
     exe_icon: $('appExeIcon')?.value.trim() || '',
     window_width: Number($('appWidth').value || 1080),
     window_height: Number($('appHeight').value || 700)
-  }, '基础信息已保存。');
+  }, '正在保存基础信息...');
+  ensureFeatureSettings().delete_downloads_on_exit = deleteDownloadsOnExit;
+  await saveWholeConfig('基础信息已保存。');
 }
 
 async function saveAppLoginSettings() {
