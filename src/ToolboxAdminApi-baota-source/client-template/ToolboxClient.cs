@@ -132,6 +132,7 @@ namespace ToolboxClient
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
         private System.Windows.Forms.Timer startupRenderTimer;
+        private System.Windows.Forms.Timer startupNetworkTimer;
         private readonly object startupLoadingLock = new object();
         private Thread startupLoadingThread;
         private StartupLoadingWindow startupLoadingWindow;
@@ -333,23 +334,29 @@ namespace ToolboxClient
             refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
             Shown += delegate
             {
-                // Paint the in-app loader first; remote sources refresh in parallel.
+                // Render the embedded snapshot first, then refresh without competing for the first paint.
                 ShowStartupLoadingWindow();
-                LoadConfigAsync(true);
-                LoadPopupConfigAsync(false);
                 startupRenderTimer.Start();
+                startupNetworkTimer.Start();
                 refreshTimer.Start();
             };
         }
 
         private void BuildStartupOverlay()
         {
-            startupRenderTimer = new System.Windows.Forms.Timer { Interval = 30 };
+            startupRenderTimer = new System.Windows.Forms.Timer { Interval = 1 };
             startupRenderTimer.Tick += delegate
             {
                 startupRenderTimer.Stop();
                 ApplyInitialEmbeddedConfig();
                 if (configApplied) HideStartupOverlay();
+            };
+            startupNetworkTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            startupNetworkTimer.Tick += delegate
+            {
+                startupNetworkTimer.Stop();
+                LoadConfigAsync(true);
+                LoadPopupConfigAsync(false);
             };
         }
 
@@ -2808,6 +2815,12 @@ namespace ToolboxClient
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
             return BoolValue(features, "resource_search_enabled", false);
+        }
+
+        private bool DeleteDownloadsOnExitEnabled()
+        {
+            Dictionary<string, object> features = AsDict(Get(config, "features"));
+            return BoolValue(features, "delete_downloads_on_exit", true);
         }
 
         private bool SoftwareCatalogAutoWingetEnabled()
@@ -12396,7 +12409,7 @@ namespace ToolboxClient
         private void CleanupDownloadedFilesOnExit()
         {
             ClientSettings settings = LoadClientSettings();
-            if (!settings.DeleteDownloadsOnExit) return;
+            if (!DeleteDownloadsOnExitEnabled() || !settings.DeleteDownloadsOnExit) return;
             List<DownloadRecord> records = LoadDownloadRecords();
             foreach (DownloadRecord record in records) DeleteDownloadedFile(record);
             SaveDownloadRecords(new List<DownloadRecord>());
@@ -13006,12 +13019,13 @@ namespace ToolboxClient
 
         private string ReadUsableFallbackConfig()
         {
+            string embedded = null;
+            try { embedded = NormalizeConfigJson(ReadEmbeddedConfig()); } catch { }
+            if (portalVariant && IsPortalDemoPlaceholderConfig(embedded)) embedded = null;
+            if (!String.IsNullOrWhiteSpace(embedded)) return embedded;
             string cached = ReadUsableConfigText(ReadCache());
             if (portalVariant && IsPortalDemoPlaceholderConfig(cached)) cached = null;
-            if (!String.IsNullOrWhiteSpace(cached)) return cached;
-            string embedded = ReadUsableConfigText(ReadEmbeddedConfig());
-            if (portalVariant && IsPortalDemoPlaceholderConfig(embedded)) embedded = null;
-            return embedded;
+            return cached;
         }
 
         private void ApplyInitialEmbeddedConfig()

@@ -427,7 +427,7 @@ def default_config():
         },
         "license": {"enabled": False, "api_base": "", "product_code": ""},
         "popup": default_popup_settings(),
-        "features": {"software_catalog_enabled": True},
+        "features": {"software_catalog_enabled": True, "delete_downloads_on_exit": True},
         "page_locks": {},
         "page_lock_groups": {},
         "sidebar": [],
@@ -470,6 +470,10 @@ def normalize_feature_settings(config):
     enabled = config_bool(features.get("software_catalog_enabled"), True)
     if features.get("software_catalog_enabled") is not enabled:
         features["software_catalog_enabled"] = enabled
+        changed = True
+    delete_downloads_on_exit = config_bool(features.get("delete_downloads_on_exit"), True)
+    if features.get("delete_downloads_on_exit") is not delete_downloads_on_exit:
+        features["delete_downloads_on_exit"] = delete_downloads_on_exit
         changed = True
     return changed
 

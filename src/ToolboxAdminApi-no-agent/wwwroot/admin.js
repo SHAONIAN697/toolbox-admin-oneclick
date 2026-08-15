@@ -2404,6 +2404,7 @@ function ensurePageAccessPanel() {
     <div class="form-grid compact page-feature-grid">
       <label class="toggle-line">软件大全页面<span><input id="softwareCatalogEnabled" type="checkbox"> 显示</span></label>
       <label class="toggle-line">工具箱资源搜索<span><input id="resourceSearchEnabled" type="checkbox"> 开启</span></label>
+      <label class="toggle-line">允许关闭时自动删除已下载文件<span><input id="deleteDownloadsOnExit" type="checkbox"> 开启</span></label>
     </div>
     <div class="page-lock-group-box">
       <div class="page-lock-group-head">
@@ -2533,6 +2534,8 @@ function renderPageAccessControls() {
   if (softwareEnabled) softwareEnabled.checked = features.software_catalog_enabled !== false;
   const resourceSearchEnabled = $('resourceSearchEnabled');
   if (resourceSearchEnabled) resourceSearchEnabled.checked = features.resource_search_enabled === true;
+  const deleteDownloadsOnExit = $('deleteDownloadsOnExit');
+  if (deleteDownloadsOnExit) deleteDownloadsOnExit.checked = features.delete_downloads_on_exit !== false;
   const tbody = $('pageLockRows');
   if (!tbody) return;
   tbody.innerHTML = lockablePages.map((page) => {
@@ -2557,6 +2560,7 @@ async function savePageAccess() {
   const features = ensureFeatureSettings();
   features.software_catalog_enabled = $('softwareCatalogEnabled')?.checked !== false;
   features.resource_search_enabled = $('resourceSearchEnabled')?.checked === true;
+  features.delete_downloads_on_exit = $('deleteDownloadsOnExit')?.checked === true;
 
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
