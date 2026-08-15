@@ -33,7 +33,6 @@ namespace ToolboxClient
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
-        internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
         internal const string BuildId = "__BUILD_ID__";
         internal const string BuildStamp = "__BUILD_STAMP__";
         internal const string IntegritySeed = "__INTEGRITY_SEED__";
@@ -194,8 +193,6 @@ namespace ToolboxClient
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
-        private bool updatePromptShown = false;
-        private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly object launchDownloadedFileLock = new object();
@@ -236,6 +233,21 @@ namespace ToolboxClient
         private int activeContactPopupTab = 0;
         private const int PopupDefaultCacheMinutes = 60;
         private bool portalEnglish = false;
+        private readonly List<ResourceSearchEntry> resourceSearchIndex = new List<ResourceSearchEntry>();
+        private List<ResourceSearchEntry> resourceSearchResults = new List<ResourceSearchEntry>();
+        private System.Windows.Forms.Timer resourceSearchTimer;
+        private Panel resourceSearchHost;
+        private TextBox resourceSearchBox;
+        private Button resourceSearchButton;
+        private FlowLayoutPanel resourceSearchButtonHost;
+        private Button resourceSearchButtonStyleTemplate;
+        private SearchGlyphButton resourceSearchClearButton;
+        private ToolTip resourceSearchToolTip;
+        private bool resourceSearchVisible;
+        private bool resourceSearchActive;
+        private string resourceSearchQuery = "";
+        private string pageBeforeResourceSearch = "";
+        private string statusBeforeResourceSearch = "";
         private Button portalCnButton;
         private Button portalEnButton;
         private string portalBrandTitleSource = "";
@@ -313,6 +325,7 @@ namespace ToolboxClient
             DoubleBuffered = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
             BuildShell();
+            BuildResourceSearchChrome();
             BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
@@ -418,6 +431,17 @@ namespace ToolboxClient
                 softwareSearchTimer.Dispose();
                 softwareSearchTimer = null;
             }
+            if (resourceSearchTimer != null)
+            {
+                resourceSearchTimer.Stop();
+                resourceSearchTimer.Dispose();
+                resourceSearchTimer = null;
+            }
+            if (resourceSearchToolTip != null)
+            {
+                resourceSearchToolTip.Dispose();
+                resourceSearchToolTip = null;
+            }
             CancelSoftwareCatalogRender();
             if (softwareRenderTimer != null)
             {
@@ -460,6 +484,7 @@ namespace ToolboxClient
             {
                 QueueContentResizeRender();
             }
+            LayoutResourceSearchChrome();
         }
 
         protected override CreateParams CreateParams
@@ -622,6 +647,7 @@ namespace ToolboxClient
             };
             windowControls.MouseDown += DragWindow;
             titleBar.Controls.Add(windowControls);
+            resourceSearchButtonHost = windowControls;
 
             gridModeButton = MakeTopButton("▦");
             listModeButton = MakeTopButton("☰");
@@ -753,6 +779,7 @@ namespace ToolboxClient
                 Tag = "tuner_chrome"
             };
             titleBar.Controls.Add(windowControls);
+            resourceSearchButtonHost = windowControls;
 
             downloadTasksButton = MakeTunerDownloadChromeButton();
             recordsButton = MakeTunerChromeButton("trash");
@@ -976,6 +1003,7 @@ namespace ToolboxClient
                 BackColor = Color.White
             };
             top.Controls.Add(windowControls);
+            resourceSearchButtonHost = windowControls;
 
             downloadTasksButton = MakeStudioChromeButton("downloads");
             recordsButton = MakeStudioChromeButton("trash");
@@ -1253,7 +1281,7 @@ namespace ToolboxClient
                 Padding = Padding.Empty,
                 BackColor = portalShellBack
             };
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44F));
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             mainLayout.MouseDown += DragWindow;
             main.Controls.Add(mainLayout);
@@ -1263,10 +1291,13 @@ namespace ToolboxClient
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false,
-                Padding = new Padding(0, 4, 0, 0),
+                Padding = new Padding(0, 7, 4, 7),
+                Margin = Padding.Empty,
+                AutoSize = false,
                 BackColor = portalShellBack
             };
             mainLayout.Controls.Add(windowControls, 0, 0);
+            resourceSearchButtonHost = windowControls;
             Button closeButton = MakeTemplateTopButton("×", Color.White, Color.FromArgb(30, 41, 59), Color.FromArgb(214, 224, 238));
             Button maxButton = MakeTemplateTopButton("□", Color.White, Color.FromArgb(30, 41, 59), Color.FromArgb(214, 224, 238));
             Button minButton = MakeTemplateTopButton("−", Color.White, Color.FromArgb(30, 41, 59), Color.FromArgb(214, 224, 238));
@@ -1672,6 +1703,9 @@ namespace ToolboxClient
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr hIcon);
 
@@ -1917,9 +1951,6 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
-            Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
-            if (EnforceUpdatePolicy(updateApp)) return;
-
             SuspendLayout();
             side.SuspendLayout();
             nav.SuspendLayout();
@@ -1942,6 +1973,7 @@ namespace ToolboxClient
             {
                 ApplyPortalThemeToShell();
             }
+            ApplyResourceSearchTheme();
             string appTitle = GetText(app, "title", "工具箱");
             portalBrandTitleSource = appTitle;
             portalBrandSubtitleSource = GetText(app, "subtitle", "");
@@ -1953,11 +1985,7 @@ namespace ToolboxClient
             FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
             title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : appTitle);
-            ApplyAppIcon(
-                GetText(app, "exe_icon",
-                    GetText(app, "exe_icon_url",
-                        GetText(app, "icon", GetText(app, "icon_url", "")))),
-                GetText(app, "logo_text", "Y"));
+            ApplyAppIcon(GetText(app, "icon", GetText(app, "icon_url", "")), GetText(app, "logo_text", "Y"));
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
@@ -2007,7 +2035,19 @@ namespace ToolboxClient
             if (allowNav)
             {
                 configApplied = true;
+                if (ResourceSearchEnabled())
+                {
+                    BuildResourceSearchIndex();
+                    if (portalVariant) resourceSearchVisible = true;
+                }
+                else
+                {
+                    resourceSearchIndex.Clear();
+                    resourceSearchVisible = false;
+                    resourceSearchActive = false;
+                }
                 BuildNav();
+                LayoutResourceSearchChrome();
                 RestorePausedDownloadTasksOnce();
                 if (tunerVariant) ForceTunerLayoutRefresh();
             }
@@ -2659,6 +2699,12 @@ namespace ToolboxClient
             return BoolValue(features, "software_catalog_enabled", true);
         }
 
+        private bool ResourceSearchEnabled()
+        {
+            Dictionary<string, object> features = AsDict(Get(config, "features"));
+            return BoolValue(features, "resource_search_enabled", false);
+        }
+
         private bool SoftwareCatalogAutoWingetEnabled()
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
@@ -3000,6 +3046,11 @@ namespace ToolboxClient
 
         private void RenderCurrentVisiblePage()
         {
+            if (resourceSearchActive)
+            {
+                RenderResourceSearchResults();
+                return;
+            }
             if (content == null || content.IsDisposed) return;
             if (contentRendering)
             {
@@ -3113,6 +3164,14 @@ namespace ToolboxClient
 
         private void ShowPage(string id)
         {
+            if (resourceSearchActive)
+            {
+                resourceSearchActive = false;
+                resourceSearchQuery = "";
+                resourceSearchResults.Clear();
+                pageBeforeResourceSearch = "";
+                if (resourceSearchBox != null && resourceSearchBox.TextLength > 0) resourceSearchBox.Text = "";
+            }
             if (String.IsNullOrWhiteSpace(id)) return;
             if (recordsPanel != null) recordsPanel.Visible = false;
             if (settingsPanel != null) settingsPanel.Visible = false;
@@ -3650,7 +3709,7 @@ namespace ToolboxClient
                 button.Click += delegate
                 {
                     ActionInfo info = button.ActionInfo;
-                    RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
+                    RunAction(info.Action, info.Target, info.CustomScript, info.Name);
                 };
                 panel.Controls.Add(button);
             }
@@ -3745,13 +3804,13 @@ namespace ToolboxClient
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
             {
                 ActionInfo info = button.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
+                RunResourceItemAction(item, info);
             };
             QueueButtonIconLoad(iconUrl, button);
             return button;
@@ -5493,6 +5552,7 @@ namespace ToolboxClient
         {
             if (!portalVariant) return;
             portalEnglish = english;
+            SetSearchPlaceholder();
             UpdatePortalLanguageButtons();
             UpdatePortalChromeLanguage();
             RenderCurrentPortalView();
@@ -5536,6 +5596,7 @@ namespace ToolboxClient
         private void RenderCurrentPortalView()
         {
             if (!portalVariant) return;
+            if (resourceSearchActive) { RenderResourceSearchResults(); return; }
             if (currentPage == "downloads") RenderPortalDownloadsPage();
             else if (currentPage == "settings") RenderPortalSettingsPage();
             else if (currentPage == SoftwareCatalogPageId) RenderSoftwareCatalogPage();
@@ -6696,7 +6757,7 @@ namespace ToolboxClient
                 if (HasDirectDownloadExtension(part)) return part;
             }
 
-            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|pak|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
+            Match match = Regex.Match(text, @"(?i)([^/?&#=\\\s""']+\.(?:exe|msi|msix|appx|zip|rar|7z|tar|gz|tgz|bz2|xz|iso|img|dmg|pkg|apk|deb|rpm|msu|cab|dll|vst3|vst|aax|component|pdf|bin))(?:$|[?&#=\s""'])");
             return match.Success ? match.Groups[1].Value : "";
         }
 
@@ -6713,7 +6774,7 @@ namespace ToolboxClient
             return ext == ".exe" || ext == ".msi" || ext == ".msix" || ext == ".appx" ||
                    ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".tar" ||
                    ext == ".gz" || ext == ".tgz" || ext == ".bz2" || ext == ".xz" ||
-                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" || ext == ".pak" ||
+                   ext == ".iso" || ext == ".img" || ext == ".dmg" || ext == ".pkg" ||
                    ext == ".apk" || ext == ".deb" || ext == ".rpm" || ext == ".msu" ||
                    ext == ".cab" || ext == ".dll" || ext == ".vst3" || ext == ".vst" ||
                    ext == ".aax" || ext == ".component" || ext == ".pdf" || ext == ".bin";
@@ -7087,13 +7148,13 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
             {
                 ActionInfo info = button.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
+                RunResourceItemAction(item, info);
             };
             QueueButtonIconLoad(iconUrl, button);
             return button;
@@ -7159,6 +7220,416 @@ namespace ToolboxClient
             return buttons;
         }
 
+        private void BuildResourceSearchChrome()
+        {
+            resourceSearchTimer = new System.Windows.Forms.Timer();
+            resourceSearchTimer.Interval = 280;
+            resourceSearchTimer.Tick += delegate
+            {
+                resourceSearchTimer.Stop();
+                ExecuteResourceSearch();
+            };
+            resourceSearchToolTip = new ToolTip { InitialDelay = 700, ReshowDelay = 150, AutoPopDelay = 8000, ShowAlways = true };
+
+            if (studioVariant) resourceSearchButton = MakeStudioChromeButton("search");
+            else if (tunerVariant) resourceSearchButton = MakeTunerChromeButton("search");
+            else resourceSearchButton = new SearchGlyphButton { IsCloseGlyph = false, Width = 29, Height = 28, TabStop = false };
+            resourceSearchButton.Click += delegate
+            {
+                if (resourceSearchVisible) HideResourceSearch();
+                else ShowResourceSearch();
+            };
+            resourceSearchHost = new Panel { Height = 34, Visible = false };
+            resourceSearchBox = new TextBox
+            {
+                BorderStyle = BorderStyle.None,
+                Font = new Font(Font.FontFamily, 9.5F, FontStyle.Regular),
+                Left = 34,
+                Top = 7,
+                Height = 20
+            };
+            resourceSearchBox.TextChanged += delegate
+            {
+                resourceSearchClearButton.Visible = resourceSearchBox.TextLength > 0;
+                QueueResourceSearch();
+            };
+            resourceSearchClearButton = new SearchGlyphButton { IsCloseGlyph = true, Width = 30, Height = 32, Top = 1, TabStop = false, Visible = false };
+            resourceSearchClearButton.Click += delegate { ClearResourceSearch(); };
+            SearchGlyphButton insideSearch = new SearchGlyphButton { IsCloseGlyph = false, Width = 32, Height = 32, Left = 1, Top = 1, TabStop = false };
+            insideSearch.Enabled = false;
+            resourceSearchHost.Controls.Add(resourceSearchBox);
+            resourceSearchHost.Controls.Add(resourceSearchClearButton);
+            resourceSearchHost.Controls.Add(insideSearch);
+            Controls.Add(resourceSearchHost);
+            AddResourceSearchButtonToChrome();
+            resourceSearchHost.BringToFront();
+            if (topToolTip == null) topToolTip = new ToolTip();
+            topToolTip.SetToolTip(resourceSearchButton, "\u641c\u7d22\u8d44\u6e90");
+            topToolTip.SetToolTip(resourceSearchClearButton, "\u6e05\u9664\u641c\u7d22");
+            ApplyResourceSearchTheme();
+            LayoutResourceSearchChrome();
+            if (portalVariant && ResourceSearchEnabled()) ShowResourceSearch();
+        }
+
+        private void AddResourceSearchButtonToChrome()
+        {
+            if (resourceSearchButtonHost == null) return;
+            Control template = null;
+            if (resourceSearchButtonHost.Controls.Count > 0)
+            {
+                int index = resourceSearchButtonHost.FlowDirection == FlowDirection.RightToLeft
+                    ? resourceSearchButtonHost.Controls.Count - 1 : 0;
+                template = resourceSearchButtonHost.Controls[index];
+            }
+            resourceSearchButtonStyleTemplate = template as Button;
+            if (template != null)
+            {
+                resourceSearchButton.Size = template.Size;
+                resourceSearchButton.Margin = template.Margin;
+                resourceSearchButton.Padding = template.Padding;
+                resourceSearchButton.Anchor = template.Anchor;
+                resourceSearchButton.Dock = template.Dock;
+                resourceSearchButton.AutoSize = template.AutoSize;
+                Button buttonTemplate = template as Button;
+                if (buttonTemplate != null)
+                {
+                    resourceSearchButton.FlatStyle = buttonTemplate.FlatStyle;
+                    resourceSearchButton.FlatAppearance.BorderSize = buttonTemplate.FlatAppearance.BorderSize;
+                }
+            }
+            if (resourceSearchButtonHost.Dock == DockStyle.Right)
+                resourceSearchButtonHost.Width += resourceSearchButton.Width + resourceSearchButton.Margin.Horizontal;
+            resourceSearchButtonHost.Controls.Add(resourceSearchButton);
+            if (resourceSearchButtonHost.FlowDirection != FlowDirection.RightToLeft)
+                resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, 0);
+        }
+
+        private void LayoutResourceSearchChrome()
+        {
+            if (resourceSearchButton == null || resourceSearchHost == null) return;
+            bool enabled = ResourceSearchEnabled();
+            resourceSearchButton.Visible = enabled;
+            int hostWidth = 200;
+            bool enough = !studioVariant || ClientSize.Width >= 1040;
+            resourceSearchHost.Visible = enabled && resourceSearchVisible && enough;
+            if (!resourceSearchHost.Visible || resourceSearchButton.Parent == null) return;
+            Point buttonLocation = PointToClient(resourceSearchButton.Parent.PointToScreen(resourceSearchButton.Location));
+            int left = Math.Max(4, buttonLocation.X - hostWidth - 4);
+            int top = buttonLocation.Y + (resourceSearchButton.Height - resourceSearchHost.Height) / 2;
+            resourceSearchHost.SetBounds(left, top, hostWidth, 34);
+            resourceSearchBox.Width = Math.Max(100, hostWidth - 68);
+            resourceSearchClearButton.Left = hostWidth - 31;
+            resourceSearchHost.BringToFront();
+        }
+
+        private void ApplyResourceSearchTheme()
+        {
+            if (resourceSearchHost == null) return;
+            Color back = (studioVariant || tunerVariant) ? (LightTheme ? Color.White : PanelBg) : PanelBg;
+            resourceSearchHost.BackColor = back;
+            resourceSearchHost.Padding = new Padding(1);
+            resourceSearchBox.BackColor = back;
+            resourceSearchBox.ForeColor = TextColor;
+            if (studioVariant)
+            {
+                resourceSearchButton.Tag = "resource_search_icon_only";
+                resourceSearchButton.TabStop = false;
+                resourceSearchButton.Invalidate();
+            }
+            else if (tunerVariant && resourceSearchButtonStyleTemplate != null)
+            {
+                resourceSearchButton.BackColor = resourceSearchButtonStyleTemplate.BackColor;
+                resourceSearchButton.ForeColor = resourceSearchButtonStyleTemplate.ForeColor;
+                resourceSearchButton.FlatAppearance.BorderSize = resourceSearchButtonStyleTemplate.FlatAppearance.BorderSize;
+                resourceSearchButton.FlatAppearance.MouseOverBackColor = resourceSearchButtonStyleTemplate.FlatAppearance.MouseOverBackColor;
+                resourceSearchButton.FlatAppearance.MouseDownBackColor = resourceSearchButtonStyleTemplate.FlatAppearance.MouseDownBackColor;
+            }
+            else
+            {
+                resourceSearchButton.BackColor = back;
+                resourceSearchButton.ForeColor = TextColor;
+                SearchGlyphButton searchGlyph = resourceSearchButton as SearchGlyphButton;
+                if (searchGlyph != null) searchGlyph.BorderColor = Line;
+            }
+            resourceSearchClearButton.BackColor = back;
+            resourceSearchClearButton.ForeColor = Muted;
+            resourceSearchClearButton.BorderColor = Color.Transparent;
+            foreach (Control child in resourceSearchHost.Controls)
+            {
+                SearchGlyphButton glyph = child as SearchGlyphButton;
+                if (glyph != null) { glyph.BackColor = back; glyph.ForeColor = glyph.IsCloseGlyph ? Muted : Accent; glyph.BorderColor = Color.Transparent; }
+            }
+            resourceSearchHost.Paint -= PaintResourceSearchBorder;
+            resourceSearchHost.Paint += PaintResourceSearchBorder;
+            SetSearchPlaceholder();
+            resourceSearchHost.Invalidate();
+        }
+
+        private void PaintResourceSearchBorder(object sender, PaintEventArgs e)
+        {
+            using (Pen pen = new Pen(resourceSearchBox != null && resourceSearchBox.Focused ? Accent : Line, resourceSearchBox != null && resourceSearchBox.Focused ? 2F : 1F))
+                e.Graphics.DrawRectangle(pen, 0, 0, resourceSearchHost.Width - 1, resourceSearchHost.Height - 1);
+        }
+
+        private void SetSearchPlaceholder()
+        {
+            if (resourceSearchBox == null) return;
+            string placeholder = portalVariant ? PortalText("\u641c\u7d22\u5168\u90e8\u8d44\u6e90", "Search all resources") : "\u641c\u7d22\u5de5\u5177\u7bb1\u8d44\u6e90";
+            resourceSearchBox.AccessibleName = placeholder;
+            if (resourceSearchBox.IsHandleCreated) SendMessage(resourceSearchBox.Handle, 0x1501, IntPtr.Zero, placeholder);
+        }
+
+        private bool IsOrdinaryResourcePage()
+        {
+            return configApplied && ResourceSearchEnabled() && !currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase) &&
+                !currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ShowResourceSearch()
+        {
+            if (!ResourceSearchEnabled() || (!configApplied && !portalVariant)) return;
+            resourceSearchVisible = true;
+            LayoutResourceSearchChrome();
+            if (resourceSearchBox != null) { resourceSearchBox.Focus(); resourceSearchBox.SelectAll(); }
+        }
+
+        private void HideResourceSearch()
+        {
+            if (resourceSearchActive) ClearResourceSearch();
+            resourceSearchVisible = false;
+            LayoutResourceSearchChrome();
+        }
+
+        private void QueueResourceSearch()
+        {
+            if (resourceSearchTimer == null) return;
+            resourceSearchTimer.Stop();
+            if (String.IsNullOrWhiteSpace(resourceSearchBox.Text))
+            {
+                ClearResourceSearch();
+                return;
+            }
+            resourceSearchTimer.Start();
+        }
+
+        private void ExecuteResourceSearch()
+        {
+            string query = (resourceSearchBox == null ? "" : resourceSearchBox.Text).Trim();
+            if (query.Length == 0) { ClearResourceSearch(); return; }
+            if (!resourceSearchActive)
+            {
+                pageBeforeResourceSearch = currentPage;
+                statusBeforeResourceSearch = status == null ? "" : status.Text;
+            }
+            resourceSearchActive = true;
+            resourceSearchQuery = query;
+            resourceSearchResults = new List<ResourceSearchEntry>();
+            foreach (ResourceSearchEntry entry in resourceSearchIndex)
+                if (entry.SearchText.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0) resourceSearchResults.Add(entry);
+            resourceSearchResults.Sort(delegate(ResourceSearchEntry a, ResourceSearchEntry b)
+            {
+                int ar = ResourceSearchRank(a, query), br = ResourceSearchRank(b, query);
+                if (ar != br) return ar.CompareTo(br);
+                int sort = a.Sort.CompareTo(b.Sort);
+                if (sort != 0) return sort;
+                return String.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
+            });
+            RenderResourceSearchResults();
+            if (tunerVariant && status != null) status.Text = "\u627e\u5230 " + resourceSearchResults.Count + " \u4e2a\u8d44\u6e90";
+        }
+
+        private int ResourceSearchRank(ResourceSearchEntry entry, string query)
+        {
+            if (entry.Name.Equals(query, StringComparison.CurrentCultureIgnoreCase)) return 0;
+            if (entry.Name.StartsWith(query, StringComparison.CurrentCultureIgnoreCase)) return 1;
+            if (entry.Name.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0) return 2;
+            if (entry.PageTitle.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0 || entry.SectionTitle.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0) return 3;
+            return 4;
+        }
+
+        private void ClearResourceSearch()
+        {
+            if (resourceSearchTimer != null) resourceSearchTimer.Stop();
+            if (resourceSearchBox != null && resourceSearchBox.TextLength > 0) resourceSearchBox.Text = "";
+            resourceSearchQuery = "";
+            resourceSearchResults.Clear();
+            if (resourceSearchActive)
+            {
+                resourceSearchActive = false;
+                RestorePageBeforeSearch();
+            }
+        }
+
+        private void RestorePageBeforeSearch()
+        {
+            string restore = pageBeforeResourceSearch;
+            pageBeforeResourceSearch = "";
+            if (status != null) status.Text = statusBeforeResourceSearch;
+            if (!String.IsNullOrWhiteSpace(restore)) ShowPage(restore);
+            else RenderCurrentVisiblePage();
+        }
+
+        private void BuildResourceSearchIndex()
+        {
+            resourceSearchIndex.Clear();
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            foreach (KeyValuePair<string, object> pair in pages)
+            {
+                if (pair.Key.Equals("settings", StringComparison.OrdinalIgnoreCase) || pair.Key.Equals("downloads", StringComparison.OrdinalIgnoreCase)) continue;
+                Dictionary<string, object> page = AsDict(pair.Value);
+                AddResourceSearchSections(pair.Key, PageLabel(page, pair.Key), AsList(Get(page, "sections")));
+            }
+            foreach (object tabObj in AsList(Get(config, "toolbox_tabs")))
+            {
+                Dictionary<string, object> tab = AsDict(tabObj);
+                string tabName = GetText(tab, "name", GetText(tab, "title", "\u5de5\u5177\u7bb1"));
+                AddResourceSearchSections("toolbox", tabName, AsList(Get(tab, "sections")));
+            }
+        }
+
+        private void AddResourceSearchSections(string pageId, string pageTitle, IList<object> sections)
+        {
+            foreach (object sectionObj in sections)
+            {
+                Dictionary<string, object> section = AsDict(sectionObj);
+                string sectionTitle = GetText(section, "title", "");
+                AddResourceSearchItems(pageId, pageTitle, sectionTitle, AsList(Get(section, "buttons")));
+                AddResourceSearchItems(pageId, pageTitle, sectionTitle, AsList(Get(section, "links")));
+            }
+        }
+
+        private void AddResourceSearchItems(string pageId, string pageTitle, string sectionTitle, IList<object> items)
+        {
+            foreach (object itemObj in items)
+            {
+                Dictionary<string, object> source = AsDict(itemObj);
+                if (source.Count == 0) continue;
+                Dictionary<string, object> item = new Dictionary<string, object>(source);
+                item["__search_page_id"] = pageId;
+                item["__search_page_title"] = pageTitle;
+                item["__search_section_title"] = sectionTitle;
+                string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
+                string target = GetTarget(item, action);
+                string name = GetText(item, "name", GetText(item, "title", "\u672a\u547d\u540d"));
+                if (!Has(item, "name")) item["name"] = name;
+                StringBuilder searchable = new StringBuilder();
+                foreach (string value in new string[] { name, pageTitle, sectionTitle, action, SafeSearchField(item, "subtitle"), SafeSearchField(item, "description"), SafeSearchField(item, "keywords"), SafeSearchField(item, "url"), SafeSearchField(item, "download_url"), SearchFileName(target) })
+                    if (!String.IsNullOrWhiteSpace(value)) searchable.Append(value.Trim()).Append('\n');
+                resourceSearchIndex.Add(new ResourceSearchEntry { Item = item, PageId = pageId, PageTitle = pageTitle, SectionTitle = sectionTitle, Name = name, Action = action, SearchText = searchable.ToString(), Sort = IntValue(item, "sort", 0) });
+            }
+        }
+
+        private static string SafeSearchField(Dictionary<string, object> item, string key)
+        {
+            object value = Get(item, key);
+            string text = value as string;
+            if (text != null) return text.Trim();
+            IList list = value as IList;
+            if (list == null) return "";
+            StringBuilder joined = new StringBuilder();
+            foreach (object part in list)
+            {
+                string scalar = part as string;
+                if (!String.IsNullOrWhiteSpace(scalar)) joined.Append(scalar.Trim()).Append(' ');
+            }
+            return joined.ToString().Trim();
+        }
+
+        private static string SearchFileName(string target)
+        {
+            try
+            {
+                Uri uri;
+                string path = Uri.TryCreate(target, UriKind.Absolute, out uri) ? uri.AbsolutePath : target;
+                return Path.GetFileName(path ?? "");
+            }
+            catch { return ""; }
+        }
+
+        private void RenderResourceSearchResults()
+        {
+            if (content == null || !BeginContentRender()) return;
+            try
+            {
+                content.SuspendLayout();
+                ClearChildControls(content);
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                int available = Math.Max(300, content.ClientSize.Width - content.Padding.Left - content.Padding.Right - SystemInformation.VerticalScrollBarWidth - 12);
+                FlowLayoutPanel heading = new FlowLayoutPanel { Width = available, Height = 42, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
+                Button back = new Button { Width = 64, Height = 30, FlatStyle = FlatStyle.Flat, Text = PortalText("\u8fd4\u56de", "Back"), ForeColor = TextColor, BackColor = PanelBg };
+                back.FlatAppearance.BorderColor = Line;
+                back.Click += delegate { ClearResourceSearch(); };
+                Label summary = new Label { AutoSize = false, Width = Math.Max(180, available - 78), Height = 34, TextAlign = ContentAlignment.MiddleLeft, ForeColor = TextColor, Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold), Text = PortalText("\u641c\u7d22\u7ed3\u679c", "Search Results") + "  \"" + resourceSearchQuery + "\"  " + PortalText("\u5171 " + resourceSearchResults.Count + " \u4e2a", resourceSearchResults.Count + " found") };
+                heading.Controls.Add(back);
+                heading.Controls.Add(summary);
+                content.Controls.Add(heading);
+                if (resourceSearchResults.Count == 0)
+                {
+                    Panel empty = new Panel { Width = available, Height = 190, BackColor = PanelBg };
+                    SearchGlyphButton icon = new SearchGlyphButton { Left = (available - 44) / 2, Top = 28, Width = 44, Height = 44, Enabled = false, ForeColor = Muted, BackColor = PanelBg, BorderColor = Color.Transparent };
+                    Label message = new Label { Left = 10, Top = 78, Width = available - 20, Height = 54, TextAlign = ContentAlignment.MiddleCenter, ForeColor = TextColor, Text = PortalText("\u672a\u627e\u5230\u76f8\u5173\u8d44\u6e90\r\n\u8bf7\u5c1d\u8bd5\u5176\u4ed6\u5173\u952e\u8bcd", "No matching resources\r\nTry another keyword") };
+                    Button clear = new Button { Left = (available - 110) / 2, Top = 140, Width = 110, Height = 32, Text = PortalText("\u6e05\u9664\u641c\u7d22", "Clear search"), FlatStyle = FlatStyle.Flat, BackColor = Accent, ForeColor = Color.White };
+                    clear.Click += delegate { ClearResourceSearch(); };
+                    empty.Controls.Add(icon); empty.Controls.Add(message); empty.Controls.Add(clear); content.Controls.Add(empty);
+                }
+                else
+                {
+                    FlowLayoutPanel results = new FlowLayoutPanel { Width = available, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, FlowDirection = FlowDirection.LeftToRight, BackColor = Color.Transparent, Margin = Padding.Empty };
+                    for (int i = 0; i < resourceSearchResults.Count; i++) results.Controls.Add(CreateResourceSearchRow(resourceSearchResults[i], available, i));
+                    content.Controls.Add(results);
+                }
+                content.ResumeLayout();
+            }
+            finally { EndContentRender(); }
+        }
+
+        private Control CreateResourceSearchRow(ResourceSearchEntry entry, int width, int index)
+        {
+            string iconUrl = GetText(entry.Item, "icon", "");
+            Button action = new Button
+            {
+                Width = Math.Min(230, Math.Max(170, (width - 32) / Math.Max(1, Math.Min(3, width / 210)))),
+                Height = 46,
+                Margin = new Padding(0, 0, 8, 8),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = PanelBg,
+                ForeColor = TextColor,
+                Font = new Font(Font.FontFamily, 9F, FontStyle.Bold),
+                Text = entry.Name,
+                TextAlign = ContentAlignment.MiddleCenter,
+                AutoEllipsis = true,
+                Image = GetCachedButtonIcon(iconUrl),
+                ImageAlign = ContentAlignment.MiddleLeft,
+                TextImageRelation = TextImageRelation.ImageBeforeText
+            };
+            action.FlatAppearance.BorderColor = Line;
+            action.FlatAppearance.MouseOverBackColor = Blend(PanelBg, Accent, 0.08F);
+            action.Click += delegate { ExecuteResourceSearchResult(entry); };
+            string description = GetText(entry.Item, "description", GetText(entry.Item, "subtitle", ""));
+            string tip = entry.Name + "\r\n" + entry.PageTitle;
+            if (!String.IsNullOrWhiteSpace(entry.SectionTitle)) tip += " / " + entry.SectionTitle;
+            tip += "\r\n" + (portalVariant ? PortalActionLabel(entry.Action) : ActionLabel(entry.Action));
+            if (!String.IsNullOrWhiteSpace(description)) tip += "\r\n" + description;
+            if (resourceSearchToolTip != null) resourceSearchToolTip.SetToolTip(action, tip);
+            QueueButtonIconLoad(iconUrl, action);
+            return action;
+        }
+
+        private void ExecuteResourceSearchResult(ResourceSearchEntry entry)
+        {
+            if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
+            string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
+            RunAction(action, GetTarget(entry.Item, action), GetText(entry.Item, "custom_script", ""), entry.Name);
+        }
+
+        private void RunResourceItemAction(Dictionary<string, object> item, ActionInfo info)
+        {
+            string pageId = GetText(item, "__search_page_id", "");
+            if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
+            RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+        }
+
         private void AddEmptyMessage(string message)
         {
             Label empty = new Label
@@ -7193,13 +7664,13 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), Item = item }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
             };
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
             card.Click += delegate
             {
                 ActionInfo info = card.ActionInfo;
-                RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.Item);
+                RunResourceItemAction(item, info);
             };
             QueueButtonIconLoad(iconUrl, card);
             return card;
@@ -7254,9 +7725,11 @@ namespace ToolboxClient
                         TemplateActionButton templateButton = target as TemplateActionButton;
                         ActionCard actionCard = target as ActionCard;
                         TunerActionButton tunerButton = target as TunerActionButton;
+                        Button standardButton = target as Button;
                         if (templateButton != null) templateButton.IconImage = image;
                         if (actionCard != null) actionCard.IconImage = image;
                         if (tunerButton != null) tunerButton.IconImage = image;
+                        if (standardButton != null) standardButton.Image = image;
                         target.Invalidate();
                     }));
                 }
@@ -7284,6 +7757,8 @@ namespace ToolboxClient
                 request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
                 request.AllowAutoRedirect = true;
                 request.KeepAlive = false;
+                try { Uri imageUri = new Uri(url); request.Referer = imageUri.GetLeftPart(UriPartial.Authority) + "/"; }
+                catch { }
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
                 using (Image original = Image.FromStream(stream))
@@ -7346,23 +7821,17 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target, string customScript, string name, Dictionary<string, object> item = null)
+        private void RunAction(string action, string target, string customScript, string name)
         {
             try
             {
-                if (item != null && GetText(item, "id", "").Equals("client_update_download", StringComparison.OrdinalIgnoreCase))
-                {
-                    OpenUpdateTarget(target);
-                    return;
-                }
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
                 if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(customScript))
                 {
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download" && item != null && GetText(item, "download_mode", "") == "multiple") DownloadPackage(item, name);
-                else if (action == "download") DownloadFile(ResolveServerUrl(target), name);
+                if (action == "download") DownloadFile(ResolveServerUrl(target), name);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -7378,10 +7847,7 @@ namespace ToolboxClient
         {
             if (String.IsNullOrWhiteSpace(value) || !value.StartsWith("/")) return value;
             Uri configUri;
-            if (Uri.TryCreate(configUrl, UriKind.Absolute, out configUri))
-            {
-                return configUri.GetLeftPart(UriPartial.Authority) + value;
-            }
+            if (Uri.TryCreate(configUrl, UriKind.Absolute, out configUri)) return configUri.GetLeftPart(UriPartial.Authority) + value;
             return value;
         }
 
@@ -7389,132 +7855,6 @@ namespace ToolboxClient
         {
             if (String.IsNullOrWhiteSpace(target)) return;
             Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-        }
-
-        private void OpenUpdateTarget(string target)
-        {
-            if (IsDirectExeUrl(target))
-            {
-                DownloadAndReplaceCurrentExe(target);
-                return;
-            }
-            Open(target);
-            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
-        }
-
-        private static bool IsDirectExeUrl(string target)
-        {
-            Uri uri;
-            if (!Uri.TryCreate((target ?? "").Trim(), UriKind.Absolute, out uri)) return false;
-            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
-            string path = Uri.UnescapeDataString(uri.AbsolutePath ?? "");
-            return path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void DownloadAndReplaceCurrentExe(string url)
-        {
-            if (selfUpdateDownloading) return;
-            selfUpdateDownloading = true;
-            string currentExe = Application.ExecutablePath;
-            string tempExe = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".exe");
-            status.Text = "正在下载工具箱更新...";
-            Form updateWindow = new Form();
-            updateWindow.Text = "工具箱更新";
-            updateWindow.FormBorderStyle = FormBorderStyle.FixedDialog;
-            updateWindow.StartPosition = FormStartPosition.CenterParent;
-            updateWindow.ClientSize = new Size(430, 132);
-            updateWindow.MaximizeBox = false;
-            updateWindow.MinimizeBox = false;
-            updateWindow.ControlBox = false;
-            Label updateTitle = new Label { Text = "正在下载最新版工具箱", Left = 20, Top = 18, Width = 390, Height = 24, Font = new Font(Font.FontFamily, 11F, FontStyle.Bold) };
-            ProgressBar updateProgress = new ProgressBar { Left = 20, Top = 54, Width = 390, Height = 22, Minimum = 0, Maximum = 100, Value = 0 };
-            Label updateDetail = new Label { Text = "正在连接下载服务器...", Left = 20, Top = 88, Width = 390, Height = 22 };
-            updateWindow.Controls.Add(updateTitle);
-            updateWindow.Controls.Add(updateProgress);
-            updateWindow.Controls.Add(updateDetail);
-            updateWindow.Show(this);
-            WebClient client = new WebClient();
-            client.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 ToolboxUpdater/1.0";
-            client.DownloadProgressChanged += delegate(object sender, DownloadProgressChangedEventArgs e)
-            {
-                BeginInvoke(new Action(delegate
-                {
-                    int percent = Math.Max(0, Math.Min(100, e.ProgressPercentage));
-                    status.Text = "正在下载工具箱更新 " + percent + "%";
-                    updateProgress.Value = percent;
-                    updateDetail.Text = FormatUpdateBytes(e.BytesReceived) + " / " + FormatUpdateBytes(e.TotalBytesToReceive) + "  (" + percent + "%)";
-                }));
-            };
-            client.DownloadFileCompleted += delegate(object sender, AsyncCompletedEventArgs e)
-            {
-                BeginInvoke(new Action(delegate
-                {
-                    selfUpdateDownloading = false;
-                    client.Dispose();
-                    updateWindow.Close();
-                    if (e.Cancelled || e.Error != null)
-                    {
-                        updatePromptShown = false;
-                        TryDeleteFile(tempExe);
-                        MessageBox.Show("更新下载失败：" + (e.Error == null ? "下载已取消" : e.Error.Message), "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    if (!IsWindowsExecutable(tempExe))
-                    {
-                        updatePromptShown = false;
-                        TryDeleteFile(tempExe);
-                        MessageBox.Show("更新地址返回的不是有效 Windows EXE，请检查直链。", "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    LaunchSelfUpdater(tempExe, currentExe);
-                }));
-            };
-            try { client.DownloadFileAsync(new Uri(url), tempExe); }
-            catch (Exception ex)
-            {
-                selfUpdateDownloading = false;
-                updatePromptShown = false;
-                client.Dispose();
-                updateWindow.Close();
-                TryDeleteFile(tempExe);
-                MessageBox.Show("更新下载失败：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        private static string FormatUpdateBytes(long value)
-        {
-            if (value < 0) return "未知大小";
-            if (value >= 1024L * 1024L * 1024L) return (value / (1024d * 1024d * 1024d)).ToString("0.00") + " GB";
-            if (value >= 1024L * 1024L) return (value / (1024d * 1024d)).ToString("0.00") + " MB";
-            if (value >= 1024L) return (value / 1024d).ToString("0.0") + " KB";
-            return value + " B";
-        }
-
-        private static bool IsWindowsExecutable(string path)
-        {
-            try
-            {
-                using (FileStream stream = File.OpenRead(path)) return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z';
-            }
-            catch { return false; }
-        }
-
-        private static void TryDeleteFile(string path)
-        {
-            try { if (File.Exists(path)) File.Delete(path); } catch { }
-        }
-
-        private void LaunchSelfUpdater(string downloadedExe, string currentExe)
-        {
-            string script = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".cmd");
-            string body = "@echo off\r\nsetlocal\r\nset /a tries=0\r\n:retry\r\nset /a tries+=1\r\ncopy /Y \"" + downloadedExe + "\" \"" + currentExe + "\" >nul 2>&1\r\nif not errorlevel 1 goto done\r\nif %tries% GEQ 120 goto failed\r\nping 127.0.0.1 -n 2 >nul\r\ngoto retry\r\n:done\r\ndel /F /Q \"" + downloadedExe + "\" >nul 2>&1\r\nstart \"\" \"" + currentExe + "\"\r\ndel \"%~f0\"\r\nexit /b 0\r\n:failed\r\nstart \"\" explorer.exe /select,\"" + downloadedExe + "\"\r\nexit /b 1\r\n";
-            File.WriteAllText(script, body, Encoding.Default);
-            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"");
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            Process.Start(psi);
-            Close();
-            Application.Exit();
         }
 
         private void RunCommand(string command, bool hidden)
@@ -7726,130 +8066,26 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName)
         {
-            DownloadFile(url, displayName, "", "", null, false);
-        }
-
-        private bool EnforceUpdatePolicy(Dictionary<string, object> app)
-        {
-            string updateUrl = GetText(app, "update_url", GetText(app, "client_update_url", "")).Trim();
-            string minimum = GetText(app, "update_min_version", "").Trim();
-            string latest = GetText(app, "version", "").Trim();
-            Version configuredMinimum;
-            Version configuredLatest;
-            bool hasMinimum = TryParseVersion(minimum, out configuredMinimum);
-            bool hasLatest = TryParseVersion(latest, out configuredLatest);
-            Version required = hasMinimum && (!hasLatest || configuredMinimum.CompareTo(configuredLatest) > 0) ? configuredMinimum : configuredLatest;
-            Version current;
-            if (!TryParseVersion(Program.ClientAppVersion, out current)) current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
-            bool force = BoolValue(app, "update_force", false);
-            if (String.IsNullOrWhiteSpace(updateUrl) || (!hasMinimum && !hasLatest) || current.CompareTo(required) >= 0) return false;
-            if (updatePromptShown) return force;
-            updatePromptShown = true;
-            string titleText = GetText(app, "update_title", "工具箱更新").Trim();
-            string message = force
-                ? "当前版本 " + DisplayVersion(current) + " 已停止使用，必须更新到 " + DisplayVersion(required) + " 或更高版本。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。"
-                : "发现新版本 " + DisplayVersion(required) + "，当前版本为 " + DisplayVersion(current) + "。\r\n\r\n点击“是”立即更新；点击“否”继续使用当前版本。";
-            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, force ? MessageBoxButtons.OKCancel : MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-            bool accepted = force ? result == DialogResult.OK : result == DialogResult.Yes;
-            if (accepted)
-            {
-                try
-                {
-                    OpenUpdateTarget(updateUrl);
-                    if (IsDirectExeUrl(updateUrl)) return true;
-                }
-                catch (Exception ex) { MessageBox.Show("无法打开更新地址：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-            }
-            if (!force) return false;
-            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
-            return true;
-        }
-
-        private static bool TryParseVersion(string value, out Version version)
-        {
-            version = null;
-            string text = (value ?? "").Trim();
-            if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase)) text = text.Substring(1);
-            Match match = Regex.Match(text, @"\d+(?:\.\d+){0,3}");
-            if (!match.Success) return false;
-            string normalized = match.Value.IndexOf('.') >= 0 ? match.Value : match.Value + ".0";
-            return Version.TryParse(normalized, out version);
-        }
-
-        private static string DisplayVersion(Version version)
-        {
-            if (version == null) return "0.0";
-            if (version.Revision > 0) return version.ToString(4);
-            if (version.Build > 0) return version.ToString(3);
-            return version.ToString(2);
-        }
-
-        private void DownloadPackage(Dictionary<string, object> item, string displayName)
-        {
-            List<Dictionary<string, object>> files = new List<Dictionary<string, object>>();
-            foreach (object raw in AsList(Get(item, "files"))) { Dictionary<string, object> file = AsDict(raw); if (!String.IsNullOrWhiteSpace(GetText(file, "url", ""))) files.Add(file); }
-            if (files.Count < 2) { DownloadFile(GetTarget(item, "download"), displayName); return; }
-            string packageName = SafeDownloadFileName(GetText(item, "package_name", displayName));
-            if (String.IsNullOrWhiteSpace(packageName)) packageName = "download-package";
-            string directory = Path.Combine(GetDownloadDirectory(), packageName);
-            Directory.CreateDirectory(directory);
-            DownloadBatch batch = new DownloadBatch { Name = displayName, Directory = directory, Remaining = files.Count };
-            foreach (Dictionary<string, object> file in files) {
-                string configuredName = GetText(file, "name", "").Trim();
-                string fileName = String.IsNullOrWhiteSpace(configuredName) ? "" : SafeDownloadFileName(configuredName);
-                bool primary = BoolValue(file, "primary", false);
-                DownloadFile(GetText(file, "url", ""), displayName, fileName, directory, batch, primary);
-            }
-            status.Text = PortalText("已加入多文件下载：", "Package queued: ") + displayName + " (" + files.Count + ")";
-        }
-
-        private void DownloadFile(string url, string displayName, string desiredName, string directory, DownloadBatch batch, bool batchPrimary)
-        {
             string originalUrl = (url ?? "").Trim();
-            if (String.IsNullOrWhiteSpace(originalUrl)) { CompleteBatchFile(batch, false); return; }
+            if (String.IsNullOrWhiteSpace(originalUrl)) return;
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, desiredName, directory, batch, batchPrimary); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string desiredName = "", string directory = "", DownloadBatch batch = null, bool batchPrimary = false)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
-            result.Batch = batch;
-            result.BatchPrimary = batchPrimary;
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
-                    string resolvedName = String.IsNullOrWhiteSpace(desiredName) ? result.Download.FileName : desiredName;
-                    if (batch != null && String.IsNullOrWhiteSpace(desiredName))
-                    {
-                        string urlName = FileNameFromUrl(originalUrl);
-                        if (IsUsefulDownloadFileName(urlName) && !String.IsNullOrWhiteSpace(Path.GetExtension(urlName))) resolvedName = urlName;
-                    }
-                    result.FileName = SafeDownloadFileName(resolvedName);
-                    string dir = String.IsNullOrWhiteSpace(directory) ? GetDownloadDirectory() : directory;
+                    result.FileName = SafeDownloadFileName(result.Download.FileName);
+                    string dir = GetDownloadDirectory();
                     Directory.CreateDirectory(dir);
                     result.Path = Path.Combine(dir, result.FileName);
-                    if (batch != null)
-                    {
-                        lock (batch)
-                        {
-                            string basePath = result.Path;
-                            string stem = Path.GetFileNameWithoutExtension(basePath);
-                            string extension = Path.GetExtension(basePath);
-                            int suffix = 2;
-                            while (batch.ReservedPaths.Contains(result.Path))
-                            {
-                                result.Path = Path.Combine(dir, stem + " (" + suffix++ + ")" + extension);
-                            }
-                            batch.ReservedPaths.Add(result.Path);
-                            result.FileName = Path.GetFileName(result.Path);
-                            if (batchPrimary) batch.PrimaryPath = result.Path;
-                        }
-                    }
                     result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
                 }
             }
@@ -7872,7 +8108,6 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
-                CompleteBatchFile(result.Batch, false);
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
@@ -7880,14 +8115,12 @@ namespace ToolboxClient
             DownloadRequest download = result.Download;
             if (download == null)
             {
-                CompleteBatchFile(result.Batch, false);
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
             if (download.BrowserOnly)
             {
-                CompleteBatchFile(result.Batch, false);
                 DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
@@ -7909,17 +8142,14 @@ namespace ToolboxClient
             DownloadRecord existingRecord = result.ExistingRecord;
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
-                string launchStatus = result.Batch == null ? LaunchDownloadedFile(existingRecord.SavedPath) : PortalText("文件已存在", "File already exists");
+                string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
                 status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
-                CompleteBatchFile(result.Batch, true);
                 FillDownloadRecords();
                 return;
             }
             DownloadTask existingTask = FindActiveDownload(result.OriginalUrl, path);
             if (existingTask == null) existingTask = FindActiveDownload(download.Url, path);
-            // Package files often share a long base name (setup.exe, setup_01.pak, ...).
-            // Fuzzy name matching would incorrectly collapse them into one task.
-            if (existingTask == null && result.Batch == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
+            if (existingTask == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
             if (existingTask != null)
             {
                 ResumeMatchedDownloadTask(existingTask);
@@ -7927,8 +8157,6 @@ namespace ToolboxClient
             }
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
-            task.Batch = result.Batch;
-            task.BatchPrimary = result.BatchPrimary;
             task.BrowserUrl = download.BrowserUrl;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
@@ -8689,20 +8917,8 @@ namespace ToolboxClient
                 throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
             }
 
+            EnsureDownloadDriveSpace(task, plan.TotalLength);
             DownloadFileSegmented(task, plan, attempt);
-        }
-
-        private void CompleteBatchFile(DownloadBatch batch, bool success)
-        {
-            if (batch == null) return;
-            bool complete;
-            lock (batch) { if (!success) batch.Failed = true; if (batch.Remaining > 0) batch.Remaining--; complete = batch.Remaining == 0; }
-            if (!complete) return;
-            if (!batch.Failed && !String.IsNullOrWhiteSpace(batch.PrimaryPath) && File.Exists(batch.PrimaryPath)) {
-                string launchStatus = LaunchDownloadedFile(batch.PrimaryPath);
-                status.Text = PortalText("多文件安装包已下载完成：", "Package download complete: ") + batch.Name + " - " + launchStatus;
-            } else if (batch.Failed) status.Text = PortalText("安装包有文件下载失败，已保留完成的文件。", "Some package files failed; completed files were kept.");
-            else status.Text = PortalText("安装包已下载完成，但未找到主程序。", "Package downloaded, but the primary file was not found.");
         }
 
         private bool TryCreateSegmentedDownloadPlan(DownloadTask task, out SegmentedDownloadPlan plan)
@@ -9261,7 +9477,6 @@ namespace ToolboxClient
 
             if (cancelled)
             {
-                CompleteBatchFile(task.Batch, false);
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
                 string cancelMessage = task.Segmented ? "已取消分片下载，临时文件已清理，下次点击会重新开始下载。" : "已保留未完成文件，下次点击会继续下载。";
@@ -9277,18 +9492,16 @@ namespace ToolboxClient
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
                 UpdateActiveDownloadTask(task);
-                string launchStatus = task.Batch == null ? LaunchDownloadedFile(task.Path) : PortalText("下载完成", "Complete");
+                string launchStatus = LaunchDownloadedFile(task.Path);
                 status.Text = launchStatus + "：" + task.FileName;
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
                 RemoveActiveDownload(task);
-                CompleteBatchFile(task.Batch, true);
                 FillDownloadRecords();
                 StartQueuedDownloads();
                 return;
             }
 
             CleanupSegmentedPart(task);
-            CompleteBatchFile(task.Batch, false);
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
             AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。");
             RemoveActiveDownload(task);
@@ -9543,8 +9756,94 @@ namespace ToolboxClient
             string brand = GetText(AsDict(Get(config, "app")), "title", "工具箱").Trim();
             if (String.IsNullOrWhiteSpace(brand)) brand = "工具箱";
             brand = SafeFolderName(brand);
-            string driveRoot = Directory.Exists(@"D:\") ? @"D:\" : @"C:\";
+            List<DriveInfo> drives = ReadyDownloadDrives();
+            string driveRoot = drives.Count > 0 ? drives[drives.Count - 1].RootDirectory.FullName : Path.GetPathRoot(Environment.SystemDirectory);
             return Path.Combine(driveRoot, brand);
+        }
+
+        private static List<DriveInfo> ReadyDownloadDrives()
+        {
+            List<DriveInfo> drives = new List<DriveInfo>();
+            try
+            {
+                foreach (DriveInfo drive in DriveInfo.GetDrives())
+                {
+                    try
+                    {
+                        if (drive.IsReady && (drive.DriveType == DriveType.Fixed || drive.DriveType == DriveType.Removable)) drives.Add(drive);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            drives.Sort(delegate(DriveInfo a, DriveInfo b) { return StringComparer.OrdinalIgnoreCase.Compare(a.Name, b.Name); });
+            return drives;
+        }
+
+        private void EnsureDownloadDriveSpace(DownloadTask task, long totalLength)
+        {
+            if (task == null || totalLength <= 0 || String.IsNullOrWhiteSpace(task.Path)) return;
+            string currentRoot = Path.GetPathRoot(task.Path);
+            if (String.IsNullOrWhiteSpace(currentRoot)) return;
+
+            long remaining = Math.Max(0, totalLength - Math.Max(0, task.Received));
+            long required = remaining > Int64.MaxValue - 64L * 1024L * 1024L ? Int64.MaxValue : remaining + 64L * 1024L * 1024L;
+            List<DriveInfo> drives = ReadyDownloadDrives();
+            int currentIndex = drives.FindIndex(delegate(DriveInfo drive) { return drive.Name.Equals(currentRoot, StringComparison.OrdinalIgnoreCase); });
+            if (currentIndex < 0) return;
+            try { if (drives[currentIndex].AvailableFreeSpace >= required) return; } catch { }
+
+            DriveInfo target = null;
+            for (int index = currentIndex - 1; index >= 0; index--)
+            {
+                try
+                {
+                    if (drives[index].AvailableFreeSpace >= required)
+                    {
+                        target = drives[index];
+                        break;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            if (target == null) throw new IOException("当前盘及前面的磁盘空间均不足，至少需要 " + FormatBytes(required) + " 可用空间。");
+
+            string oldPath = task.Path;
+            string oldPartPath = task.PartPath;
+            string oldDirectory = Path.GetDirectoryName(oldPath) ?? "";
+            string folderName = new DirectoryInfo(oldDirectory).Name;
+            if (String.IsNullOrWhiteSpace(folderName)) folderName = SafeFolderName(GetText(AsDict(Get(config, "app")), "title", "工具箱"));
+            string newDirectory = Path.Combine(target.RootDirectory.FullName, folderName);
+            string newPath = Path.Combine(newDirectory, task.FileName);
+            string newPartPath = newPath + ".part";
+            Directory.CreateDirectory(newDirectory);
+
+            if (!String.IsNullOrWhiteSpace(oldPartPath) && File.Exists(oldPartPath))
+            {
+                if (File.Exists(newPartPath)) File.Delete(newPartPath);
+                File.Move(oldPartPath, newPartPath);
+            }
+            task.Path = newPath;
+            task.PartPath = File.Exists(newPartPath) ? newPartPath : "";
+            task.StateText = "磁盘空间不足，已从 " + currentRoot.TrimEnd('\\') + " 切换到 " + target.Name.TrimEnd('\\');
+            ClientSettings settings = LoadClientSettings();
+            settings.DownloadDirectory = newDirectory;
+            SaveClientSettings(settings);
+            QueueDownloadTaskRowUpdate(task);
+            SavePausedDownloadTasks();
+
+            string message = "下载盘空间不足，已自动从 " + currentRoot.TrimEnd('\\') + " 切换到 " + target.Name.TrimEnd('\\') + "。\r\n新路径：" + newDirectory;
+            BeginInvokeIfReady(delegate
+            {
+                status.Text = message.Replace("\r\n", " ");
+                MessageBox.Show(message, "下载磁盘已切换", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            });
         }
 
         private static string SafeFolderName(string name)
@@ -9763,6 +10062,7 @@ namespace ToolboxClient
             SaveClientSettings(settings);
             ApplyStudioPalette(nextDark);
             ApplyStudioThemeToShell();
+            ApplyResourceSearchTheme();
             BuildNav();
             if (currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase)) RenderStudioSettingsPage();
             else if (currentPage.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) RenderStudioOverviewPage();
@@ -9781,6 +10081,7 @@ namespace ToolboxClient
             string pageBeforeThemeChange = currentPage;
             ApplyTunerPalette(nextDark);
             ApplyTunerThemeToShell();
+            ApplyResourceSearchTheme();
             currentPage = String.IsNullOrWhiteSpace(pageBeforeThemeChange) ? TunerHomePageId : pageBeforeThemeChange;
             MarkNavButtonActive(currentPage);
             UpdateTunerChromeButtons();
@@ -9831,13 +10132,23 @@ namespace ToolboxClient
             if (downloadTasksButton != null) downloadTasksButton.Invalidate();
             if (recordsButton != null) recordsButton.Invalidate();
             if (contactButton != null) contactButton.Invalidate();
+            if (resourceSearchButton != null)
+            {
+                resourceSearchButton.BackColor = Color.Transparent;
+                resourceSearchButton.ForeColor = TextColor;
+                resourceSearchButton.FlatAppearance.BorderSize = 0;
+                resourceSearchButton.FlatAppearance.BorderColor = Color.Transparent;
+                resourceSearchButton.FlatAppearance.MouseOverBackColor = Color.Transparent;
+                resourceSearchButton.FlatAppearance.MouseDownBackColor = Color.Transparent;
+                resourceSearchButton.Invalidate();
+            }
         }
 
         private void UpdateTunerChromeButtons()
         {
             if (!tunerVariant) return;
             UpdateDownloadBadges();
-            Button[] buttons = new Button[] { downloadTasksButton, recordsButton, topMostButton, contactButton, themeButton };
+            Button[] buttons = new Button[] { downloadTasksButton, recordsButton, topMostButton, contactButton, themeButton, resourceSearchButton };
             foreach (Button button in buttons)
             {
                 if (button == null) continue;
@@ -12609,6 +12920,28 @@ namespace ToolboxClient
             {
                 // The normal background refresh reports malformed or unavailable config.
             }
+            LayoutResourceSearchChrome();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.F) && IsOrdinaryResourcePage())
+            {
+                ShowResourceSearch();
+                return true;
+            }
+            if (keyData == Keys.Escape && resourceSearchVisible)
+            {
+                if (!String.IsNullOrWhiteSpace(resourceSearchBox == null ? "" : resourceSearchBox.Text)) ClearResourceSearch();
+                else HideResourceSearch();
+                return true;
+            }
+            if (keyData == Keys.Enter && resourceSearchActive && resourceSearchResults.Count > 0)
+            {
+                ExecuteResourceSearchResult(resourceSearchResults[0]);
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         private void EnsureConfigResponse(string json)
@@ -13365,6 +13698,13 @@ namespace ToolboxClient
                     pen.EndCap = LineCap.Round;
                     pen.LineJoin = LineJoin.Round;
                     string value = (key ?? "").ToLowerInvariant();
+                    if (value == "search")
+                    {
+                        Rectangle ring = new Rectangle(box.Left + 2, box.Top + 1, 8, 8);
+                        g.DrawEllipse(pen, ring);
+                        g.DrawLine(pen, ring.Right - 1, ring.Bottom - 1, ring.Right + 3, ring.Bottom + 3);
+                        return;
+                    }
                     if (value == "trash")
                     {
                         g.DrawLine(pen, box.Left + 2, box.Top + 3, box.Right - 2, box.Top + 3);
@@ -13520,7 +13860,7 @@ namespace ToolboxClient
 
             public StudioChromeButton()
             {
-                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
                 Cursor = Cursors.Hand;
                 FlatStyle = FlatStyle.Flat;
                 FlatAppearance.BorderSize = 0;
@@ -13544,8 +13884,15 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                e.Graphics.Clear(EffectiveBackColor(Parent));
-                using (SolidBrush clear = new SolidBrush(EffectiveBackColor(Parent)))
+                bool searchIcon = String.Equals(IconKey, "search", StringComparison.OrdinalIgnoreCase);
+                if (searchIcon)
+                {
+                    DrawIcon(e.Graphics);
+                    return;
+                }
+                Color chromeBack = EffectiveBackColor(Parent);
+                e.Graphics.Clear(chromeBack);
+                using (SolidBrush clear = new SolidBrush(chromeBack))
                 {
                     e.Graphics.FillRectangle(clear, ClientRectangle);
                 }
@@ -13592,6 +13939,16 @@ namespace ToolboxClient
                 Rectangle box = new Rectangle(5, 5, Width - 10, Height - 10);
                 switch ((IconKey ?? "").ToLowerInvariant())
                 {
+                    case "search":
+                        using (Pen pen = new Pen(icon, 1.6F))
+                        {
+                            pen.StartCap = LineCap.Round;
+                            pen.EndCap = LineCap.Round;
+                            Rectangle ring = new Rectangle(box.Left + 3, box.Top + 2, 9, 9);
+                            g.DrawEllipse(pen, ring);
+                            g.DrawLine(pen, ring.Right - 1, ring.Bottom - 1, ring.Right + 4, ring.Bottom + 4);
+                        }
+                        break;
                     case "downloads":
                         using (Pen pen = new Pen(icon, 1.65F))
                         {
@@ -14046,7 +14403,6 @@ namespace ToolboxClient
             public string Target;
             public string CustomScript;
             public string Name;
-            public Dictionary<string, object> Item;
         }
 
         private sealed class SoftwareCatalogEntry
@@ -14357,6 +14713,95 @@ namespace ToolboxClient
             }
         }
 
+        private sealed class ResourceSearchEntry
+        {
+            public Dictionary<string, object> Item;
+            public string PageId = "";
+            public string PageTitle = "";
+            public string SectionTitle = "";
+            public string Name = "";
+            public string Action = "";
+            public string SearchText = "";
+            public int Sort;
+        }
+
+        private sealed class SearchGlyphButton : Button
+        {
+            public bool IsCloseGlyph;
+            public Color BorderColor = Color.Transparent;
+            public string ChromeVariant = "";
+
+            public SearchGlyphButton()
+            {
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+                Cursor = Cursors.Hand;
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                bool iconOnly = String.Equals(Convert.ToString(Tag), "resource_search_icon_only", StringComparison.Ordinal);
+                if (iconOnly)
+                {
+                    e.Graphics.Clear(EffectiveBackColor(Parent));
+                    using (Pen iconPen = new Pen(ForeColor, 1.5F))
+                    {
+                        iconPen.StartCap = LineCap.Round;
+                        iconPen.EndCap = LineCap.Round;
+                        Rectangle iconRing = new Rectangle(Width / 2 - 6, Height / 2 - 7, 9, 9);
+                        e.Graphics.DrawEllipse(iconPen, iconRing);
+                        e.Graphics.DrawLine(iconPen, iconRing.Right - 1, iconRing.Bottom - 1, iconRing.Right + 4, iconRing.Bottom + 4);
+                    }
+                    return;
+                }
+                bool hovered = !iconOnly && Enabled && ClientRectangle.Contains(PointToClient(Cursor.Position));
+                if (ChromeVariant == "studio" || ChromeVariant == "tuner")
+                {
+                    Color chromeBack = EffectiveBackColor(Parent);
+                    e.Graphics.Clear(chromeBack);
+                    if (hovered)
+                    {
+                        Rectangle hoverRect = ChromeVariant == "studio"
+                            ? new Rectangle(1, 1, Width - 3, Height - 3)
+                            : new Rectangle(2, 2, Width - 5, Height - 5);
+                        int radius = ChromeVariant == "studio" ? 5 : 4;
+                        Color hoverBack = ChromeVariant == "studio"
+                            ? (LightTheme ? Color.FromArgb(240, 244, 249) : Color.FromArgb(42, 51, 63))
+                            : (LightTheme ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76));
+                        using (GraphicsPath path = UiRoundRect(hoverRect, radius))
+                        using (SolidBrush brush = new SolidBrush(hoverBack)) e.Graphics.FillPath(brush, path);
+                    }
+                }
+                else
+                {
+                    Color fill = BackColor;
+                    if (hovered) fill = Blend(BackColor, ForeColor, MouseButtons == MouseButtons.Left ? 0.18F : 0.10F);
+                    using (SolidBrush brush = new SolidBrush(fill)) e.Graphics.FillRectangle(brush, ClientRectangle);
+                }
+                if (BorderColor.A > 0) using (Pen border = new Pen(BorderColor)) e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+                float lineWidth = ChromeVariant == "tuner" ? 1.35F : (ChromeVariant == "studio" ? 1.6F : 1.5F);
+                using (Pen pen = new Pen(ForeColor, lineWidth))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    if (IsCloseGlyph)
+                    {
+                        int size = 6;
+                        e.Graphics.DrawLine(pen, Width / 2 - size, Height / 2 - size, Width / 2 + size, Height / 2 + size);
+                        e.Graphics.DrawLine(pen, Width / 2 + size, Height / 2 - size, Width / 2 - size, Height / 2 + size);
+                    }
+                    else
+                    {
+                        Rectangle ring = new Rectangle(Width / 2 - 6, Height / 2 - 7, 9, 9);
+                        e.Graphics.DrawEllipse(pen, ring);
+                        e.Graphics.DrawLine(pen, ring.Right - 1, ring.Bottom - 1, ring.Right + 4, ring.Bottom + 4);
+                    }
+                }
+            }
+        }
+
         internal sealed class ThemeOption
         {
             public readonly string Value;
@@ -14471,18 +14916,6 @@ namespace ToolboxClient
             public string Path = "";
             public DownloadRecord ExistingRecord;
             public Exception Error;
-            public DownloadBatch Batch;
-            public bool BatchPrimary;
-        }
-
-        private sealed class DownloadBatch
-        {
-            public string Name = "";
-            public string Directory = "";
-            public string PrimaryPath = "";
-            public int Remaining;
-            public bool Failed;
-            public readonly HashSet<string> ReservedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         private sealed class CommandRunResult
@@ -14553,8 +14986,6 @@ namespace ToolboxClient
             public volatile string LastResolvedUrl = "";
             public volatile string Referer = "";
             public volatile bool RestoredPaused;
-            public DownloadBatch Batch;
-            public bool BatchPrimary;
             public int WorkerRunning;
             public long Received;
             public long Total = -1;
