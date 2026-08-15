@@ -10126,12 +10126,13 @@ namespace ToolboxClient
             if (contactButton != null) contactButton.Invalidate();
             if (resourceSearchButton != null)
             {
-                resourceSearchButton.BackColor = Color.Transparent;
+                Color searchChromeBack = resourceSearchButtonHost != null ? resourceSearchButtonHost.BackColor : Bg;
+                resourceSearchButton.BackColor = searchChromeBack;
                 resourceSearchButton.ForeColor = TextColor;
                 resourceSearchButton.FlatAppearance.BorderSize = 0;
-                resourceSearchButton.FlatAppearance.BorderColor = Color.Transparent;
-                resourceSearchButton.FlatAppearance.MouseOverBackColor = Color.Transparent;
-                resourceSearchButton.FlatAppearance.MouseDownBackColor = Color.Transparent;
+                resourceSearchButton.FlatAppearance.BorderColor = searchChromeBack;
+                resourceSearchButton.FlatAppearance.MouseOverBackColor = searchChromeBack;
+                resourceSearchButton.FlatAppearance.MouseDownBackColor = searchChromeBack;
                 resourceSearchButton.Invalidate();
             }
         }
