@@ -13881,6 +13881,17 @@ namespace ToolboxClient
                 base.OnMouseLeave(e);
             }
 
+            protected override void OnPaintBackground(PaintEventArgs e)
+            {
+                if (String.Equals(IconKey, "search", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (SolidBrush background = new SolidBrush(EffectiveBackColor(Parent)))
+                        e.Graphics.FillRectangle(background, ClientRectangle);
+                    return;
+                }
+                base.OnPaintBackground(e);
+            }
+
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
