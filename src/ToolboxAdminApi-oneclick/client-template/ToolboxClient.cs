@@ -9054,7 +9054,6 @@ namespace ToolboxClient
                 throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
             }
 
-            EnsureDownloadDriveSpace(task, plan.TotalLength);
             DownloadFileSegmented(task, plan, attempt);
         }
 
