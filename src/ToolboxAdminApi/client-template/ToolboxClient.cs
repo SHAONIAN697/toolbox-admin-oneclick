@@ -131,6 +131,11 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
+        private System.Windows.Forms.Timer startupRenderTimer;
+        private readonly object startupLoadingLock = new object();
+        private Thread startupLoadingThread;
+        private StartupLoadingWindow startupLoadingWindow;
+        private bool startupLoadingCloseRequested;
         private System.Windows.Forms.Timer tunerClockTimer;
         private System.Windows.Forms.Timer studioOverviewTimer;
         private Label tunerClockLabel;
@@ -305,11 +310,79 @@ namespace ToolboxClient
             DoubleBuffered = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
             BuildShell();
+            BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
             refreshTimer.Interval = 5000;
             refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
-            Shown += delegate { LoadConfigAsync(true); refreshTimer.Start(); };
+            Shown += delegate
+            {
+                // Paint the in-app loader first; remote sources refresh in parallel.
+                ShowStartupLoadingWindow();
+                LoadConfigAsync(true);
+                LoadPopupConfigAsync(false);
+                startupRenderTimer.Start();
+                refreshTimer.Start();
+            };
+        }
+
+        private void BuildStartupOverlay()
+        {
+            startupRenderTimer = new System.Windows.Forms.Timer { Interval = 30 };
+            startupRenderTimer.Tick += delegate
+            {
+                startupRenderTimer.Stop();
+                ApplyInitialEmbeddedConfig();
+                if (configApplied) HideStartupOverlay();
+            };
+        }
+
+        private void ShowStartupLoadingWindow()
+        {
+            Rectangle bounds = Bounds;
+            Color background = BackColor;
+            Color foreground = TextColor;
+            Color accent = Accent;
+            lock (startupLoadingLock) startupLoadingCloseRequested = false;
+            startupLoadingThread = new Thread(new ThreadStart(delegate
+            {
+                StartupLoadingWindow window = new StartupLoadingWindow(bounds, background, foreground, accent);
+                lock (startupLoadingLock)
+                {
+                    if (startupLoadingCloseRequested)
+                    {
+                        window.Dispose();
+                        return;
+                    }
+                    startupLoadingWindow = window;
+                }
+                Application.Run(window);
+                lock (startupLoadingLock) startupLoadingWindow = null;
+            }));
+            startupLoadingThread.IsBackground = true;
+            startupLoadingThread.SetApartmentState(ApartmentState.STA);
+            startupLoadingThread.Start();
+        }
+
+        private void HideStartupOverlay()
+        {
+            if (startupRenderTimer != null)
+            {
+                startupRenderTimer.Stop();
+                startupRenderTimer.Dispose();
+                startupRenderTimer = null;
+            }
+            StartupLoadingWindow window = null;
+            lock (startupLoadingLock)
+            {
+                startupLoadingCloseRequested = true;
+                window = startupLoadingWindow;
+            }
+            if (window != null && !window.IsDisposed)
+            {
+                try { window.BeginInvoke(new Action(delegate { window.Close(); })); }
+                catch { }
+            }
         }
 
         private static string NormalizeConfigUrl(string url)
@@ -1141,14 +1214,16 @@ namespace ToolboxClient
             Button records = new PortalBadgeSideButton
             {
                 Dock = DockStyle.Fill,
+                Margin = new Padding(6, 2, 6, 2),
                 Text = "",
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(20, 0, 0, 0),
+                Padding = new Padding(14, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = portalSideBack,
                 ForeColor = Color.FromArgb(15, 23, 42),
                 Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
             };
+            records.FlatAppearance.BorderSize = 0;
             records.FlatAppearance.BorderColor = portalSideBack;
             records.FlatAppearance.MouseOverBackColor = Color.FromArgb(238, 242, 247);
             records.Click += delegate { ShowTemplateUtilityPage("downloads"); };
@@ -1505,14 +1580,16 @@ namespace ToolboxClient
             Button button = new Button
             {
                 Dock = DockStyle.Fill,
+                Margin = new Padding(6, 2, 6, 2),
                 Text = text,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(20, 0, 0, 0),
+                Padding = new Padding(14, 0, 0, 0),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = SideBg,
                 ForeColor = TextColor,
                 Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular)
             };
+            button.FlatAppearance.BorderSize = 0;
             button.FlatAppearance.BorderColor = SideBg;
             button.FlatAppearance.MouseOverBackColor = PortalHoverBack();
             button.FlatAppearance.MouseDownBackColor = Blend(PortalHoverBack(), Accent, 0.08);
@@ -1622,11 +1699,39 @@ namespace ToolboxClient
 
         private void ApplyAppIcon(string url, string fallbackText)
         {
-            Image image = LoadRemoteImage(url, 34, 34);
-            if (image == null)
+            string resolved = String.IsNullOrWhiteSpace(url) ? "" : ResolveAssetUrl(url);
+            string cacheKey = "34x34|" + resolved;
+            Image image = null;
+            if (!String.IsNullOrWhiteSpace(resolved))
             {
-                image = CreateBrandBadge(fallbackText);
+                lock (iconCacheLock) iconCache.TryGetValue(cacheKey, out image);
             }
+            SetAppIconImage(image ?? CreateBrandBadge(fallbackText));
+
+            if (image != null || String.IsNullOrWhiteSpace(resolved)) return;
+            lock (iconCacheLock)
+            {
+                if (failedIcons.Contains("app|" + cacheKey)) return;
+                failedIcons.Add("app|" + cacheKey);
+            }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Image remote = LoadRemoteImage(resolved, 34, 34);
+                if (remote == null) return;
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (!IsDisposed) SetAppIconImage(remote);
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        private void SetAppIconImage(Image image)
+        {
+            if (image == null || brandIcon == null || brandIcon.IsDisposed) return;
             brandIcon.Image = image;
 
             using (Bitmap iconBitmap = new Bitmap(32, 32))
@@ -1714,7 +1819,6 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                TryEnsureRuntimeIntegrity();
                 json = NormalizeConfigJson(DownloadText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N"))));
                 EnsureConfigResponse(json);
                 SaveCache(json);
@@ -1902,6 +2006,7 @@ namespace ToolboxClient
             nav.ResumeLayout();
             side.ResumeLayout();
             ResumeLayout();
+            HideStartupOverlay();
         }
 
         private void ApplyTheme(string theme)
@@ -2999,6 +3104,8 @@ namespace ToolboxClient
         private void ShowPage(string id)
         {
             if (String.IsNullOrWhiteSpace(id)) return;
+            if (recordsPanel != null) recordsPanel.Visible = false;
+            if (settingsPanel != null) settingsPanel.Visible = false;
             if (contentRendering)
             {
                 pendingPageId = id;
@@ -3745,7 +3852,15 @@ namespace ToolboxClient
             {
                 if (studioCpuCounter == null)
                 {
-                    studioCpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
+                    try
+                    {
+                        // This is the frequency-aware counter used by modern Task Manager.
+                        studioCpuCounter = new PerformanceCounter("Processor Information", "% Processor Utility", "_Total");
+                    }
+                    catch
+                    {
+                        studioCpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
+                    }
                     studioCpuCounter.NextValue();
                     studioCpuCounterReadyAt = DateTime.Now.AddMilliseconds(650);
                     return studioLastCpuValue;
@@ -3958,7 +4073,6 @@ namespace ToolboxClient
             if (!String.IsNullOrWhiteSpace(overviewIconUrl))
             {
                 Image overviewIcon = GetCachedButtonIcon(overviewIconUrl);
-                if (overviewIcon == null) overviewIcon = LoadRemoteImage(overviewIconUrl, 48, 48);
                 if (overviewIcon != null) button.IconImage = overviewIcon;
             }
             return button;
@@ -7555,7 +7669,6 @@ namespace ToolboxClient
             status.Text = PortalText("已加入下载队列：", "Queued: ") + fileName;
             if (progressPanel != null) progressPanel.Visible = false;
             UpdateDownloadBadges();
-            if (!studioVariant && !portalVariant) ShowActiveDownloadView();
             RenderActiveDownloads();
             StartQueuedDownloads();
         }
@@ -8016,7 +8129,6 @@ namespace ToolboxClient
                 status.Text = "该文件正在下载中。";
             }
             UpdateDownloadBadges();
-            if (!portalVariant) ShowActiveDownloadView();
             RenderActiveDownloads();
             return true;
         }
@@ -9490,7 +9602,7 @@ namespace ToolboxClient
             }
             if (tunerVariant)
             {
-                StudioChromeButton chrome = downloadTasksButton as StudioChromeButton;
+                TunerDownloadChromeButton chrome = downloadTasksButton as TunerDownloadChromeButton;
                 if (chrome != null)
                 {
                     chrome.BadgeText = count > 0 ? Math.Min(99, count).ToString() : "";
@@ -12195,6 +12307,25 @@ namespace ToolboxClient
             return embedded;
         }
 
+        private void ApplyInitialEmbeddedConfig()
+        {
+            if (configApplied || !String.IsNullOrWhiteSpace(lastConfigJson)) return;
+            string json = ReadUsableFallbackConfig();
+            if (String.IsNullOrWhiteSpace(json)) return;
+            try
+            {
+                config = AsDict(serializer.DeserializeObject(json));
+                lastConfigJson = json;
+                lastSyncText = "正在连接后台...";
+                status.Text = lastSyncText;
+                ApplyConfig();
+            }
+            catch
+            {
+                // The normal background refresh reports malformed or unavailable config.
+            }
+        }
+
         private void EnsureConfigResponse(string json)
         {
             json = NormalizeConfigJson(json);
@@ -14251,6 +14382,112 @@ namespace ToolboxClient
                 }
                 Interlocked.Exchange(ref StopRequested, 1);
             }
+        }
+    }
+
+    internal sealed class StartupLoadingWindow : Form
+    {
+        public StartupLoadingWindow(Rectangle bounds, Color background, Color foreground, Color accent)
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = bounds;
+            BackColor = background;
+            ShowInTaskbar = false;
+            TopMost = true;
+
+            LoadingSpinnerControl spinner = new LoadingSpinnerControl
+            {
+                Size = new Size(54, 54),
+                AccentColor = accent,
+                BackColor = Color.Transparent
+            };
+            Label loading = new Label
+            {
+                AutoSize = false,
+                Size = new Size(200, 30),
+                Text = "正在加载...",
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = foreground,
+                BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold)
+            };
+            Controls.Add(spinner);
+            Controls.Add(loading);
+            EventHandler center = delegate
+            {
+                int x = Math.Max(0, (ClientSize.Width - spinner.Width) / 2);
+                int y = Math.Max(0, (ClientSize.Height - 94) / 2);
+                spinner.Location = new Point(x, y);
+                loading.Location = new Point(Math.Max(0, (ClientSize.Width - loading.Width) / 2), y + 60);
+            };
+            Resize += center;
+            center(this, EventArgs.Empty);
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x08000000 | 0x00000080;
+                return cp;
+            }
+        }
+    }
+
+    internal sealed class LoadingSpinnerControl : Control
+    {
+        private readonly System.Windows.Forms.Timer animationTimer;
+        private int frame;
+        public Color AccentColor { get; set; }
+
+        public LoadingSpinnerControl()
+        {
+            DoubleBuffered = true;
+            AccentColor = Color.FromArgb(43, 166, 221);
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor, true);
+            animationTimer = new System.Windows.Forms.Timer { Interval = 70 };
+            animationTimer.Tick += delegate { frame = (frame + 1) % 10; Invalidate(); };
+            animationTimer.Start();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            float cx = ClientSize.Width / 2F;
+            float cy = ClientSize.Height / 2F;
+            float radius = Math.Max(8F, Math.Min(ClientSize.Width, ClientSize.Height) * 0.32F);
+            float dot = Math.Max(3F, Math.Min(ClientSize.Width, ClientSize.Height) * 0.09F);
+            for (int i = 0; i < 10; i++)
+            {
+                double angle = (Math.PI * 2D * i / 10D) - Math.PI / 2D;
+                float x = cx + (float)Math.Cos(angle) * radius - dot / 2F;
+                float y = cy + (float)Math.Sin(angle) * radius - dot / 2F;
+                int distance = (i - frame + 10) % 10;
+                int alpha = Math.Max(35, 255 - distance * 23);
+                using (SolidBrush brush = new SolidBrush(Color.FromArgb(alpha, AccentColor)))
+                {
+                    e.Graphics.FillEllipse(brush, x, y, dot, dot);
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && animationTimer != null)
+            {
+                animationTimer.Stop();
+                animationTimer.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 
