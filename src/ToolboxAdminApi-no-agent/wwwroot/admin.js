@@ -12,6 +12,10 @@
   system: null,
   templateMode: false,
   notices: [],
+  announcements: [],
+  announcementUnreadCount: 0,
+  announcementPopupItems: [],
+  announcementPopupIndex: 0,
   config: null,
   buttons: [],
   inviteCurrency: 'CNY',
@@ -185,7 +189,8 @@ const NAV_ICONS = {
   system: '⚙',
   json: '▤',
   exchange: '⇄',
-  dock: '⌘'
+  dock: '⌘',
+  announcements: '◉'
 };
 
 const VIEW_TITLES = {
@@ -196,7 +201,8 @@ const VIEW_TITLES = {
   system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
   exchange: ['配置交换', '导出、导入配置文件，或生成云端链接分享给别人。'],
-  dock: ['工具箱对接', '选择工具箱 UI 版本并下载当前用户专属 EXE。']
+  dock: ['工具箱对接', '选择工具箱 UI 版本并下载当前用户专属 EXE。'],
+  announcements: ['更新公告', '查看管理后台的功能更新、问题修复和系统通知。']
 };
 
 function setupSidebar() {
@@ -214,8 +220,9 @@ function setupSidebar() {
 
   sidebar.querySelectorAll('.nav').forEach((button) => {
     const view = button.dataset.view || '';
-    const text = button.textContent.trim();
+    const text = view === 'announcements' ? '更新公告' : button.textContent.trim();
     button.innerHTML = `<span class="nav-icon">${NAV_ICONS[view] || '•'}</span><span class="nav-text">${escapeHtml(text)}</span>`;
+    if (view === 'announcements') button.insertAdjacentHTML('beforeend', '<span id="announcementUnreadBadge" class="nav-badge" hidden>0</span>');
     button.title = text;
   });
 
@@ -574,6 +581,7 @@ async function loadAll() {
       state.users = [];
     }
     await loadNotices();
+    await loadAdminAnnouncementsSafe();
 
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
@@ -581,6 +589,7 @@ async function loadAll() {
     if (viewToRestore) switchView(viewToRestore);
     showUnreadNoticePopup();
     showToast('配置读取成功。', 'success');
+    showAdminAnnouncementPopup();
   } catch (error) {
     handleLoadFailure(error, isAuthFailure(error));
   }
@@ -775,6 +784,7 @@ function renderAll() {
   renderSystemSettings();
   renderTemplateControls();
   renderNotices();
+  renderAdminAnnouncements();
   ensureButtonsPagePanels();
   renderStats();
   renderManageControls();
@@ -4626,6 +4636,262 @@ async function reloadConfigAndButtons(message) {
   setStatus(message);
 }
 
+async function loadAdminAnnouncementsSafe() {
+  try {
+    const [list, popup] = await Promise.all([
+      api('/api/admin/announcements'),
+      api('/api/admin/announcements/unread')
+    ]);
+    state.announcements = Array.isArray(list?.announcements) ? list.announcements : [];
+    state.announcementUnreadCount = Number(list?.unreadCount || 0);
+    state.announcementPopupItems = (popup?.announcements || []).filter((item) => item.popup_enabled !== false);
+    state.announcementPopupIndex = 0;
+  } catch (error) {
+    console.warn('更新公告读取失败：', error);
+    state.announcements = [];
+    state.announcementUnreadCount = 0;
+    state.announcementPopupItems = [];
+  }
+}
+
+function ensureAdminAnnouncementView() {
+  let view = $('view-announcements');
+  if (view) return view;
+  view = document.createElement('section');
+  view.id = 'view-announcements';
+  view.className = 'view announcement-view';
+  view.innerHTML = `
+    <div class="announcement-toolbar panel">
+      <div class="announcement-heading"><h2>更新公告</h2><span id="announcementUnreadText"></span></div>
+      <div class="announcement-filters">
+        <select id="announcementStatusFilter" aria-label="状态筛选"><option value="">全部状态</option><option value="draft">草稿</option><option value="published">已发布</option><option value="withdrawn">已撤回</option></select>
+        <select id="announcementTypeFilter" aria-label="类型筛选"><option value="">全部类型</option>${['功能更新','问题修复','系统通知','重要公告','维护公告'].map((x) => `<option>${x}</option>`).join('')}</select>
+        <input id="announcementSearch" type="search" placeholder="搜索公告标题">
+        <button id="announcementReadAllBtn" type="button">全部标为已读</button>
+        <button id="announcementCreateBtn" class="super-only" type="button">新建公告</button>
+      </div>
+      <div id="announcementStats" class="announcement-stats super-only"></div>
+    </div>
+    <div id="announcementList" class="announcement-list"></div>`;
+  document.querySelector('main').appendChild(view);
+  ['announcementStatusFilter', 'announcementTypeFilter', 'announcementSearch'].forEach((id) => { $(id).oninput = renderAdminAnnouncements; });
+  $('announcementReadAllBtn').onclick = () => markAllAdminAnnouncementsRead().catch((error) => showToast(error.message, 'error'));
+  $('announcementCreateBtn').onclick = () => openAnnouncementEditor();
+  return view;
+}
+
+function announcementStatusLabel(value) {
+  return { draft: '草稿', published: '已发布', withdrawn: '已撤回' }[value] || value || '草稿';
+}
+
+function safeAnnouncementMarkdown(source) {
+  const lines = String(source || '').replace(/\r/g, '').split('\n');
+  let html = '';
+  let list = '';
+  const inline = (value) => escapeHtml(value)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const closeList = () => { if (list) { html += `</${list}>`; list = ''; } };
+  lines.forEach((line) => {
+    const heading = line.match(/^(#{2,3})\s+(.+)$/);
+    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    const unordered = line.match(/^[-*]\s+(.+)$/);
+    if (heading) { closeList(); html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`; return; }
+    if (ordered || unordered) {
+      const kind = ordered ? 'ol' : 'ul';
+      if (list !== kind) { closeList(); list = kind; html += `<${kind}>`; }
+      html += `<li>${inline((ordered || unordered)[1])}</li>`;
+      return;
+    }
+    closeList();
+    if (line.trim()) html += `<p>${inline(line)}</p>`;
+  });
+  closeList();
+  return html;
+}
+
+function renderAdminAnnouncements() {
+  ensureAdminAnnouncementView();
+  const badge = $('announcementUnreadBadge');
+  if (badge) { badge.textContent = String(state.announcementUnreadCount); badge.hidden = state.announcementUnreadCount <= 0; }
+  $('announcementUnreadText').textContent = state.announcementUnreadCount ? `${state.announcementUnreadCount} 条未读` : '全部已读';
+  const drafts = state.announcements.filter((x) => x.status === 'draft').length;
+  const published = state.announcements.filter((x) => x.status === 'published').length;
+  $('announcementStats').textContent = `草稿 ${drafts} · 已发布 ${published}`;
+  const status = $('announcementStatusFilter').value;
+  const type = $('announcementTypeFilter').value;
+  const keyword = $('announcementSearch').value.trim().toLowerCase();
+  const rows = state.announcements.filter((item) => (!status || item.status === status) && (!type || item.type === type) && (!keyword || String(item.title || '').toLowerCase().includes(keyword)));
+  $('announcementList').innerHTML = rows.length ? rows.map((item) => `
+    <article class="announcement-row ${item.read ? '' : 'unread'}" data-announcement-id="${escapeAttr(item.id)}">
+      <button class="announcement-row-main" type="button" data-announcement-open="${escapeAttr(item.id)}">
+        <span class="announcement-unread-dot" aria-hidden="true"></span>
+        <span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.summary || '暂无摘要')}</small></span>
+      </button>
+      <div class="announcement-meta"><span>${escapeHtml(item.version || '无版本号')}</span><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(announcementStatusLabel(item.status))}</span><span>${escapeHtml(formatDateTime(item.publish_time || item.updated_time))}</span><span>${escapeHtml(item.author || '')}</span></div>
+      ${isSuper() ? `<div class="announcement-admin-actions"><button type="button" data-announcement-edit="${escapeAttr(item.id)}">编辑</button>${item.status === 'published' ? `<button type="button" data-announcement-withdraw="${escapeAttr(item.id)}">撤回</button>` : `<button type="button" data-announcement-publish="${escapeAttr(item.id)}">发布</button>`}<button class="danger" type="button" data-announcement-delete="${escapeAttr(item.id)}">删除</button></div>` : ''}
+    </article>`).join('') : '<div class="announcement-empty panel">没有符合条件的公告</div>';
+  document.querySelectorAll('[data-announcement-open]').forEach((button) => { button.onclick = () => openAnnouncementDetail(button.dataset.announcementOpen); });
+  document.querySelectorAll('[data-announcement-edit]').forEach((button) => { button.onclick = () => openAnnouncementEditor(state.announcements.find((x) => x.id === button.dataset.announcementEdit)); });
+  document.querySelectorAll('[data-announcement-publish]').forEach((button) => { button.onclick = () => announcementAction(button.dataset.announcementPublish, 'publish'); });
+  document.querySelectorAll('[data-announcement-withdraw]').forEach((button) => { button.onclick = () => announcementAction(button.dataset.announcementWithdraw, 'withdraw'); });
+  document.querySelectorAll('[data-announcement-delete]').forEach((button) => { button.onclick = () => deleteAdminAnnouncement(button.dataset.announcementDelete); });
+}
+
+function ensureAnnouncementDetailModal() {
+  let overlay = $('announcementDetailOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'announcementDetailOverlay';
+  overlay.className = 'modal-overlay';
+  overlay.hidden = true;
+  overlay.innerHTML = `<div class="modal-card announcement-detail-card" role="dialog" aria-modal="true"><div class="panel-head"><h2>更新公告</h2><button type="button" data-close>关闭</button></div><div id="announcementDetailBody"></div></div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-close]').onclick = () => { overlay.hidden = true; };
+  return overlay;
+}
+
+async function openAnnouncementDetail(id) {
+  const item = state.announcements.find((x) => x.id === id);
+  if (!item) return;
+  const overlay = ensureAnnouncementDetailModal();
+  $('announcementDetailBody').innerHTML = `<div class="announcement-detail-head"><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(item.version || '无版本号')}</span></div><h2>${escapeHtml(item.title)}</h2><small>${escapeHtml(formatDateTime(item.publish_time || item.updated_time))} · ${escapeHtml(item.author || '')}</small><p class="announcement-summary">${escapeHtml(item.summary || '')}</p><div class="announcement-content">${safeAnnouncementMarkdown(item.content)}</div>`;
+  overlay.hidden = false;
+  if (!item.read) await markAdminAnnouncementRead(id);
+}
+
+function applyAnnouncementFormat(prefix, suffix = prefix) {
+  const input = $('announcementContentInput');
+  const start = input.selectionStart; const end = input.selectionEnd;
+  input.setRangeText(`${prefix}${input.value.slice(start, end)}${suffix}`, start, end, 'select');
+  updateAnnouncementPreview(); input.focus();
+}
+
+function ensureAnnouncementEditor() {
+  let overlay = $('announcementEditorOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'announcementEditorOverlay';
+  overlay.className = 'modal-overlay';
+  overlay.hidden = true;
+  overlay.innerHTML = `<div class="modal-card announcement-editor-card" role="dialog" aria-modal="true"><div class="panel-head"><h2 id="announcementEditorTitle">新建公告</h2><button type="button" data-close>关闭</button></div><div class="announcement-editor-grid">
+    <label>公告标题<input id="announcementTitleInput" maxlength="160"></label><label>版本号<input id="announcementVersionInput" maxlength="80"></label>
+    <label>公告类型<select id="announcementTypeInput">${['功能更新','问题修复','系统通知','重要公告','维护公告'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>重要程度<select id="announcementImportanceInput"><option>普通</option><option>重要</option><option>紧急</option></select></label>
+    <label class="wide">简短摘要<textarea id="announcementSummaryInput" rows="2" maxlength="500"></textarea></label>
+    <label class="toggle-line"><input id="announcementPopupInput" type="checkbox" checked> 登录后自动弹窗</label><label class="toggle-line"><input id="announcementForceInput" type="checkbox"> 每次登录弹出</label>
+    <label>发布时间<input id="announcementPublishTimeInput" type="datetime-local"></label><label>过期时间<input id="announcementExpireTimeInput" type="datetime-local"></label>
+    <div class="wide announcement-editor-tools"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button></div>
+    <label class="wide">更新内容<textarea id="announcementContentInput" rows="12"></textarea></label><div class="wide"><strong>预览</strong><div id="announcementPreview" class="announcement-content announcement-preview"></div></div>
+  </div><div class="button-pair"><button id="announcementSaveDraftBtn" type="button">保存草稿</button><button id="announcementPublishBtn" type="button">发布公告</button></div></div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-close]').onclick = () => { overlay.hidden = true; };
+  $('announcementContentInput').oninput = updateAnnouncementPreview;
+  overlay.querySelectorAll('[data-format]').forEach((button) => { button.onclick = () => {
+    const type = button.dataset.format;
+    if (type === 'heading') applyAnnouncementFormat('## ', '');
+    if (type === 'bold') applyAnnouncementFormat('**');
+    if (type === 'ordered') applyAnnouncementFormat('1. ', '');
+    if (type === 'unordered') applyAnnouncementFormat('- ', '');
+    if (type === 'link') applyAnnouncementFormat('[', '](https://)');
+  }; });
+  $('announcementSaveDraftBtn').onclick = () => saveAdminAnnouncement(false).catch((error) => showToast(error.message, 'error'));
+  $('announcementPublishBtn').onclick = () => saveAdminAnnouncement(true).catch((error) => showToast(error.message, 'error'));
+  return overlay;
+}
+
+function localDateTimeValue(value) {
+  if (!value) return '';
+  const date = new Date(value); if (Number.isNaN(date.getTime())) return '';
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function openAnnouncementEditor(item = null) {
+  const overlay = ensureAnnouncementEditor();
+  overlay.dataset.announcementId = item?.id || '';
+  $('announcementEditorTitle').textContent = item ? '编辑公告' : '新建公告';
+  $('announcementTitleInput').value = item?.title || '';
+  $('announcementVersionInput').value = item?.version || '';
+  $('announcementTypeInput').value = item?.type || '功能更新';
+  $('announcementImportanceInput').value = item?.importance || '普通';
+  $('announcementSummaryInput').value = item?.summary || '';
+  $('announcementPopupInput').checked = item?.popup_enabled !== false;
+  $('announcementForceInput').checked = !!item?.force_popup;
+  $('announcementPublishTimeInput').value = localDateTimeValue(item?.publish_time);
+  $('announcementExpireTimeInput').value = localDateTimeValue(item?.expire_time);
+  $('announcementContentInput').value = item?.content || '';
+  updateAnnouncementPreview(); overlay.hidden = false;
+}
+
+function updateAnnouncementPreview() { $('announcementPreview').innerHTML = safeAnnouncementMarkdown($('announcementContentInput').value); }
+
+function announcementEditorPayload() {
+  return { title: $('announcementTitleInput').value.trim(), version: $('announcementVersionInput').value.trim(), type: $('announcementTypeInput').value, importance: $('announcementImportanceInput').value, summary: $('announcementSummaryInput').value.trim(), content: $('announcementContentInput').value.trim(), popup_enabled: $('announcementPopupInput').checked, force_popup: $('announcementForceInput').checked, publish_time: $('announcementPublishTimeInput').value ? new Date($('announcementPublishTimeInput').value).toISOString() : '', expire_time: $('announcementExpireTimeInput').value ? new Date($('announcementExpireTimeInput').value).toISOString() : '' };
+}
+
+async function saveAdminAnnouncement(publish) {
+  const overlay = ensureAnnouncementEditor(); const id = overlay.dataset.announcementId || ''; const payload = announcementEditorPayload();
+  if (!payload.title || !payload.content) throw new Error('公告标题和更新内容不能为空。');
+  const current = state.announcements.find((x) => x.id === id);
+  if (id && current?.status === 'published') payload.renotify = window.confirm('是否将本次修改作为新通知，再次提醒所有管理员？');
+  const saved = id ? await api(`/api/admin/announcements/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }) : await api('/api/admin/announcements', { method: 'POST', body: JSON.stringify(payload) });
+  if (publish && saved.status !== 'published') await api(`/api/admin/announcements/${encodeURIComponent(saved.id)}/publish`, { method: 'POST', body: JSON.stringify({ publish_time: payload.publish_time }) });
+  overlay.hidden = true; await refreshAdminAnnouncements(); showToast(publish ? '公告已发布。' : '公告已保存。', 'success');
+}
+
+async function announcementAction(id, action) {
+  await api(`/api/admin/announcements/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' });
+  await refreshAdminAnnouncements(); showToast(action === 'publish' ? '公告已发布。' : '公告已撤回。', 'success');
+}
+
+async function deleteAdminAnnouncement(id) {
+  if (!window.confirm('删除后无法恢复，确定删除该公告吗？')) return;
+  await api(`/api/admin/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await refreshAdminAnnouncements(); showToast('公告已删除。', 'success');
+}
+
+async function markAdminAnnouncementRead(id) {
+  await api(`/api/admin/announcements/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' });
+  const item = state.announcements.find((x) => x.id === id); if (item && !item.read) { item.read = true; state.announcementUnreadCount = Math.max(0, state.announcementUnreadCount - 1); }
+  renderAdminAnnouncements();
+}
+
+async function markAllAdminAnnouncementsRead() {
+  await api('/api/admin/announcements/read-all', { method: 'POST', body: '{}' });
+  state.announcements.forEach((item) => { if (item.status === 'published') item.read = true; }); state.announcementUnreadCount = 0; renderAdminAnnouncements(); showToast('已全部标为已读。', 'success');
+}
+
+async function refreshAdminAnnouncements() { await loadAdminAnnouncementsSafe(); renderAdminAnnouncements(); }
+
+function ensureAdminAnnouncementPopup() {
+  let overlay = $('adminAnnouncementPopup'); if (overlay) return overlay;
+  overlay = document.createElement('div'); overlay.id = 'adminAnnouncementPopup'; overlay.className = 'modal-overlay'; overlay.hidden = true;
+  overlay.innerHTML = `<div class="modal-card announcement-popup-card" role="dialog" aria-modal="true"><div class="panel-head"><h2>更新公告</h2><button id="announcementPopupLater" type="button">稍后查看</button></div><div id="announcementPopupBody"></div><div class="announcement-popup-actions"><button id="announcementPopupPrev" type="button">上一条</button><span id="announcementPopupPosition"></span><button id="announcementPopupNext" type="button">下一条</button><button id="announcementPopupRead" type="button">我知道了</button></div></div>`;
+  document.body.appendChild(overlay);
+  $('announcementPopupLater').onclick = () => { overlay.hidden = true; };
+  $('announcementPopupPrev').onclick = () => { state.announcementPopupIndex--; renderAdminAnnouncementPopup(); };
+  $('announcementPopupNext').onclick = () => { state.announcementPopupIndex++; renderAdminAnnouncementPopup(); };
+  $('announcementPopupRead').onclick = async () => { const item = state.announcementPopupItems[state.announcementPopupIndex]; if (item) await markAdminAnnouncementRead(item.id); state.announcementPopupItems.splice(state.announcementPopupIndex, 1); if (state.announcementPopupIndex >= state.announcementPopupItems.length) state.announcementPopupIndex = Math.max(0, state.announcementPopupItems.length - 1); if (!state.announcementPopupItems.length) overlay.hidden = true; else renderAdminAnnouncementPopup(); };
+  return overlay;
+}
+
+function renderAdminAnnouncementPopup() {
+  const overlay = ensureAdminAnnouncementPopup(); const item = state.announcementPopupItems[state.announcementPopupIndex]; if (!item) { overlay.hidden = true; return; }
+  $('announcementPopupBody').innerHTML = `<div class="announcement-detail-head"><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(item.version || '无版本号')}</span></div><h2>${escapeHtml(item.title)}</h2><small>${escapeHtml(formatDateTime(item.publish_time))}</small><p class="announcement-summary">${escapeHtml(item.summary || '')}</p><div class="announcement-content">${safeAnnouncementMarkdown(item.content)}</div>`;
+  $('announcementPopupPosition').textContent = `${state.announcementPopupIndex + 1} / ${state.announcementPopupItems.length}`;
+  $('announcementPopupPrev').disabled = state.announcementPopupIndex <= 0; $('announcementPopupNext').disabled = state.announcementPopupIndex >= state.announcementPopupItems.length - 1; overlay.hidden = false;
+}
+
+function showAdminAnnouncementPopup() {
+  if (!state.token || !state.announcementPopupItems.length) return;
+  const existingNotice = $('unreadNoticeOverlay');
+  if (existingNotice && !existingNotice.hidden) {
+    window.setTimeout(showAdminAnnouncementPopup, 500);
+    return;
+  }
+  renderAdminAnnouncementPopup();
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;',
@@ -4753,6 +5019,4 @@ if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders()
 
 loadAll().catch((error) => handleLoadFailure(error, isAuthFailure(error)));
 updateAddTargetState();
-
-
 

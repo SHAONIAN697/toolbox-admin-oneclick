@@ -29,6 +29,8 @@ USERS_PATH = DATA / "users.json"
 MAIL_PATH = DATA / "mail.json"
 SYSTEM_PATH = DATA / "system.json"
 NOTICES_PATH = DATA / "notices.json"
+ADMIN_ANNOUNCEMENTS_PATH = DATA / "admin-announcements.json"
+ADMIN_ANNOUNCEMENT_READS_PATH = DATA / "admin-announcement-reads.json"
 ORDERS_PATH = DATA / "orders.json"
 SESSIONS_PATH = DATA / "sessions.json"
 USER_TEMPLATE_PATH = DATA / "user-template.json"
@@ -99,6 +101,7 @@ ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "dev-token")
 SESSIONS = {}
 CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
+ADMIN_ANNOUNCEMENT_LOCK = threading.RLock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
 RESET_CODES = {}
 RESET_CODE_REQUESTS = {}
@@ -227,6 +230,107 @@ def write_json(path, value):
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(value, f, ensure_ascii=False, indent=2)
     tmp.replace(path)
+
+
+ANNOUNCEMENT_TYPES = ("功能更新", "问题修复", "系统通知", "重要公告", "维护公告")
+ANNOUNCEMENT_IMPORTANCE = ("普通", "重要", "紧急")
+
+
+def read_json_safe(path, fallback):
+    try:
+        value = read_json(path, fallback)
+        return value
+    except Exception:
+        return fallback
+
+
+def read_admin_announcements():
+    value = read_json_safe(ADMIN_ANNOUNCEMENTS_PATH, {"announcements": []})
+    return value if isinstance(value, dict) and isinstance(value.get("announcements"), list) else {"announcements": []}
+
+
+def read_admin_announcement_reads():
+    value = read_json_safe(ADMIN_ANNOUNCEMENT_READS_PATH, {"reads": []})
+    return value if isinstance(value, dict) and isinstance(value.get("reads"), list) else {"reads": []}
+
+
+def ensure_admin_announcement_files():
+    with ADMIN_ANNOUNCEMENT_LOCK:
+        if not ADMIN_ANNOUNCEMENTS_PATH.exists():
+            write_json(ADMIN_ANNOUNCEMENTS_PATH, {"announcements": []})
+        if not ADMIN_ANNOUNCEMENT_READS_PATH.exists():
+            write_json(ADMIN_ANNOUNCEMENT_READS_PATH, {"reads": []})
+
+
+def clean_announcement_text(value, limit):
+    text = str(value or "").replace("\x00", "").strip()
+    return text[:limit]
+
+
+def normalize_announcement_payload(body, current=None):
+    body = body if isinstance(body, dict) else {}
+    item = dict(current or {})
+    item["title"] = clean_announcement_text(body.get("title", item.get("title")), 160)
+    item["summary"] = clean_announcement_text(body.get("summary", item.get("summary")), 500)
+    item["content"] = clean_announcement_text(body.get("content", item.get("content")), 30000)
+    item["version"] = clean_announcement_text(body.get("version", item.get("version")), 80)
+    announcement_type = clean_announcement_text(body.get("type", item.get("type") or "功能更新"), 30)
+    item["type"] = announcement_type if announcement_type in ANNOUNCEMENT_TYPES else "功能更新"
+    importance = clean_announcement_text(body.get("importance", item.get("importance") or "普通"), 20)
+    item["importance"] = importance if importance in ANNOUNCEMENT_IMPORTANCE else "普通"
+    item["popup_enabled"] = bool(body.get("popup_enabled", item.get("popup_enabled", True)))
+    item["force_popup"] = bool(body.get("force_popup", item.get("force_popup", False)))
+    item["publish_time"] = clean_announcement_text(body.get("publish_time", item.get("publish_time")), 50)
+    item["expire_time"] = clean_announcement_text(body.get("expire_time", item.get("expire_time")), 50)
+    item["enabled"] = bool(body.get("enabled", item.get("enabled", True)))
+    return item
+
+
+def announcement_is_available(item):
+    if item.get("status") != "published" or item.get("enabled", True) is False:
+        return False
+    publish_time = str(item.get("publish_time") or "").strip()
+    if publish_time:
+        try:
+            if datetime.fromisoformat(publish_time.replace("Z", "+00:00")) > datetime.now(timezone.utc):
+                return False
+        except Exception:
+            pass
+    expires = str(item.get("expire_time") or "").strip()
+    if expires:
+        try:
+            if datetime.fromisoformat(expires.replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def announcement_read_record(reads, announcement_id, user_id, revision):
+    return next((row for row in reads if row.get("announcement_id") == announcement_id and row.get("user_id") == user_id and int(row.get("notification_revision") or 1) == revision), None)
+
+
+def public_admin_announcement(item, user_id, reads):
+    result = dict(item)
+    revision = int(item.get("notification_revision") or 1)
+    result["read"] = announcement_read_record(reads, item.get("id"), user_id, revision) is not None
+    return result
+
+
+def mark_admin_announcement_read(announcement_id, user, revision):
+    with ADMIN_ANNOUNCEMENT_LOCK:
+        store = read_admin_announcement_reads()
+        reads = store["reads"]
+        record = announcement_read_record(reads, announcement_id, user.get("id"), revision)
+        if not record:
+            reads.append({
+                "announcement_id": announcement_id,
+                "user_id": user.get("id"),
+                "username": user.get("username"),
+                "read_time": now_iso(),
+                "notification_revision": revision,
+            })
+            write_json(ADMIN_ANNOUNCEMENT_READS_PATH, store)
 
 
 def client_build_cleanup_settings():
@@ -3362,6 +3466,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_admin(self, path, method, auth):
         user_id = target_user_id(auth, self)
+        if path.startswith("/api/admin/announcements"):
+            return self.handle_admin_announcements(path, method, auth)
         if path == "/api/admin/me" and method == "GET":
             return self.send_json({"user": public_user(auth["user"]), "targetUser": public_user(find_user_by_id(user_id))})
         if path == "/api/admin/notices":
@@ -3566,6 +3672,120 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"functions": builtin_function_rows(is_super(auth["user"]))})
         return self.send_json({"error": "接口不存在"}, 404)
 
+    def handle_admin_announcements(self, path, method, auth):
+        user = auth["user"]
+        user_id = user.get("id")
+        match = re.fullmatch(r"/api/admin/announcements/([^/]+)(?:/(publish|withdraw|read))?", path)
+        with ADMIN_ANNOUNCEMENT_LOCK:
+            store = read_admin_announcements()
+            reads_store = read_admin_announcement_reads()
+            rows = store["announcements"]
+            reads = reads_store["reads"]
+
+            if path in ("/api/admin/announcements", "/api/admin/announcements/unread") and method == "GET":
+                visible = rows if is_super(user) else [item for item in rows if announcement_is_available(item)]
+                public_rows = [public_admin_announcement(item, user_id, reads) for item in visible]
+                public_rows.sort(key=lambda item: item.get("publish_time") or item.get("updated_time") or "", reverse=True)
+                if path.endswith("/unread"):
+                    public_rows = [item for item in public_rows if announcement_is_available(item) and (not item.get("read") or item.get("force_popup"))]
+                return self.send_json({
+                    "announcements": public_rows,
+                    "unreadCount": sum(1 for item in public_rows if not item.get("read") and announcement_is_available(item)),
+                    "isSuper": is_super(user),
+                })
+
+            if path == "/api/admin/announcements" and method == "POST":
+                if not is_super(user):
+                    return self.send_json({"error": "只有总管理员可以新建公告。"}, 403)
+                body = self.read_body()
+                item = normalize_announcement_payload(body)
+                if not item["title"] or not item["content"]:
+                    return self.send_json({"error": "公告标题和更新内容不能为空。"}, 400)
+                timestamp = now_iso()
+                item.update({
+                    "id": new_id("announcement"), "status": "draft", "publish_time": "",
+                    "created_time": timestamp, "updated_time": timestamp,
+                    "author": user.get("username"), "notification_revision": 1,
+                })
+                rows.insert(0, item)
+                write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
+                return self.send_json(public_admin_announcement(item, user_id, reads), 201)
+
+            if path == "/api/admin/announcements/read-all" and method == "POST":
+                for item in rows:
+                    if announcement_is_available(item):
+                        revision = int(item.get("notification_revision") or 1)
+                        if not announcement_read_record(reads, item.get("id"), user_id, revision):
+                            reads.append({"announcement_id": item.get("id"), "user_id": user_id, "username": user.get("username"), "read_time": now_iso(), "notification_revision": revision})
+                write_json(ADMIN_ANNOUNCEMENT_READS_PATH, reads_store)
+                return self.send_json({"ok": True})
+
+            if not match:
+                return self.send_json({"error": "公告接口不存在。"}, 404)
+            announcement_id, action = match.groups()
+            item = next((entry for entry in rows if entry.get("id") == announcement_id), None)
+            if not item:
+                return self.send_json({"error": "公告不存在。"}, 404)
+
+            if method == "GET" and not action:
+                if not is_super(user) and not announcement_is_available(item):
+                    return self.send_json({"error": "公告不存在。"}, 404)
+                return self.send_json(public_admin_announcement(item, user_id, reads))
+
+            if method == "POST" and action == "read":
+                if not is_super(user) and not announcement_is_available(item):
+                    return self.send_json({"error": "公告不存在。"}, 404)
+                revision = int(item.get("notification_revision") or 1)
+                if not announcement_read_record(reads, announcement_id, user_id, revision):
+                    reads.append({"announcement_id": announcement_id, "user_id": user_id, "username": user.get("username"), "read_time": now_iso(), "notification_revision": revision})
+                    write_json(ADMIN_ANNOUNCEMENT_READS_PATH, reads_store)
+                return self.send_json({"ok": True})
+
+            if not is_super(user):
+                return self.send_json({"error": "只有总管理员可以修改公告。"}, 403)
+
+            if method == "PUT" and not action:
+                body = self.read_body()
+                was_published = item.get("status") == "published"
+                updated = normalize_announcement_payload(body, item)
+                if not updated["title"] or not updated["content"]:
+                    return self.send_json({"error": "公告标题和更新内容不能为空。"}, 400)
+                if was_published and body.get("renotify"):
+                    updated["notification_revision"] = int(item.get("notification_revision") or 1) + 1
+                updated["updated_time"] = now_iso()
+                item.clear()
+                item.update(updated)
+                write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
+                return self.send_json(public_admin_announcement(item, user_id, reads))
+
+            if method == "DELETE" and not action:
+                store["announcements"] = [entry for entry in rows if entry.get("id") != announcement_id]
+                write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
+                reads_store["reads"] = [entry for entry in reads if entry.get("announcement_id") != announcement_id]
+                write_json(ADMIN_ANNOUNCEMENT_READS_PATH, reads_store)
+                return self.send_json({"ok": True})
+
+            if method == "POST" and action == "publish":
+                if not item.get("title") or not item.get("content"):
+                    return self.send_json({"error": "公告标题和更新内容不能为空。"}, 400)
+                body = self.read_body()
+                item["status"] = "published"
+                item["enabled"] = True
+                item["publish_time"] = clean_announcement_text(body.get("publish_time"), 50) or now_iso()
+                item["updated_time"] = now_iso()
+                if body.get("renotify"):
+                    item["notification_revision"] = int(item.get("notification_revision") or 1) + 1
+                write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
+                return self.send_json(public_admin_announcement(item, user_id, reads))
+
+            if method == "POST" and action == "withdraw":
+                item["status"] = "withdrawn"
+                item["updated_time"] = now_iso()
+                write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
+                return self.send_json(public_admin_announcement(item, user_id, reads))
+
+        return self.send_json({"error": "不支持的公告操作。"}, 405)
+
     def base_url(self):
         proto = self.headers.get("X-Forwarded-Proto") or self.headers.get("X-Forwarded-Scheme") or "http"
         if "," in proto:
@@ -3585,6 +3805,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    ensure_admin_announcement_files()
     read_users()
     threading.Thread(target=run_client_build_cleanup_loop, daemon=True).start()
     host = os.environ.get("TOOLBOX_HOST", "127.0.0.1")
