@@ -61,12 +61,12 @@
 首次下载或重新下载最新版管理脚本，统一使用以下命令：
 
 ```bash
-(curl -fsSL --connect-timeout 5 --max-time 15 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh || curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh) && sudo install -m 755 /tmp/toolbox-admin.sh /usr/local/bin/toolbox-admin && sudo /usr/local/bin/toolbox-admin
+(curl -fsSL --connect-timeout 5 --max-time 15 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh || curl -fsSL --retry 3 --connect-timeout 15 --max-time 180 "https://gh-proxy.com/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/refs/heads/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh) && { sudo chattr -i /usr/local/bin/toolbox-admin 2>/dev/null || true; sudo install -m 755 /tmp/toolbox-admin.sh /usr/local/bin/toolbox-admin && sudo /usr/local/bin/toolbox-admin; }
 ```
 
 下载完成后，以后在服务器任意目录输入 `toolbox-admin` 即可进入管理脚本。需要重新下载管理脚本时，再执行一次上面的命令即可。
 
-选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.org/`。
+选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.com/`。
 
 > 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 

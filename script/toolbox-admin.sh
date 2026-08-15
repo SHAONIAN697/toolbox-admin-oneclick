@@ -13,13 +13,28 @@ pause(){ read -r -p "按 Enter 返回菜单..." _ || true; }
 need_root(){ [ "$(id -u)" = 0 ] || { red "请使用 sudo toolbox-admin 执行"; exit 1; }; }
 app_dir(){ systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true; }
 
+prepare_interactive_terminal(){
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    exec </dev/tty
+  fi
+}
+
+unlock_manager_target(){
+  local target="$1"
+  command -v chattr >/dev/null 2>&1 && chattr -i "$target" 2>/dev/null || true
+  chmod u+w "$target" 2>/dev/null || true
+}
+
 install_manager_command(){
-  local target="/usr/local/bin/toolbox-admin" source
+  local target="/usr/local/bin/toolbox-admin" source staged
   source="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+  unlock_manager_target "$target"
   if [ "$source" != "$target" ]; then
-    install -m 755 "$source" "$target"
+    staged="${target}.new.$$"
+    install -m 755 "$source" "$staged" || return 1
+    mv -f "$staged" "$target" || { rm -f "$staged"; return 1; }
   else
-    chmod 755 "$target"
+    chmod 755 "$target" || return 1
   fi
 }
 
@@ -31,7 +46,7 @@ is_installed(){
 
 ask_proxy(){
   PROXY=""
-  echo "如需 GitHub 加速，请输入代理地址，例如：https://gh-proxy.org/"
+  echo "如需 GitHub 加速，请输入代理地址，例如：https://gh-proxy.com/"
   read -r -p "代理地址（直接回车不使用代理）: " PROXY || true
   [ -z "$PROXY" ] || PROXY="${PROXY%/}/"
   [ -n "$PROXY" ] && green "本次使用代理：$PROXY" || green "本次不使用代理"
@@ -201,5 +216,9 @@ menu(){
 }
 
 need_root
-install_manager_command
+if ! install_manager_command; then
+  yellow "管理命令暂时无法写入 /usr/local/bin，本次继续运行已下载的新脚本。"
+  yellow "可稍后执行：chattr -i /usr/local/bin/toolbox-admin"
+fi
+prepare_interactive_terminal
 menu
