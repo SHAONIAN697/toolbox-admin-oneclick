@@ -114,9 +114,14 @@ write_service() {
   local app_dir="$1"
   local port="$2"
   local password="$3"
+  local service_file="/etc/systemd/system/${APP_NAME}.service"
 
   yellow "正在创建 systemd 服务..."
-  cat >/etc/systemd/system/${APP_NAME}.service <<EOF
+  if [ -e "$service_file" ]; then
+    command -v chattr >/dev/null 2>&1 && chattr -i -a "$service_file" 2>/dev/null || true
+    chmod u+w "$service_file" 2>/dev/null || true
+  fi
+  cat >"$service_file" <<EOF
 [Unit]
 Description=Toolbox Admin API
 After=network.target
