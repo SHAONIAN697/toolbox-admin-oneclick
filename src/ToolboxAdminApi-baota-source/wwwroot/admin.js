@@ -28,7 +28,8 @@
   inviteRefreshBusy: false,
   inviteSnapshot: '',
   auditRefreshTimer: null,
-  auditRefreshBusy: false
+  auditRefreshBusy: false,
+  auditItems: []
 };
 
 function applyDesktopTokenFromUrl() {
@@ -1242,9 +1243,33 @@ function ensureAuditView() {
   const view = document.createElement('section');
   view.id = 'view-audit';
   view.className = 'view';
-  view.innerHTML = `<div class="panel"><div class="panel-head"><h2>后台操作日志</h2><button id="refreshAuditBtn" type="button">刷新</button></div><div id="auditLogRows" class="audit-log-list">正在读取日志...</div></div>`;
+  view.innerHTML = `<div class="panel audit-panel">
+    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><button id="refreshAuditBtn" type="button">刷新</button></div>
+    <div class="audit-filters">
+      <input id="auditUserFilter" type="search" list="auditUserOptions" placeholder="筛选用户">
+      <datalist id="auditUserOptions"></datalist>
+      <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址">
+      <input id="auditKeywordFilter" type="search" placeholder="搜索操作内容">
+      <select id="auditActionFilter"><option value="">全部操作类型</option><option value="login">登录记录</option><option value="POST">新增操作</option><option value="PATCH">修改操作</option><option value="PUT">保存操作</option><option value="DELETE">删除操作</option></select>
+      <select id="auditRiskFilter"><option value="">全部风险</option><option value="high">高风险</option><option value="medium">需关注</option><option value="low">无风险</option></select>
+      <label>开始时间<input id="auditStartFilter" type="datetime-local"></label>
+      <label>结束时间<input id="auditEndFilter" type="datetime-local"></label>
+      <button id="resetAuditFiltersBtn" type="button" class="secondary">清除筛选</button>
+    </div>
+    <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>用户</th><th>操作日志</th><th>时间</th><th>IP 地址</th><th>风险评估</th></tr></thead><tbody id="auditLogRows"><tr><td colspan="5">正在读取日志...</td></tr></tbody></table></div>
+  </div>`;
   document.querySelector('main').appendChild(view);
   $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
+  restoreAuditFilters();
+  ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'].forEach((id) => {
+    $(id).addEventListener('input', () => { saveAuditFilters(); renderAuditLog(); });
+    $(id).addEventListener('change', () => { saveAuditFilters(); renderAuditLog(); });
+  });
+  $('resetAuditFiltersBtn').onclick = () => {
+    ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'].forEach((id) => { $(id).value = ''; });
+    saveAuditFilters();
+    renderAuditLog();
+  };
 }
 
 async function loadAuditLog() {
@@ -1253,14 +1278,73 @@ async function loadAuditLog() {
   ensureAuditView();
   try {
     const data = await api('/api/super/audit');
-    $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map((item) => {
-      const description = describeAuditEntry(item);
-      const account = item.username || item.detail || '未知用户';
-      return `<div title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}">${escapeHtml(formatDateTime(item.time))} · 用户：${escapeHtml(account)} · IP：${escapeHtml(item.ip || '未记录')} · ${escapeHtml(description)}</div>`;
-    }).join('') || '暂无日志';
+    state.auditItems = data.items || [];
+    updateAuditUserOptions();
+    renderAuditLog();
   } finally {
     state.auditRefreshBusy = false;
   }
+}
+
+const AUDIT_FILTER_STORAGE_KEY = 'toolbox_audit_filters';
+const AUDIT_FILTER_IDS = ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'];
+
+function saveAuditFilters() {
+  const filters = Object.fromEntries(AUDIT_FILTER_IDS.map((id) => [id, $(id)?.value || '']));
+  localStorage.setItem(AUDIT_FILTER_STORAGE_KEY, JSON.stringify(filters));
+}
+
+function restoreAuditFilters() {
+  try {
+    const filters = JSON.parse(localStorage.getItem(AUDIT_FILTER_STORAGE_KEY) || '{}');
+    AUDIT_FILTER_IDS.forEach((id) => { if ($(id) && typeof filters[id] === 'string') $(id).value = filters[id]; });
+  } catch (_) {}
+}
+
+function updateAuditUserOptions() {
+  const users = [...new Set(state.auditItems.map((item) => item.username || item.detail).filter(Boolean))].sort();
+  $('auditUserOptions').innerHTML = users.map((name) => `<option value="${escapeHtml(name)}"></option>`).join('');
+}
+
+function auditRisk(item) {
+  const action = String(item.action || '');
+  const path = String(item.path || '');
+  if (action === 'login_failed' || action === 'backend_delete') return 'high';
+  if (/(account|users|system|mail|template)/.test(path) && /^backend_(patch|put|post)$/.test(action)) return 'high';
+  if (/^backend_(patch|put|post)$/.test(action)) return 'medium';
+  return 'low';
+}
+
+function renderAuditLog() {
+  const user = ($('auditUserFilter')?.value || '').trim().toLowerCase();
+  const ip = ($('auditIpFilter')?.value || '').trim().toLowerCase();
+  const keyword = ($('auditKeywordFilter')?.value || '').trim().toLowerCase();
+  const actionType = $('auditActionFilter')?.value || '';
+  const risk = $('auditRiskFilter')?.value || '';
+  const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0;
+  const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
+  const items = state.auditItems.filter((item) => {
+    const account = String(item.username || item.detail || '未知用户');
+    const description = describeAuditEntry(item);
+    const itemTime = new Date(item.time).getTime();
+    if (user && !account.toLowerCase().includes(user)) return false;
+    if (ip && !String(item.ip || '').toLowerCase().includes(ip)) return false;
+    if (keyword && !`${description} ${item.action || ''} ${item.path || ''}`.toLowerCase().includes(keyword)) return false;
+    if (actionType === 'login' && !String(item.action || '').startsWith('login_')) return false;
+    if (actionType && actionType !== 'login' && String(item.action || '') !== `backend_${actionType.toLowerCase()}`) return false;
+    if (risk && auditRisk(item) !== risk) return false;
+    if (start && itemTime < start) return false;
+    if (end && itemTime > end) return false;
+    return true;
+  });
+  const riskLabels = { high: '高风险', medium: '需关注', low: '无风险' };
+  const visibleItems = items.slice(0, 1000);
+  $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visibleItems.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
+  $('auditLogRows').innerHTML = visibleItems.map((item) => {
+    const account = item.username || item.detail || '未知用户';
+    const level = auditRisk(item);
+    return `<tr title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}"><td><strong>${escapeHtml(account)}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td>${escapeHtml(item.ip || '未记录')}</td><td><span class="audit-risk ${level}">${riskLabels[level]}</span></td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
 }
 
 function syncAuditAutoRefresh(view) {
