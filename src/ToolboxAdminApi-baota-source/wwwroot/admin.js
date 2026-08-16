@@ -26,7 +26,9 @@
   clientBuildStartedAt: 0,
   inviteRefreshTimer: null,
   inviteRefreshBusy: false,
-  inviteSnapshot: ''
+  inviteSnapshot: '',
+  auditRefreshTimer: null,
+  auditRefreshBusy: false
 };
 
 function applyDesktopTokenFromUrl() {
@@ -980,6 +982,7 @@ function switchView(view) {
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
   if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
+  syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
   if ($('pageSubtitle')) $('pageSubtitle').textContent = title[1];
@@ -1245,13 +1248,31 @@ function ensureAuditView() {
 }
 
 async function loadAuditLog() {
+  if (state.auditRefreshBusy) return;
+  state.auditRefreshBusy = true;
   ensureAuditView();
-  const data = await api('/api/super/audit');
-  $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map((item) => {
-    const description = describeAuditEntry(item);
-    const account = item.username || item.detail || '未知用户';
-    return `<div title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}">${escapeHtml(formatDateTime(item.time))} · 用户：${escapeHtml(account)} · IP：${escapeHtml(item.ip || '未记录')} · ${escapeHtml(description)}</div>`;
-  }).join('') || '暂无日志';
+  try {
+    const data = await api('/api/super/audit');
+    $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map((item) => {
+      const description = describeAuditEntry(item);
+      const account = item.username || item.detail || '未知用户';
+      return `<div title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}">${escapeHtml(formatDateTime(item.time))} · 用户：${escapeHtml(account)} · IP：${escapeHtml(item.ip || '未记录')} · ${escapeHtml(description)}</div>`;
+    }).join('') || '暂无日志';
+  } finally {
+    state.auditRefreshBusy = false;
+  }
+}
+
+function syncAuditAutoRefresh(view) {
+  if (state.auditRefreshTimer) {
+    window.clearInterval(state.auditRefreshTimer);
+    state.auditRefreshTimer = null;
+  }
+  if (view !== 'audit' || !isSuper()) return;
+  state.auditRefreshTimer = window.setInterval(() => {
+    if (state.activeView !== 'audit' || document.visibilityState !== 'visible') return;
+    loadAuditLog().catch(() => {});
+  }, 2000);
 }
 
 function describeAuditEntry(item) {
