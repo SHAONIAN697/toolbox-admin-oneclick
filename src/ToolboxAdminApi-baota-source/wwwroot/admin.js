@@ -186,6 +186,7 @@ const NAV_ICONS = {
   mail: '✉',
   buttons: '▦',
   users: '♙',
+  audit: '▧',
   system: '⚙',
   json: '▤',
   exchange: '⇄',
@@ -198,6 +199,7 @@ const VIEW_TITLES = {
   account: ['账号资料', '修改当前账号的基础信息和登录密码。'],
   buttons: ['按钮管理', '配置工具箱里的页面、分组、按钮和动作。'],
   users: ['用户管理', '管理账号、邀请码和用户专属对接地址。'],
+  audit: ['操作日志', '查看所有账号的后台登录和操作记录。'],
   system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
   exchange: ['配置交换', '导出、导入配置文件，或生成云端链接分享给别人。'],
@@ -217,6 +219,15 @@ function setupSidebar() {
   toggle.setAttribute('aria-label', '展开/收起菜单');
   toggle.textContent = '☰';
   sidebar.insertBefore(toggle, brand);
+  const systemNav = sidebar.querySelector('.nav[data-view="system"]');
+  if (systemNav && !sidebar.querySelector('.nav[data-view="audit"]')) {
+    const auditNav = document.createElement('button');
+    auditNav.className = 'nav super-only';
+    auditNav.dataset.view = 'audit';
+    auditNav.type = 'button';
+    auditNav.textContent = '操作日志';
+    systemNav.insertAdjacentElement('afterend', auditNav);
+  }
 
   sidebar.querySelectorAll('.nav').forEach((button) => {
     const view = button.dataset.view || '';
@@ -949,7 +960,8 @@ function renderUserContext() {
 }
 
 function switchView(view) {
-  if (view === 'system' && !isSuper()) {
+  if (view === 'audit' && isSuper()) ensureAuditView();
+  if ((view === 'system' || view === 'audit') && !isSuper()) {
     view = 'overview';
   }
   if (view === 'users' && !isManager()) {
@@ -967,6 +979,7 @@ function switchView(view) {
   const panel = $(`view-${view}`);
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
+  if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
   if ($('pageSubtitle')) $('pageSubtitle').textContent = title[1];
@@ -1219,6 +1232,22 @@ function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') 
   const action = saveButtonId ? `<button id="${saveButtonId}" type="button">${saveText}</button>` : '';
   panel.innerHTML = `<div class="panel-head"><h2>${title}</h2>${action}</div><div class="form-grid"></div>`;
   return panel;
+}
+
+function ensureAuditView() {
+  if ($('view-audit')) return;
+  const view = document.createElement('section');
+  view.id = 'view-audit';
+  view.className = 'view';
+  view.innerHTML = `<div class="panel"><div class="panel-head"><h2>后台操作日志</h2><button id="refreshAuditBtn" type="button">刷新</button></div><div id="auditLogRows" class="audit-log-list">正在读取日志...</div></div>`;
+  document.querySelector('main').appendChild(view);
+  $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
+}
+
+async function loadAuditLog() {
+  ensureAuditView();
+  const data = await api('/api/super/audit');
+  $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map(x => `<div>${escapeHtml(formatDateTime(x.time))} · ${escapeHtml(x.username || '未知用户')} · ${escapeHtml(x.ip || '')} · ${escapeHtml(x.action || '')} · ${escapeHtml(x.path || '')}</div>`).join('') || '暂无日志';
 }
 
 function ensureDownloadCleanupBasicField(grid) {
@@ -3156,16 +3185,11 @@ function ensureIpLocationPanel() {
   panel.id = 'ipLocationPanel';
   panel.className = 'panel collapsible-panel is-collapsed';
   panel.dataset.collapsiblePanel = '';
-  panel.innerHTML = `<div class="panel-head"><h2>IP 定位与操作日志</h2><button id="saveIpLocationBtn" type="button">保存</button></div>
-    <div class="form-grid compact"><label class="checkline"><input data-ip-provider value="system" type="checkbox"> 系统自带</label><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label><label>高德 Key<input id="ipAmapKey"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>百度 AK<input id="ipBaiduKey"></label></div>
-    <div class="panel-head"><h3>后台操作日志</h3><button id="refreshAuditBtn" type="button">刷新日志</button></div><div id="auditLogRows" class="audit-log-list">点击刷新日志</div>`;
+  panel.innerHTML = `<div class="panel-head"><h2>IP 定位接口</h2><button id="saveIpLocationBtn" type="button">保存</button></div>
+    <div class="form-grid compact"><label class="checkline"><input data-ip-provider value="system" type="checkbox"> 系统自带</label><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label><label>高德 Key<input id="ipAmapKey"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>百度 AK<input id="ipBaiduKey"></label></div>`;
   view.prepend(panel);
   setupCollapsiblePanels();
   $('saveIpLocationBtn').onclick = () => saveSystemSettings('ipLocation').catch(e => setStatus(e.message, true));
-  $('refreshAuditBtn').onclick = async () => {
-    const data = await api('/api/super/audit');
-    $('auditLogRows').innerHTML = (data.items || []).slice(0, 500).map(x => `<div>${escapeHtml(formatDateTime(x.time))} · ${escapeHtml(x.username || '未知用户')} · ${escapeHtml(x.ip || '')} · ${escapeHtml(x.action || '')} · ${escapeHtml(x.path || '')}</div>`).join('') || '暂无日志';
-  };
 }
 
 async function saveAppLoginSettings() {
