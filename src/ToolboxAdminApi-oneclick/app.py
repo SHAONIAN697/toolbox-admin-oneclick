@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import base64
+import ipaddress
 import json
 import mimetypes
 import os
@@ -42,6 +43,9 @@ CLIENT_ICON = ROOT / "assets" / "toolbox-default.ico"
 CLIENT_CACHE = DATA / "client-cache"
 CLIENT_JOBS = DATA / "client-jobs"
 CLIENT_INTEGRITY_PATH = DATA / "client-integrity.json"
+AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
+IP_CACHE_PATH = DATA / "ip-location-cache.json"
+BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
@@ -97,14 +101,20 @@ def ensure_studio_overview_page(config):
             first["buttons"] = []
             changed = True
     return changed
-ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "dev-token")
+ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "").strip()
 SESSIONS = {}
+SECURITY_LOCK = threading.RLock()
+LOGIN_ATTEMPTS = {}
+SESSION_TTL_SECONDS = max(900, int(os.environ.get("TOOLBOX_SESSION_TTL_SECONDS", "43200")))
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES = 8
 CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
 ADMIN_ANNOUNCEMENT_LOCK = threading.RLock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
 RESET_CODES = {}
 RESET_CODE_REQUESTS = {}
+RESET_VERIFY_ATTEMPTS = {}
 RESET_CODE_COOLDOWN_SECONDS = 60
 DEFAULT_CLIENT_VARIANT = "original"
 CLIENT_VARIANTS = {
@@ -176,6 +186,24 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("empty datetime")
+    native_parser = getattr(datetime, "fromisoformat", None)
+    if native_parser:
+        return native_parser(text.replace("Z", "+00:00"))
+    normalized = text.replace("Z", "+0000")
+    if re.search(r"[+-]\d\d:\d\d$", normalized):
+        normalized = normalized[:-3] + normalized[-2:]
+    for pattern in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(normalized, pattern)
+        except ValueError:
+            pass
+    raise ValueError("invalid datetime")
+
+
 def random_hex(n=24):
     return secrets.token_hex(n)
 
@@ -197,16 +225,151 @@ def sha256_hex(text):
 
 
 def stored_password(password):
-    salt = random_hex(16)
-    return f"sha256${salt}${sha256_hex(salt + password)}"
+    salt = secrets.token_bytes(16)
+    rounds = 310000
+    digest = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${salt.hex()}${digest.hex()}"
 
 
 def check_password(password, stored):
+    if str(stored or "").startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt, digest = stored.split("$", 3)
+            actual = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), bytes.fromhex(salt), int(rounds))
+            return hmac.compare_digest(actual, bytes.fromhex(digest))
+        except (TypeError, ValueError):
+            return False
     try:
         kind, salt, digest = stored.split("$", 2)
     except ValueError:
         return False
     return kind == "sha256" and sha256_hex(salt + password) == digest
+
+
+def client_ip(handler):
+    peer = str(handler.client_address[0] or "").strip()
+    try:
+        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted_proxy = False
+    if trusted_proxy or os.environ.get("TOOLBOX_TRUST_PROXY", "").lower() in ("1", "true", "yes"):
+        forwarded = (handler.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        real_ip = (handler.headers.get("X-Real-IP") or "").strip()
+        for candidate in (forwarded, real_ip):
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate[:64]
+            except ValueError:
+                continue
+    return peer[:64]
+
+
+def fetch_json_url(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdmin/1.0"})
+    with urllib.request.urlopen(req, timeout=4) as response:
+        charset = response.headers.get_content_charset() or ("gbk" if "pconline" in url else "utf-8")
+        return json.loads(response.read().decode(charset, "replace"))
+
+
+def locate_ip(ip, bypass_cache=False):
+    if not ip or ip in ("127.0.0.1", "::1"):
+        return "本机/内网"
+    cache = read_json(IP_CACHE_PATH, {})
+    cfg = read_system_settings().get("ipLocation") or {}
+    cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
+    if not bypass_cache and time.time() - cached.get("time", 0) < 86400 * 30:
+        cached_address = str(cached.get("address") or "")
+        if not cfg.get("unifiedChinese", True) or re.search(r"[\u3400-\u9fff]", cached_address):
+            return cached_address
+    providers = cfg.get("providers") or ["system"]
+    if cfg.get("mode") == "system": providers = ["system"]
+    results = []
+    for provider in providers:
+        address = ""
+        try:
+            if provider == "system":
+                data = fetch_json_url("https://ipwho.is/" + quote(ip))
+                if data.get("success") is not False: address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "amap" and cfg.get("amapKey"):
+                data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
+                if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
+            elif provider == "baidu" and cfg.get("baiduKey"):
+                data = fetch_json_url("https://api.map.baidu.com/location/ip?coor=bd09ll&ip=%s&ak=%s" % (quote(ip), quote(cfg["baiduKey"])))
+                detail = (data.get("content") or {}).get("address_detail") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("province", "city", "district", "street", "street_number"))
+            elif provider == "tencent" and cfg.get("tencentKey"):
+                data = fetch_json_url("https://apis.map.qq.com/ws/location/v1/ip?ip=%s&key=%s" % (quote(ip), quote(cfg["tencentKey"])))
+                detail = (data.get("result") or {}).get("ad_info") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("nation", "province", "city", "district"))
+            elif provider == "ip-api":
+                data = fetch_json_url("http://ip-api.com/json/%s?lang=zh-CN" % quote(ip))
+                if data.get("status") == "success": address = "".join(str(data.get(k) or "") for k in ("country", "regionName", "city", "district"))
+            elif provider == "ipapi-co":
+                data = fetch_json_url("https://ipapi.co/%s/json/" % quote(ip))
+                if not data.get("error"): address = "".join(str(data.get(k) or "") for k in ("country_name", "region", "city"))
+            elif provider == "ip-sb":
+                data = fetch_json_url("https://api.ip.sb/geoip/%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "pconline":
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+        except Exception:
+            continue
+        if address:
+            results.append({"provider": provider, "address": address})
+            if cfg.get("mode") == "first": break
+    address = results[0]["address"] if results else "未知位置"
+    if cfg.get("unifiedChinese", True):
+        chinese = next((item["address"] for item in results if re.search(r"[\u3400-\u9fff]", item["address"])), "")
+        address = chinese or address
+        address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
+    cache[ip] = {"address": address, "time": time.time()}
+    write_json(IP_CACHE_PATH, cache)
+    return address
+
+
+def read_audit_events(limit=5000):
+    if not AUDIT_LOG_PATH.exists(): return {"items": []}
+    rows = []
+    with AUDIT_LOG_PATH.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try: rows.append(json.loads(line))
+            except Exception: continue
+    return {"items": list(reversed(rows[-limit:]))}
+
+
+def audit_event(action, actor=None, target="", handler=None, details=None, success=True):
+    entry = {
+        "time": now_iso(), "action": action, "success": bool(success),
+        "actorId": (actor or {}).get("id", ""), "actor": (actor or {}).get("username", ""),
+        "target": str(target or ""), "ip": client_ip(handler) if handler else "",
+        "details": details or {},
+    }
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SECURITY_LOCK, AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def security_backup(label, paths):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination = BACKUP_DIR / f"{stamp}-{safe_id(label)}"
+    destination.mkdir(parents=True, exist_ok=False)
+    for path in paths:
+        path = Path(path)
+        if path.exists() and path.is_file():
+            shutil.copy2(path, destination / path.name)
+    return destination
+
+
+def revoke_user_sessions(user_id, keep_token=""):
+    with SECURITY_LOCK:
+        expired = [token for token, row in SESSIONS.items()
+                   if row.get("userId") == user_id and token != keep_token]
+        for token in expired:
+            SESSIONS.pop(token, None)
+        if expired:
+            save_sessions()
+    return len(expired)
 
 
 def hmac_sha256_hex(secret, text):
@@ -292,14 +455,14 @@ def announcement_is_available(item):
     publish_time = str(item.get("publish_time") or "").strip()
     if publish_time:
         try:
-            if datetime.fromisoformat(publish_time.replace("Z", "+00:00")) > datetime.now(timezone.utc):
+            if parse_iso_datetime(publish_time) > datetime.now(timezone.utc):
                 return False
         except Exception:
             pass
     expires = str(item.get("expire_time") or "").strip()
     if expires:
         try:
-            if datetime.fromisoformat(expires.replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+            if parse_iso_datetime(expires) <= datetime.now(timezone.utc):
                 return False
         except Exception:
             pass
@@ -504,7 +667,8 @@ def normalize_page_locks(config):
             lock["enabled"] = enabled
             changed = True
         password = str(lock.get("password") or "").strip()
-        if password and not password.startswith("sha256$"):
+        if password and not password.startswith(("sha256$", "pbkdf2_sha256$")):
+            lock["password_plain"] = password
             password = stored_password(password)
         if lock.get("password") != password:
             lock["password"] = password
@@ -539,7 +703,8 @@ def normalize_page_lock_groups(config):
             groups[group_id] = group
             changed = True
         password = str(group.get("password") or "").strip()
-        if password and not password.startswith("sha256$"):
+        if password and not password.startswith(("sha256$", "pbkdf2_sha256$")):
+            group["password_plain"] = password
             password = stored_password(password)
         if group.get("password") != password:
             group["password"] = password
@@ -706,9 +871,6 @@ def ensure_config_defaults(config):
     if "admin_title" not in app:
         app["admin_title"] = DEFAULT_ADMIN_TITLE
         changed = True
-    if app.get("password_enabled") is False and app.get("password"):
-        app["password"] = ""
-        changed = True
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
@@ -792,6 +954,9 @@ def should_sync_default_config(actor, user_id):
 
 
 def write_config_for_actor(config, user_id, actor):
+    path = user_config_path(user_id)
+    if path.exists():
+        security_backup(f"config-{user_id}", [path])
     write_config(config, user_id)
 
 
@@ -971,6 +1136,11 @@ def fetch_remote_config_payload(url):
 def public_toolbox_config(user_id):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
+    app.pop("password_plain", None)
+    for lock in (cfg.get("page_locks") or {}).values():
+        if isinstance(lock, dict): lock.pop("password_plain", None)
+    for group in (cfg.get("page_lock_groups") or {}).values():
+        if isinstance(group, dict): group.pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg, user_id=user_id)
@@ -1153,11 +1323,12 @@ def apply_app_patch(config, patch):
     for key, value in patch.items():
         if key == "password_enabled" and not value:
             app["password_enabled"] = False
-            app["password"] = ""
         elif key == "password_enabled":
             app["password_enabled"] = True
-        elif key == "password" and value:
-            app["password"] = stored_password(str(value))
+        elif key == "password":
+            plain = str(value or "")
+            app["password"] = stored_password(plain) if plain else ""
+            app["password_plain"] = plain
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
         else:
@@ -1175,6 +1346,11 @@ def read_users():
     store.setdefault("settings", {})
     changed = False
     for user in store["users"]:
+        if (user.get("id") == "admin" and check_password("dev-token", user.get("passwordHash", ""))
+                and len(ADMIN_TOKEN) >= 12 and ADMIN_TOKEN.lower() != "dev-token"):
+            user["passwordHash"] = stored_password(ADMIN_TOKEN)
+            changed = True
+            audit_event("default_admin_password_migrated", actor=user)
         if user.get("role") == "agent":
             user["role"] = "user"
             changed = True
@@ -1192,6 +1368,8 @@ def read_users():
             changed = True
     cleanup_invites(store)
     if not store["users"]:
+        if len(ADMIN_TOKEN) < 12 or ADMIN_TOKEN.lower() in ("dev-token", "password", "admin"):
+            raise RuntimeError("首次启动必须通过 TOOLBOX_ADMIN_TOKEN 设置至少 12 位的管理员密码。")
         admin = {
             "id": "admin",
             "username": "admin",
@@ -1242,13 +1420,25 @@ def is_login_api_path(path):
 
 def handle_desktop_login(handler):
     body = handler.read_body()
-    user = find_user_by_username((body.get("username") or "").strip())
+    username = (body.get("username") or "").strip()
+    key = f"{client_ip(handler)}:{username.lower()}"
+    now = time.time()
+    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_MAX_FAILURES:
+        audit_event("login_blocked", target=username, handler=handler, success=False)
+        return handler.send_json({"error": "登录尝试过多，请 15 分钟后重试。"}, 429)
+    user = find_user_by_username(username)
     if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
+        attempts.append(now)
+        LOGIN_ATTEMPTS[key] = attempts
+        audit_event("login_failed", target=username, handler=handler, success=False)
         return handler.send_json({"error": "用户名或密码错误。"}, 401)
+    LOGIN_ATTEMPTS.pop(key, None)
     token = random_hex(32)
-    user = mark_user_login(user["id"])
-    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
+    user = mark_user_login(user["id"], handler)
+    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso(), "lastSeenAt": now_iso()}
     save_sessions()
+    audit_event("login_success", actor=user, handler=handler)
     return handler.send_json({"token": token, "user": public_user(user)})
 
 
@@ -1293,6 +1483,8 @@ def default_system_settings():
             }
             for variant_id, variant in CLIENT_VARIANTS.items()
         },
+        "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
+            "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
             "enabled": True,
             "secret": "",
@@ -1505,7 +1697,7 @@ def write_system_settings(body):
                          "downloadUrl": target if action == "download" else "",
                          "enabled": source.get("enabled", True) is not False})
         current["builtinFunctions"] = rows
-    for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants"):
+    for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants", "ipLocation"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -1828,6 +2020,8 @@ def public_user(user, store=None):
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
+        "lastLoginIp": (user.get("loginIpHistory") or [{}])[0],
+        "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
     }
     return data
 
@@ -1840,12 +2034,17 @@ def find_user_by_username(username):
     return next((u for u in read_users()["users"] if u.get("username") == username), None)
 
 
-def mark_user_login(user_id):
+def mark_user_login(user_id, handler=None):
     store = read_users()
     login_at = now_iso()
     for row in store["users"]:
         if row.get("id") == user_id:
             row["lastLoginAt"] = login_at
+            if handler:
+                ip = client_ip(handler)
+                history = [x for x in row.get("loginIpHistory", []) if isinstance(x, dict)]
+                history.insert(0, {"ip": ip, "address": locate_ip(ip), "time": login_at})
+                row["loginIpHistory"] = history[:3]
             write_users(store)
             return row
     return find_user_by_id(user_id)
@@ -1876,6 +2075,8 @@ def create_user(username, password, display_name="", role="user", template_user=
     role = normalize_role(role)
     if not username or not password:
         raise ValueError("用户名和密码不能为空。")
+    if len(password) < 10:
+        raise ValueError("密码至少 10 位。")
     if find_user_by_username(username):
         raise ValueError("用户名已存在。")
     if email and find_user_by_email(email):
@@ -2117,6 +2318,9 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
             raise ValueError("用户名已存在。")
         if email and (other.get("email") or "").strip().lower() == email:
             raise ValueError("邮箱已存在。")
+    sensitive_change = bool(body.get("password")) or email != (user.get("email") or "").strip().lower()
+    if sensitive_change:
+        security_backup(f"account-{user_id}", [USERS_PATH, SESSIONS_PATH, user_config_path(user_id)])
     user["username"] = username
     user["email"] = email
     if "displayName" in body:
@@ -2132,6 +2336,8 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
     if super_edit and body.get("resetApiKey"):
         user["apiKey"] = random_hex(20)
     write_users(store)
+    if sensitive_change:
+        revoke_user_sessions(user_id)
     return user
 
 
@@ -2144,12 +2350,20 @@ def get_auth(handler):
         token = handler.query.get("token", [""])[0]
     session = SESSIONS.get(token)
     if session:
+        try:
+            last_seen = parse_iso_datetime(session.get("lastSeenAt") or session.get("createdAt") or "")
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            expired = (datetime.now(timezone.utc) - last_seen).total_seconds() > SESSION_TTL_SECONDS
+        except (TypeError, ValueError):
+            expired = True
+        if expired:
+            SESSIONS.pop(token, None)
+            save_sessions()
+            return None
         user = find_user_by_id(session["userId"])
         if user and user.get("active", True) is not False:
-            return {"token": token, "user": user}
-    if token == ADMIN_TOKEN:
-        user = find_user_by_id("admin")
-        if user:
+            session["lastSeenAt"] = now_iso()
             return {"token": token, "user": user}
     return None
 
@@ -3074,7 +3288,15 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if not length:
             return {}
+        if length > 2 * 1024 * 1024:
+            raise ValueError("请求内容过大。")
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def send_security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
 
     def send_json(self, value, status=200):
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -3083,6 +3305,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_security_headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -3093,6 +3316,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_security_headers()
         if filename:
             fallback = ascii_download_fallback(filename)
             encoded = quote(str(filename), safe="")
@@ -3169,7 +3393,7 @@ class Handler(BaseHTTPRequestHandler):
                     invite["active"] = False
                 write_users(store)
                 token = random_hex(32)
-                user = mark_user_login(user["id"])
+                user = mark_user_login(user["id"], self)
                 SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
                 save_sessions()
                 return self.send_json({"token": token, "user": public_user(user)})
@@ -3189,23 +3413,34 @@ class Handler(BaseHTTPRequestHandler):
                 code = str(secrets.randbelow(900000) + 100000)
                 RESET_CODES[email] = {"code": code, "userId": user["id"], "expires": time.time() + 600}
                 sent = send_reset_email(email, code)
-                result = {"ok": True, "message": "验证码已发送，请查看邮箱。"}
                 if not sent:
-                    result["message"] = "服务器未配置 SMTP，临时验证码已显示。"
-                    result["debugCode"] = code
-                return self.send_json(result)
+                    RESET_CODES.pop(email, None)
+                    audit_event("password_reset_mail_unavailable", target=user.get("id"), handler=self, success=False)
+                    return self.send_json({"error": "密码找回邮件服务暂不可用，请联系管理员。"}, 503)
+                audit_event("password_reset_requested", target=user.get("id"), handler=self)
+                return self.send_json({"ok": True, "message": "验证码已发送，请查看邮箱。"})
             if path == "/api/password/reset" and method == "POST":
                 body = self.read_body()
                 email = (body.get("email") or "").strip().lower()
                 code = (body.get("code") or "").strip()
                 password = body.get("password") or ""
+                verify_key = f"{client_ip(self)}:{email}"
+                now = time.time()
+                attempts = [stamp for stamp in RESET_VERIFY_ATTEMPTS.get(verify_key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+                if len(attempts) >= LOGIN_MAX_FAILURES:
+                    audit_event("password_reset_blocked", target=email, handler=self, success=False)
+                    return self.send_json({"error": "验证尝试过多，请 15 分钟后重试。"}, 429)
                 record = RESET_CODES.get(email)
                 if not record or record.get("code") != code or record.get("expires", 0) < time.time():
+                    attempts.append(now)
+                    RESET_VERIFY_ATTEMPTS[verify_key] = attempts
                     return self.send_json({"error": "验证码无效或已过期。"}, 400)
-                if len(password) < 6:
-                    return self.send_json({"error": "密码至少 6 位。"}, 400)
+                if len(password) < 10:
+                    return self.send_json({"error": "密码至少 10 位。"}, 400)
                 update_user_account(record["userId"], {"password": password})
                 RESET_CODES.pop(email, None)
+                RESET_VERIFY_ATTEMPTS.pop(verify_key, None)
+                audit_event("password_reset_completed", target=record["userId"], handler=self)
                 return self.send_json({"ok": True})
             if path in ("/api/toolbox/config", "/api/config"):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
@@ -3217,6 +3452,8 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                    audit_event("backend_" + method.lower(), auth["user"], path, self)
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
                 if path.startswith("/api/admin"):
@@ -3230,6 +3467,15 @@ class Handler(BaseHTTPRequestHandler):
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
+        if path == "/api/super/audit" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权查看操作日志。"}, 403)
+            return self.send_json(read_audit_events())
+        if path == "/api/super/ip-location/test" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权测试定位接口。"}, 403)
+            ip = str(self.read_body().get("ip") or client_ip(self)).strip()
+            return self.send_json({"ip": ip, "address": locate_ip(ip, True)})
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)
@@ -3296,10 +3542,14 @@ class Handler(BaseHTTPRequestHandler):
             b = self.read_body()
             ids = set(b.get("ids") or [])
             action = b.get("action")
+            if action == "delete" and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                audit_event("users_batch_delete_reauth_failed", auth["user"], ",".join(sorted(ids)), self, success=False)
+                return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
             if "admin" in ids and action in ("delete", "disable"):
                 raise ValueError("默认总管理员不能删除或停用。")
             changed = 0
             if action == "delete":
+                security_backup("users-batch-delete", [USERS_PATH, SESSIONS_PATH])
                 before = len(store["users"])
                 store["users"] = [u for u in store["users"] if u.get("id") not in ids]
                 changed = before - len(store["users"])
@@ -3316,6 +3566,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("不支持的批量操作。")
             write_users(store)
+            if action in ("delete", "disable"):
+                for user_id in ids:
+                    revoke_user_sessions(user_id)
+            audit_event(f"users_batch_{action}", auth["user"], ",".join(sorted(ids)), self,
+                        {"changed": changed})
             return self.send_json({"ok": True, "changed": changed})
         if path == "/api/super/users":
             if method == "GET":
@@ -3333,7 +3588,15 @@ class Handler(BaseHTTPRequestHandler):
                     if "active" in b:
                         allowed["active"] = bool(b.get("active"))
                     b = allowed
+                target = next((u for u in store["users"] if u.get("id") == b.get("id")), None)
+                sensitive = bool(b.get("password") or b.get("resetApiKey"))
+                sensitive = sensitive or (target and "email" in b and (b.get("email") or "").strip().lower() != (target.get("email") or "").strip().lower())
+                if sensitive and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    audit_event("account_admin_reauth_failed", auth["user"], b.get("id"), self, success=False)
+                    return self.send_json({"error": "修改敏感账号资料前必须验证当前管理员密码。"}, 403)
                 user = update_user_account(b.get("id"), b, True, auth["user"])
+                audit_event("account_admin_update", auth["user"], user.get("id"), self,
+                            {"fields": sorted(k for k in b if k not in ("password", "currentPassword"))})
                 return self.send_json(public_user(user))
             if method == "DELETE":
                 if not is_super(auth["user"]):
@@ -3341,8 +3604,14 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.read_body()
                 if b.get("id") == "admin":
                     raise ValueError("不能删除默认总管理员。")
+                if not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    audit_event("user_delete_reauth_failed", auth["user"], b.get("id"), self, success=False)
+                    return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
+                security_backup(f"user-delete-{b.get('id')}", [USERS_PATH, SESSIONS_PATH, user_config_path(b.get("id"))])
                 store["users"] = [u for u in store["users"] if u.get("id") != b.get("id")]
                 write_users(store)
+                revoke_user_sessions(b.get("id"))
+                audit_event("user_delete", auth["user"], b.get("id"), self)
                 return self.send_json({"ok": True})
         if path == "/api/super/invites/quote" and method == "POST":
             return self.send_json(invite_quote_for_actor(store, auth["user"], self.read_body()))
@@ -3552,9 +3821,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "message": message})
         if path == "/api/admin/account" and method == "PATCH":
             b = self.read_body()
-            if b.get("password") and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+            old_email = (auth["user"].get("email") or "").strip().lower()
+            new_email = (b.get("email") or old_email).strip().lower()
+            if (b.get("password") or new_email != old_email) and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                 return self.send_json({"error": "当前密码不正确。"}, 400)
             user = update_user_account(auth["user"]["id"], b, False)
+            audit_event("account_self_update", auth["user"], auth["user"]["id"], self,
+                        {"emailChanged": new_email != old_email, "passwordChanged": bool(b.get("password"))})
             return self.send_json({"user": public_user(user)})
         if path == "/api/admin/desktop/download" and method == "GET":
             if not is_super(auth["user"]):

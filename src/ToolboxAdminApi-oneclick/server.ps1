@@ -3,8 +3,8 @@
   [string]$AdminToken = $env:TOOLBOX_ADMIN_TOKEN
 )
 
-if ([string]::IsNullOrWhiteSpace($AdminToken)) {
-  $AdminToken = "dev-token"
+if ([string]::IsNullOrWhiteSpace($AdminToken) -or $AdminToken.Length -lt 12) {
+  throw "TOOLBOX_ADMIN_TOKEN/AdminToken is required and must be at least 12 characters."
 }
 
 $ErrorActionPreference = "Stop"
