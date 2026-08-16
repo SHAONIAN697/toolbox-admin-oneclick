@@ -3543,3 +3543,6 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
 .password-field input { flex: 1; min-width: 0; }
 .page-lock-group-title { display: flex; align-items: center; gap: 12px; }
 .page-lock-group-title .checkline { margin: 0; width: auto; }
+.login-ip-history { padding: 12px; border: 1px solid var(--line); margin-bottom: 12px; font-size: 13px; line-height: 1.8; }
+.audit-log-list { max-height: 420px; overflow: auto; border-top: 1px solid var(--line); padding: 10px; font-size: 12px; line-height: 1.8; }
+.audit-log-list > div { border-bottom: 1px solid var(--line); padding: 5px 0; }

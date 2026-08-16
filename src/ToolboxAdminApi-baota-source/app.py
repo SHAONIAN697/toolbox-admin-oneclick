@@ -26,6 +26,8 @@ DATA = ROOT / "data"
 USERS_PATH = DATA / "users.json"
 MAIL_PATH = DATA / "mail.json"
 SYSTEM_PATH = DATA / "system.json"
+AUDIT_LOG_PATH = DATA / "audit-log.json"
+IP_CACHE_PATH = DATA / "ip-location-cache.json"
 NOTICES_PATH = DATA / "notices.json"
 ADMIN_ANNOUNCEMENTS_PATH = DATA / "admin-announcements.json"
 ADMIN_ANNOUNCEMENT_READS_PATH = DATA / "admin-announcement-reads.json"
@@ -1181,9 +1183,10 @@ def handle_desktop_login(handler):
     body = handler.read_body()
     user = find_user_by_username((body.get("username") or "").strip())
     if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
+        audit_log("login_failed", user, handler, False, body.get("username") or "")
         return handler.send_json({"error": "用户名或密码错误。"}, 401)
     token = random_hex(32)
-    user = mark_user_login(user["id"])
+    user = mark_user_login(user["id"], handler)
     SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
     save_sessions()
     return handler.send_json({"token": token, "user": public_user(user)})
@@ -1225,6 +1228,7 @@ def default_system_settings():
             "tokenTtlMinutes": 10080,
             "lockBuildAfterFirstIssue": False,
         },
+        "ipLocation": {"providers": ["system"], "amapKey": "", "baiduKey": "", "tencentKey": ""},
     }
 
 
@@ -1403,7 +1407,7 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
-    for section in ("locations", "pay", "integrity", "clientBuild"):
+    for section in ("locations", "pay", "integrity", "clientBuild", "ipLocation"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -1704,6 +1708,8 @@ def public_user(user, store=None):
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
+        "lastLoginIp": (user.get("loginIpHistory") or [{}])[0],
+        "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
     }
     return data
 
@@ -1716,13 +1722,75 @@ def find_user_by_username(username):
     return next((u for u in read_users()["users"] if u.get("username") == username), None)
 
 
-def mark_user_login(user_id):
+def request_ip(handler):
+    forwarded = str(handler.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or str(handler.headers.get("X-Real-IP") or "").strip() or str(handler.client_address[0] or "")
+
+
+def fetch_json_url(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdmin/1.0"})
+    with urllib.request.urlopen(req, timeout=4) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def locate_ip(ip):
+    if not ip or ip in ("127.0.0.1", "::1"):
+        return "本机/内网"
+    cache = read_json(IP_CACHE_PATH, {})
+    if isinstance(cache.get(ip), dict) and time.time() - cache[ip].get("time", 0) < 86400 * 30:
+        return cache[ip].get("address", "")
+    cfg = read_system_settings().get("ipLocation") or {}
+    providers = cfg.get("providers") or ["system"]
+    address = ""
+    for provider in providers:
+        try:
+            if provider == "system":
+                data = fetch_json_url("https://ipwho.is/" + quote(ip))
+                if data.get("success") is not False:
+                    address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "amap" and cfg.get("amapKey"):
+                data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
+                if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
+            elif provider == "baidu" and cfg.get("baiduKey"):
+                data = fetch_json_url("https://api.map.baidu.com/location/ip?coor=bd09ll&ip=%s&ak=%s" % (quote(ip), quote(cfg["baiduKey"])))
+                detail = (data.get("content") or {}).get("address_detail") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("province", "city", "district", "street", "street_number"))
+            elif provider == "tencent" and cfg.get("tencentKey"):
+                data = fetch_json_url("https://apis.map.qq.com/ws/location/v1/ip?ip=%s&key=%s" % (quote(ip), quote(cfg["tencentKey"])))
+                detail = (data.get("result") or {}).get("ad_info") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("nation", "province", "city", "district"))
+        except Exception:
+            continue
+        if address:
+            break
+    address = address or "未知位置"
+    cache[ip] = {"address": address, "time": time.time()}
+    write_json(IP_CACHE_PATH, cache)
+    return address
+
+
+def audit_log(action, user=None, handler=None, success=True, detail=""):
+    data = read_json(AUDIT_LOG_PATH, {"items": []})
+    data.setdefault("items", []).insert(0, {"time": now_iso(), "action": action, "success": bool(success),
+        "userId": (user or {}).get("id", ""), "username": (user or {}).get("username", ""),
+        "ip": request_ip(handler) if handler else "", "path": getattr(handler, "route", "") if handler else "", "detail": str(detail or "")[:500]})
+    data["items"] = data["items"][:5000]
+    write_json(AUDIT_LOG_PATH, data)
+
+
+def mark_user_login(user_id, handler=None):
     store = read_users()
     login_at = now_iso()
     for row in store["users"]:
         if row.get("id") == user_id:
             row["lastLoginAt"] = login_at
+            if handler:
+                ip = request_ip(handler)
+                history = [x for x in row.get("loginIpHistory", []) if isinstance(x, dict)]
+                history.insert(0, {"ip": ip, "address": locate_ip(ip), "time": login_at})
+                row["loginIpHistory"] = history[:3]
             write_users(store)
+            audit_log("login_success", row, handler)
             return row
     return find_user_by_id(user_id)
 
@@ -2971,7 +3039,7 @@ class Handler(BaseHTTPRequestHandler):
                     invite["active"] = False
                 write_users(store)
                 token = random_hex(32)
-                user = mark_user_login(user["id"])
+                user = mark_user_login(user["id"], self)
                 SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
                 save_sessions()
                 return self.send_json({"token": token, "user": public_user(user)})
@@ -3019,6 +3087,8 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                    audit_log("backend_" + method.lower(), auth["user"], self, True, path)
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
                 if path.startswith("/api/admin"):
@@ -3032,6 +3102,10 @@ class Handler(BaseHTTPRequestHandler):
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
+        if path == "/api/super/audit" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "forbidden"}, 403)
+            return self.send_json(read_json(AUDIT_LOG_PATH, {"items": []}))
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)

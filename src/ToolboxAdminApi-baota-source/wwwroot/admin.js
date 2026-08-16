@@ -1335,6 +1335,15 @@ function renderAccount() {
   $('accountDisplayName').value = user.displayName || '';
   $('accountCurrentPassword').value = '';
   $('accountNewPassword').value = '';
+  let ip = $('accountLastLoginIp');
+  if (!ip) {
+    const label = document.createElement('label');
+    label.innerHTML = '最后登录 IP<input id="accountLastLoginIp" readonly>';
+    $('accountDisplayName').closest('.form-grid').appendChild(label);
+    ip = $('accountLastLoginIp');
+  }
+  const last = user.lastLoginIp || {};
+  ip.value = last.ip ? `${last.ip} · ${last.address || '未知位置'}` : '暂无记录';
 }
 
 function renderMailSettings() {
@@ -1438,7 +1447,7 @@ function renderUsers() {
         <div class="user-summary">
           <strong>${escapeHtml(user.displayName || user.username || '')}</strong>
           <span>${escapeHtml(user.username || '')} · ${escapeHtml(user.email || '未填写邮箱')}</span>
-          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
+          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))} · IP：${escapeHtml(user.lastLoginIp?.ip || '暂无')} ${escapeHtml(user.lastLoginIp?.address || '')}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
         </div>
         <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</span>
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
@@ -1454,6 +1463,7 @@ function renderUsers() {
         ` : ''}
       </div>
       <div class="user-card-detail" hidden>
+        <div class="login-ip-history"><strong>最近三次登录 IP</strong>${(user.loginIpHistory || []).map(item => `<div>${escapeHtml(formatDateTime(item.time))} · ${escapeHtml(item.ip || '')} · ${escapeHtml(item.address || '未知位置')}</div>`).join('') || '<div>暂无记录</div>'}</div>
         <div class="form-grid">
           <label>账号<input data-field="username" value="${escapeAttr(user.username || '')}"><small>${escapeHtml(user.id || '')}</small></label>
           <label>邮箱<input data-field="email" type="email" value="${escapeAttr(user.email || '')}"></label>
@@ -1771,6 +1781,12 @@ function renderSystemSettings() {
   const agent = state.system.agent || {};
   const pay = state.system.pay || {};
   const integrity = state.system.integrity || {};
+  ensureIpLocationPanel();
+  const ipLocation = state.system.ipLocation || {};
+  document.querySelectorAll('[data-ip-provider]').forEach(input => { input.checked = (ipLocation.providers || ['system']).includes(input.value); });
+  if ($('ipAmapKey')) $('ipAmapKey').value = ipLocation.amapKey || '';
+  if ($('ipBaiduKey')) $('ipBaiduKey').value = ipLocation.baiduKey || '';
+  if ($('ipTencentKey')) $('ipTencentKey').value = ipLocation.tencentKey || '';
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
   if ($('systemMenuName')) $('systemMenuName').value = locations.adminSystemName || '系统管理';
   if ($('systemFrontendGlow')) $('systemFrontendGlow').checked = locations.frontendActiveGlow !== false;
@@ -3133,6 +3149,25 @@ async function saveAppBasicSettings() {
   await saveWholeConfig('基础信息已保存。');
 }
 
+function ensureIpLocationPanel() {
+  if ($('ipLocationPanel')) return;
+  const view = $('view-system');
+  const panel = document.createElement('div');
+  panel.id = 'ipLocationPanel';
+  panel.className = 'panel collapsible-panel is-collapsed';
+  panel.dataset.collapsiblePanel = '';
+  panel.innerHTML = `<div class="panel-head"><h2>IP 定位与操作日志</h2><button id="saveIpLocationBtn" type="button">保存</button></div>
+    <div class="form-grid compact"><label class="checkline"><input data-ip-provider value="system" type="checkbox"> 系统自带</label><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label><label>高德 Key<input id="ipAmapKey"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>百度 AK<input id="ipBaiduKey"></label></div>
+    <div class="panel-head"><h3>后台操作日志</h3><button id="refreshAuditBtn" type="button">刷新日志</button></div><div id="auditLogRows" class="audit-log-list">点击刷新日志</div>`;
+  view.prepend(panel);
+  setupCollapsiblePanels();
+  $('saveIpLocationBtn').onclick = () => saveSystemSettings('ipLocation').catch(e => setStatus(e.message, true));
+  $('refreshAuditBtn').onclick = async () => {
+    const data = await api('/api/super/audit');
+    $('auditLogRows').innerHTML = (data.items || []).slice(0, 500).map(x => `<div>${escapeHtml(formatDateTime(x.time))} · ${escapeHtml(x.username || '未知用户')} · ${escapeHtml(x.ip || '')} · ${escapeHtml(x.action || '')} · ${escapeHtml(x.path || '')}</div>`).join('') || '暂无日志';
+  };
+}
+
 async function saveAppLoginSettings() {
   if (state.currentUser?.role !== 'super') {
     setStatus('只有总管理员可以保存登录页设置。', true);
@@ -4227,6 +4262,12 @@ async function saveSystemSettings(section) {
       enabled: $('integrityEnabled')?.checked !== false,
       tokenTtlMinutes: Number($('integrityTokenTtl')?.value || 10080),
       rotateSecret: $('integrityRotateSecret')?.checked || false
+    };
+  }
+  if (section === 'ipLocation') {
+    body.ipLocation = {
+      providers: [...document.querySelectorAll('[data-ip-provider]:checked')].map(x => x.value),
+      amapKey: $('ipAmapKey').value.trim(), baiduKey: $('ipBaiduKey').value.trim(), tencentKey: $('ipTencentKey').value.trim()
     };
   }
   state.system = await api('/api/super/system', {
