@@ -1044,7 +1044,7 @@ function renderApp() {
   $('appWidth').value = app.window_width || 1080;
   $('appHeight').value = app.window_height || 700;
   $('appPasswordEnabled').checked = app.password_enabled === undefined ? !!app.password : !!app.password_enabled;
-  $('appPassword').value = '';
+  $('appPassword').value = app.password_plain || '';
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
   $('appUpdateUrl').value = app.update_url || '';
   $('appUpdateTitle').value = app.update_title || '工具箱更新';
@@ -2351,7 +2351,7 @@ function ensurePageLockGroups() {
     state.config.page_lock_groups = {};
   }
   if (!state.config.page_lock_groups.default || typeof state.config.page_lock_groups.default !== 'object' || Array.isArray(state.config.page_lock_groups.default)) {
-    state.config.page_lock_groups.default = { title: '合并页面密码', password: '', pages: [] };
+    state.config.page_lock_groups.default = { title: '合并页面密码', enabled: false, password: '', pages: [] };
   }
   const group = state.config.page_lock_groups.default;
   if (!Array.isArray(group.pages)) group.pages = [];
@@ -2409,10 +2409,10 @@ function ensurePageAccessPanel() {
     </div>
     <div class="page-lock-group-box">
       <div class="page-lock-group-head">
-        <strong>合并页面密码</strong>
+        <div class="page-lock-group-title"><strong>合并页面密码</strong><label class="checkline"><input id="mergedPageLockEnabled" type="checkbox"> 启用</label></div>
         <small>从现有页面中逐个选择；这些页面输入一次密码后全部解锁。</small>
       </div>
-      <input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码">
+      <div class="password-field"><input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码"><button type="button" data-password-toggle="mergedPageLockPassword">显示</button></div>
       <div id="mergedPageLockSelectors" class="page-lock-group-selectors"></div>
       <button id="addMergedPageLockBtn" class="page-lock-group-add" type="button">＋ 添加页面</button>
       <label class="checkline page-lock-independent-toggle"><input id="showIndependentPageLocks" type="checkbox"> 设置独立页面密码</label>
@@ -2481,7 +2481,7 @@ function renderMergedPageLockSelectors(pages, locks, mergedGroup) {
 }
 
 function refreshMergedPageLockRows(locks, mergedGroup) {
-  const mergedPages = new Set(mergedGroup.pages.filter(Boolean));
+  const mergedPages = new Set(mergedGroup.enabled === true ? mergedGroup.pages.filter(Boolean) : []);
   const hasMergedPassword = !!mergedGroup.password || !!$('mergedPageLockPassword')?.value.trim();
   document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
     const pageId = row.dataset.pageLockId || '';
@@ -2527,8 +2527,16 @@ function renderPageAccessControls() {
   }
   if (independentArea) independentArea.hidden = !showIndependent;
   const mergedPassword = $('mergedPageLockPassword');
+  const mergedEnabled = $('mergedPageLockEnabled');
+  if (mergedEnabled) {
+    mergedEnabled.checked = mergedGroup.enabled === true;
+    mergedEnabled.onchange = () => {
+      mergedGroup.enabled = mergedEnabled.checked;
+      refreshMergedPageLockRows(locks, mergedGroup);
+    };
+  }
   if (mergedPassword) {
-    mergedPassword.value = '';
+    mergedPassword.value = mergedGroup.password_plain || '';
     mergedPassword.placeholder = mergedGroup.password ? '已设置，留空不修改' : '输入合并密码';
   }
   const softwareEnabled = $('softwareCatalogEnabled');
@@ -2548,7 +2556,7 @@ function renderPageAccessControls() {
         <td><strong>${escapeHtml(page.title)}</strong></td>
         <td>${escapeHtml(page.type)}</td>
         <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
-        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}"></td>
+        <td><div class="password-field"><input id="pageLockPassword_${escapeAttr(page.id)}" data-page-lock-password type="password" value="${escapeAttr(lock.password_plain || '')}" placeholder="输入独立密码"><button type="button" data-password-toggle="pageLockPassword_${escapeAttr(page.id)}">显示</button></div></td>
         <td><span data-page-lock-status class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置独立密码' : '未设置独立密码'}</span></td>
       </tr>
     `;
@@ -2565,8 +2573,10 @@ async function savePageAccess() {
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
   const mergedGroup = groups.default;
+  mergedGroup.enabled = $('mergedPageLockEnabled')?.checked === true;
   const mergedPassword = $('mergedPageLockPassword')?.value.trim() || '';
-  if (mergedPassword) mergedGroup.password = mergedPassword;
+  mergedGroup.password = mergedPassword;
+  mergedGroup.password_plain = mergedPassword;
   mergedGroup.title = '合并页面密码';
   const showIndependent = $('showIndependentPageLocks')?.checked === true;
   mergedGroup.show_independent = showIndependent;
@@ -2581,22 +2591,14 @@ async function savePageAccess() {
     const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
     const next = { ...current };
     const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
-    const merged = mergedPageSet.has(pageId);
+    const merged = mergedGroup.enabled && mergedPageSet.has(pageId);
     next.enabled = merged || (showIndependent && row.querySelector('[data-page-lock-enabled]')?.checked === true);
     next.title = title;
     if (merged) {
       next.group = 'default';
     } else {
       delete next.group;
-      if (showIndependent && password) next.password = password;
-    }
-    if (merged && !mergedGroup.password) {
-      missingPasswordFor = '合并页面密码';
-      return;
-    }
-    if (showIndependent && next.enabled && !merged && !next.password) {
-      missingPasswordFor = title;
-      return;
+      if (showIndependent) { next.password = password; next.password_plain = password; }
     }
     locks[pageId] = next;
   });
@@ -3145,17 +3147,10 @@ async function saveAppLoginSettings() {
 async function saveAppPasswordSettings() {
   const passwordEnabled = $('appPasswordEnabled').checked;
   const newPassword = $('appPassword').value.trim();
-  const hasExistingPassword = !!(state.config.app && state.config.app.password);
-
-  if (passwordEnabled && !hasExistingPassword && !newPassword) {
-    setStatus('开启工具箱密码时，请先填写新密码。', true);
-    return;
-  }
-
   const patch = {
-    password_enabled: passwordEnabled
+    password_enabled: passwordEnabled,
+    password: newPassword
   };
-  if (newPassword) patch.password = newPassword;
   await saveAppPatch(patch, '启动密码已保存。');
 }
 
@@ -4962,8 +4957,22 @@ $('saveMailBtn').onclick = () => saveMailSettings().catch((error) => setStatus(e
 $('testMailBtn').onclick = () => testMailSettings().catch((error) => setStatus(error.message, true));
 $('appPasswordEnabled').onchange = () => {
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
-  if (!$('appPasswordEnabled').checked) $('appPassword').value = '';
 };
+$('toggleAppPassword').onclick = () => {
+  const input = $('appPassword');
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  $('toggleAppPassword').textContent = visible ? '显示' : '隐藏';
+};
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-password-toggle]');
+  if (!button) return;
+  const input = $(button.dataset.passwordToggle);
+  if (!input) return;
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  button.textContent = visible ? '显示' : '隐藏';
+});
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));
 $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(error.message, true));

@@ -502,6 +502,7 @@ def normalize_page_locks(config):
             changed = True
         password = str(lock.get("password") or "").strip()
         if password and not password.startswith("sha256$"):
+            lock["password_plain"] = password
             password = stored_password(password)
         if lock.get("password") != password:
             lock["password"] = password
@@ -535,8 +536,13 @@ def normalize_page_lock_groups(config):
             group = {"title": "", "password": "", "pages": []}
             groups[group_id] = group
             changed = True
+        enabled = config_bool(group.get("enabled"), False)
+        if group.get("enabled") is not enabled:
+            group["enabled"] = enabled
+            changed = True
         password = str(group.get("password") or "").strip()
         if password and not password.startswith("sha256$"):
+            group["password_plain"] = password
             password = stored_password(password)
         if group.get("password") != password:
             group["password"] = password
@@ -702,9 +708,6 @@ def ensure_config_defaults(config):
         changed = True
     if "admin_title" not in app:
         app["admin_title"] = DEFAULT_ADMIN_TITLE
-        changed = True
-    if app.get("password_enabled") is False and app.get("password"):
-        app["password"] = ""
         changed = True
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
@@ -968,6 +971,11 @@ def fetch_remote_config_payload(url):
 def public_toolbox_config(user_id):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
+    app.pop("password_plain", None)
+    for lock in (cfg.get("page_locks") or {}).values():
+        if isinstance(lock, dict): lock.pop("password_plain", None)
+    for group in (cfg.get("page_lock_groups") or {}).values():
+        if isinstance(group, dict): group.pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg)
@@ -1081,11 +1089,12 @@ def apply_app_patch(config, patch):
     for key, value in patch.items():
         if key == "password_enabled" and not value:
             app["password_enabled"] = False
-            app["password"] = ""
         elif key == "password_enabled":
             app["password_enabled"] = True
-        elif key == "password" and value:
-            app["password"] = stored_password(str(value))
+        elif key == "password":
+            plain = str(value or "")
+            app["password"] = stored_password(plain) if plain else ""
+            app["password_plain"] = plain
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
         else:

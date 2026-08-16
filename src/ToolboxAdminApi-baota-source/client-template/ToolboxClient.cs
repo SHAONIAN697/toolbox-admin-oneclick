@@ -2856,6 +2856,7 @@ namespace ToolboxClient
             if (!BoolValue(lockConfig, "enabled", false)) return true;
             string groupId = GetText(lockConfig, "group", "").Trim();
             Dictionary<string, object> groupConfig = String.IsNullOrWhiteSpace(groupId) ? new Dictionary<string, object>() : PageLockGroupConfig(groupId);
+            if (!String.IsNullOrWhiteSpace(groupId) && !BoolValue(groupConfig, "enabled", false)) return true;
             string stored = String.IsNullOrWhiteSpace(groupId) ? GetText(lockConfig, "password", "") : GetText(groupConfig, "password", "");
             string unlockKey = String.IsNullOrWhiteSpace(groupId) ? id : "group:" + groupId;
             if (String.IsNullOrWhiteSpace(stored))
