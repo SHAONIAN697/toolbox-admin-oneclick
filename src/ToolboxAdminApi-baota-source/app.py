@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -1724,8 +1725,21 @@ def find_user_by_username(username):
 
 
 def request_ip(handler):
-    forwarded = str(handler.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-    return forwarded or str(handler.headers.get("X-Real-IP") or "").strip() or str(handler.client_address[0] or "")
+    peer = str(handler.client_address[0] or "").strip()
+    try:
+        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted_proxy = False
+    if trusted_proxy:
+        forwarded = str(handler.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        real_ip = str(handler.headers.get("X-Real-IP") or "").strip()
+        for candidate in (forwarded, real_ip):
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                continue
+    return peer
 
 
 def fetch_json_url(url):
