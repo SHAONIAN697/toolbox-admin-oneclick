@@ -1739,9 +1739,12 @@ def locate_ip(ip, bypass_cache=False):
     if not ip or ip in ("127.0.0.1", "::1"):
         return "本机/内网"
     cache = read_json(IP_CACHE_PATH, {})
-    if not bypass_cache and isinstance(cache.get(ip), dict) and time.time() - cache[ip].get("time", 0) < 86400 * 30:
-        return cache[ip].get("address", "")
     cfg = read_system_settings().get("ipLocation") or {}
+    cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
+    if not bypass_cache and time.time() - cached.get("time", 0) < 86400 * 30:
+        cached_address = str(cached.get("address") or "")
+        if not cfg.get("unifiedChinese", True) or re.search(r"[\u3400-\u9fff]", cached_address):
+            return cached_address
     providers = cfg.get("providers") or ["system"]
     if cfg.get("mode") == "system": providers = ["system"]
     results = []
@@ -1786,6 +1789,18 @@ def locate_ip(ip, bypass_cache=False):
         for item in results: counts[item["address"]] = counts.get(item["address"], 0) + 1
         winner, votes = max(counts.items(), key=lambda item: item[1])
         if votes >= max(1, int(cfg.get("threshold") or 2)): address = winner
+    if cfg.get("unifiedChinese", True):
+        chinese = next((item["address"] for item in results if re.search(r"[\u3400-\u9fff]", item["address"])), "")
+        if chinese:
+            address = chinese
+        elif address != "未知位置":
+            try:
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                converted = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+                if re.search(r"[\u3400-\u9fff]", converted): address = converted
+            except Exception:
+                pass
+        address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
     cache[ip] = {"address": address, "time": time.time()}
     write_json(IP_CACHE_PATH, cache)
     return address
