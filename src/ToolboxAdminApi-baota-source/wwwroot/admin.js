@@ -1247,7 +1247,45 @@ function ensureAuditView() {
 async function loadAuditLog() {
   ensureAuditView();
   const data = await api('/api/super/audit');
-  $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map(x => `<div>${escapeHtml(formatDateTime(x.time))} · ${escapeHtml(x.username || '未知用户')} · ${escapeHtml(x.ip || '')} · ${escapeHtml(x.action || '')} · ${escapeHtml(x.path || '')}</div>`).join('') || '暂无日志';
+  $('auditLogRows').innerHTML = (data.items || []).slice(0, 1000).map((item) => {
+    const description = describeAuditEntry(item);
+    const account = item.username || item.detail || '未知用户';
+    return `<div title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}">${escapeHtml(formatDateTime(item.time))} · 用户：${escapeHtml(account)} · IP：${escapeHtml(item.ip || '未记录')} · ${escapeHtml(description)}</div>`;
+  }).join('') || '暂无日志';
+}
+
+function describeAuditEntry(item) {
+  const action = String(item.action || '');
+  const path = String(item.path || '');
+  if (action === 'login_success') return '登录后台成功';
+  if (action === 'login_failed') return '登录后台失败（账号或密码错误）';
+
+  const method = action.replace(/^backend_/, '').toUpperCase();
+  const methodNames = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
+  const targets = [
+    [/\/api\/admin\/buttons$/, '按钮'],
+    [/\/api\/admin\/account$/, '账号资料'],
+    [/\/api\/admin\/app$/, '基础信息'],
+    [/\/api\/admin\/popup$/, '弹窗设置'],
+    [/\/api\/admin\/config\/import$/, '导入配置'],
+    [/\/api\/admin\/config\/share$/, '配置分享'],
+    [/\/api\/admin\/config$/, '后台配置'],
+    [/\/api\/admin\/notices\/mail$/, '通知邮件'],
+    [/\/api\/admin\/notices$/, '通知'],
+    [/\/api\/admin\/announcements/, '更新公告'],
+    [/\/api\/admin\/client\/build$/, '工具箱客户端'],
+    [/\/api\/super\/users\/batch$/, '用户批量设置'],
+    [/\/api\/super\/users$/, '用户'],
+    [/\/api\/super\/invites/, '邀请码'],
+    [/\/api\/super\/mail/, '邮箱设置'],
+    [/\/api\/super\/system/, '系统设置'],
+    [/\/api\/super\/template/, '用户模板'],
+    [/\/api\/super\/orders/, '订单']
+  ];
+  const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
+  const operation = methodNames[method] || '操作';
+  const result = item.success === false ? '失败' : '成功';
+  return `${operation}${target}${result}`;
 }
 
 function ensureDownloadCleanupBasicField(grid) {
