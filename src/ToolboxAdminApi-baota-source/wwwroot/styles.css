@@ -3546,3 +3546,8 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
 .login-ip-history { padding: 12px; border: 1px solid var(--line); margin-bottom: 12px; font-size: 13px; line-height: 1.8; }
 .audit-log-list { max-height: 420px; overflow: auto; border-top: 1px solid var(--line); padding: 10px; font-size: 12px; line-height: 1.8; }
 .audit-log-list > div { border-bottom: 1px solid var(--line); padding: 5px 0; }
+.ip-location-settings { display: grid; gap: 18px; }
+.ip-provider-grid { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 12px 0; border-block: 1px solid var(--line); }
+.ip-provider-grid .checkline { width: auto; margin: 0; }
+.ip-test-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ip-test-row input { width: min(360px, 100%); }

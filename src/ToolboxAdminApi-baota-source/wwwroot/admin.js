@@ -1813,9 +1813,14 @@ function renderSystemSettings() {
   ensureIpLocationPanel();
   const ipLocation = state.system.ipLocation || {};
   document.querySelectorAll('[data-ip-provider]').forEach(input => { input.checked = (ipLocation.providers || ['system']).includes(input.value); });
+  if ($('ipLocationMode')) $('ipLocationMode').value = ipLocation.mode || 'consensus';
+  if ($('ipLocationThreshold')) $('ipLocationThreshold').value = Number(ipLocation.threshold || 2);
+  if ($('ipUnifiedChinese')) $('ipUnifiedChinese').checked = ipLocation.unifiedChinese !== false;
   if ($('ipAmapKey')) $('ipAmapKey').value = ipLocation.amapKey || '';
   if ($('ipBaiduKey')) $('ipBaiduKey').value = ipLocation.baiduKey || '';
   if ($('ipTencentKey')) $('ipTencentKey').value = ipLocation.tencentKey || '';
+  if ($('ipAmapSecret')) $('ipAmapSecret').value = ipLocation.amapSecret || '';
+  if ($('ipTencentSecret')) $('ipTencentSecret').value = ipLocation.tencentSecret || '';
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
   if ($('systemMenuName')) $('systemMenuName').value = locations.adminSystemName || '系统管理';
   if ($('systemFrontendGlow')) $('systemFrontendGlow').checked = locations.frontendActiveGlow !== false;
@@ -3185,11 +3190,18 @@ function ensureIpLocationPanel() {
   panel.id = 'ipLocationPanel';
   panel.className = 'panel collapsible-panel is-collapsed';
   panel.dataset.collapsiblePanel = '';
-  panel.innerHTML = `<div class="panel-head"><h2>IP 定位接口</h2><button id="saveIpLocationBtn" type="button">保存</button></div>
-    <div class="form-grid compact"><label class="checkline"><input data-ip-provider value="system" type="checkbox"> 系统自带</label><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label><label>高德 Key<input id="ipAmapKey"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>百度 AK<input id="ipBaiduKey"></label></div>`;
+  panel.innerHTML = `<div class="panel-head"><h2>IP 定位接口</h2><button id="saveIpLocationBtn" type="button">保存设置</button></div>
+    <div class="ip-location-settings"><div class="form-grid compact"><label>定位模式<select id="ipLocationMode"><option value="consensus">智能一致性（推荐）</option><option value="first">单接口优先（按顺序取第一个成功）</option><option value="system">仅系统自带</option></select></label><label>一致性阈值<input id="ipLocationThreshold" type="number" min="1" max="8" value="2"></label><label class="toggle-line">统一输出中文<span><input id="ipUnifiedChinese" type="checkbox"> 开启</span></label></div>
+    <div class="ip-provider-grid"><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德（推荐）</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯（推荐）</label><label class="checkline"><input data-ip-provider value="ip-api" type="checkbox"> ip-api.com</label><label class="checkline"><input data-ip-provider value="ipapi-co" type="checkbox"> ipapi.co</label><label class="checkline"><input data-ip-provider value="system" type="checkbox"> ipwho.is</label><label class="checkline"><input data-ip-provider value="ip-sb" type="checkbox"> ip.sb</label><label class="checkline"><input data-ip-provider value="pconline" type="checkbox"> 太平洋 IP</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label></div>
+    <div class="form-grid compact"><label>高德 Key<input id="ipAmapKey"></label><label>高德数据签名密钥<input id="ipAmapSecret"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>腾讯签名校验 Secret Key<input id="ipTencentSecret"></label><label>百度 AK<input id="ipBaiduKey"></label></div>
+    <div class="ip-test-row"><input id="ipLocationTestInput" placeholder="输入要测试的 IPv4/IPv6"><button id="testIpLocationBtn" type="button">测试</button><span id="ipLocationTestResult"></span></div></div>`;
   view.prepend(panel);
   setupCollapsiblePanels();
   $('saveIpLocationBtn').onclick = () => saveSystemSettings('ipLocation').catch(e => setStatus(e.message, true));
+  $('testIpLocationBtn').onclick = async () => {
+    const result = await api('/api/super/ip-location/test', {method: 'POST', body: JSON.stringify({ip: $('ipLocationTestInput').value.trim()})});
+    $('ipLocationTestResult').textContent = `${result.ip} · ${result.address}`;
+  };
 }
 
 async function saveAppLoginSettings() {
@@ -4291,7 +4303,9 @@ async function saveSystemSettings(section) {
   if (section === 'ipLocation') {
     body.ipLocation = {
       providers: [...document.querySelectorAll('[data-ip-provider]:checked')].map(x => x.value),
-      amapKey: $('ipAmapKey').value.trim(), baiduKey: $('ipBaiduKey').value.trim(), tencentKey: $('ipTencentKey').value.trim()
+      mode: $('ipLocationMode').value, threshold: Number($('ipLocationThreshold').value || 2), unifiedChinese: $('ipUnifiedChinese').checked,
+      amapKey: $('ipAmapKey').value.trim(), amapSecret: $('ipAmapSecret').value.trim(), baiduKey: $('ipBaiduKey').value.trim(),
+      tencentKey: $('ipTencentKey').value.trim(), tencentSecret: $('ipTencentSecret').value.trim()
     };
   }
   state.system = await api('/api/super/system', {

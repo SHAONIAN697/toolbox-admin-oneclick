@@ -1228,7 +1228,8 @@ def default_system_settings():
             "tokenTtlMinutes": 10080,
             "lockBuildAfterFirstIssue": False,
         },
-        "ipLocation": {"providers": ["system"], "amapKey": "", "baiduKey": "", "tencentKey": ""},
+        "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
+            "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
     }
 
 
@@ -1730,19 +1731,22 @@ def request_ip(handler):
 def fetch_json_url(url):
     req = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdmin/1.0"})
     with urllib.request.urlopen(req, timeout=4) as response:
-        return json.loads(response.read().decode("utf-8", "replace"))
+        charset = response.headers.get_content_charset() or ("gbk" if "pconline" in url else "utf-8")
+        return json.loads(response.read().decode(charset, "replace"))
 
 
-def locate_ip(ip):
+def locate_ip(ip, bypass_cache=False):
     if not ip or ip in ("127.0.0.1", "::1"):
         return "本机/内网"
     cache = read_json(IP_CACHE_PATH, {})
-    if isinstance(cache.get(ip), dict) and time.time() - cache[ip].get("time", 0) < 86400 * 30:
+    if not bypass_cache and isinstance(cache.get(ip), dict) and time.time() - cache[ip].get("time", 0) < 86400 * 30:
         return cache[ip].get("address", "")
     cfg = read_system_settings().get("ipLocation") or {}
     providers = cfg.get("providers") or ["system"]
-    address = ""
+    if cfg.get("mode") == "system": providers = ["system"]
+    results = []
     for provider in providers:
+        address = ""
         try:
             if provider == "system":
                 data = fetch_json_url("https://ipwho.is/" + quote(ip))
@@ -1759,11 +1763,29 @@ def locate_ip(ip):
                 data = fetch_json_url("https://apis.map.qq.com/ws/location/v1/ip?ip=%s&key=%s" % (quote(ip), quote(cfg["tencentKey"])))
                 detail = (data.get("result") or {}).get("ad_info") or {}
                 if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("nation", "province", "city", "district"))
+            elif provider == "ip-api":
+                data = fetch_json_url("http://ip-api.com/json/%s?lang=zh-CN" % quote(ip))
+                if data.get("status") == "success": address = "".join(str(data.get(k) or "") for k in ("country", "regionName", "city", "district"))
+            elif provider == "ipapi-co":
+                data = fetch_json_url("https://ipapi.co/%s/json/" % quote(ip))
+                if not data.get("error"): address = "".join(str(data.get(k) or "") for k in ("country_name", "region", "city"))
+            elif provider == "ip-sb":
+                data = fetch_json_url("https://api.ip.sb/geoip/%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "pconline":
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
         except Exception:
             continue
         if address:
-            break
-    address = address or "未知位置"
+            results.append({"provider": provider, "address": address})
+            if cfg.get("mode") == "first": break
+    address = results[0]["address"] if results else "未知位置"
+    if cfg.get("mode") == "consensus" and results:
+        counts = {}
+        for item in results: counts[item["address"]] = counts.get(item["address"], 0) + 1
+        winner, votes = max(counts.items(), key=lambda item: item[1])
+        if votes >= max(1, int(cfg.get("threshold") or 2)): address = winner
     cache[ip] = {"address": address, "time": time.time()}
     write_json(IP_CACHE_PATH, cache)
     return address
@@ -3106,6 +3128,11 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "forbidden"}, 403)
             return self.send_json(read_json(AUDIT_LOG_PATH, {"items": []}))
+        if path == "/api/super/ip-location/test" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "forbidden"}, 403)
+            ip = str(self.read_body().get("ip") or request_ip(self)).strip()
+            return self.send_json({"ip": ip, "address": locate_ip(ip, True)})
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)
