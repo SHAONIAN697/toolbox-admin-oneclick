@@ -31,7 +31,6 @@ namespace ToolboxClient
     {
         private const string ConfigUrl = "__CONFIG_URL__";
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
-        internal const string EmbeddedBrandIconBase64 = "__EMBEDDED_BRAND_ICON_BASE64__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
         internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
@@ -1861,13 +1860,12 @@ namespace ToolboxClient
         private void ApplyAppIcon(string url, string fallbackText)
         {
             string resolved = String.IsNullOrWhiteSpace(url) ? "" : ResolveAssetUrl(url);
-            string cacheKey = "cover|34x34|" + resolved;
+            string cacheKey = "34x34|" + resolved;
             Image image = null;
             if (!String.IsNullOrWhiteSpace(resolved))
             {
                 lock (iconCacheLock) iconCache.TryGetValue(cacheKey, out image);
             }
-            if (image == null) image = LoadEmbeddedBrandIcon();
             SetAppIconImage(image ?? CreateBrandBadge(fallbackText));
 
             if (image != null || String.IsNullOrWhiteSpace(resolved)) return;
@@ -1878,8 +1876,7 @@ namespace ToolboxClient
             }
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image remote = LoadRemoteImage(resolved, 34, 34, true);
-                lock (iconCacheLock) failedIcons.Remove("app|" + cacheKey);
+                Image remote = LoadRemoteImage(resolved, 34, 34);
                 if (remote == null) return;
                 try
                 {
@@ -1890,33 +1887,6 @@ namespace ToolboxClient
                 }
                 catch { }
             });
-        }
-
-        private Image LoadEmbeddedBrandIcon()
-        {
-            const string cacheKey = "embedded-brand-icon|34x34";
-            lock (iconCacheLock)
-            {
-                Image cached;
-                if (iconCache.TryGetValue(cacheKey, out cached)) return cached;
-            }
-            try
-            {
-                string encoded = Program.EmbeddedBrandIconBase64;
-                if (String.IsNullOrWhiteSpace(encoded) || encoded.StartsWith("__", StringComparison.Ordinal)) return null;
-                byte[] bytes = Convert.FromBase64String(encoded);
-                using (MemoryStream stream = new MemoryStream(bytes))
-                using (Image original = Image.FromStream(stream, true, true))
-                {
-                    Image resized = ResizeImageToFill(original, 34, 34);
-                    lock (iconCacheLock) iconCache[cacheKey] = resized;
-                    return resized;
-                }
-            }
-            catch
-            {
-                return null;
-            }
         }
 
         private void SetAppIconImage(Image image)
@@ -7985,11 +7955,11 @@ namespace ToolboxClient
             });
         }
 
-        private Image LoadRemoteImage(string url, int maxWidth, int maxHeight, bool cropToFill = false)
+        private Image LoadRemoteImage(string url, int maxWidth, int maxHeight)
         {
             if (String.IsNullOrWhiteSpace(url)) return null;
             url = ResolveAssetUrl(url);
-            string cacheKey = (cropToFill ? "cover|" : "") + maxWidth + "x" + maxHeight + "|" + url;
+            string cacheKey = maxWidth + "x" + maxHeight + "|" + url;
             lock (iconCacheLock)
             {
                 Image cached;
@@ -7997,27 +7967,23 @@ namespace ToolboxClient
             }
             try
             {
-                string requestUrl = IsSameServerUrl(url) ? WithRuntimeToken(url) : url;
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(requestUrl);
-                request.Timeout = 45000;
-                request.ReadWriteTimeout = 45000;
-                request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36";
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Timeout = 10000;
+                request.ReadWriteTimeout = 10000;
+                request.UserAgent = "ToolboxClient";
                 request.Accept = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
                 request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
                 request.AllowAutoRedirect = true;
                 request.KeepAlive = false;
+                try { Uri imageUri = new Uri(url); request.Referer = imageUri.GetLeftPart(UriPartial.Authority) + "/"; }
+                catch { }
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
-                using (MemoryStream imageBytes = new MemoryStream())
+                using (Image original = Image.FromStream(stream))
                 {
-                    stream.CopyTo(imageBytes);
-                    imageBytes.Position = 0;
-                    using (Image original = Image.FromStream(imageBytes, true, true))
-                    {
-                        Image resized = cropToFill ? ResizeImageToFill(original, maxWidth, maxHeight) : ResizeImage(original, maxWidth, maxHeight);
-                        lock (iconCacheLock) iconCache[cacheKey] = resized;
-                        return resized;
-                    }
+                    Image resized = ResizeImage(original, maxWidth, maxHeight);
+                    lock (iconCacheLock) iconCache[cacheKey] = resized;
+                    return resized;
                 }
             }
             catch
@@ -8031,31 +7997,15 @@ namespace ToolboxClient
             string value = (url ?? "").Trim();
             if (value.StartsWith("//")) return "https:" + value;
             if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
+            if (!value.StartsWith("/")) return value;
             try
             {
                 Uri config = new Uri(configUrl);
-                if (value.StartsWith("/")) return config.GetLeftPart(UriPartial.Authority) + value;
-                return new Uri(config, value).AbsoluteUri;
+                return config.GetLeftPart(UriPartial.Authority) + value;
             }
             catch
             {
                 return value;
-            }
-        }
-
-        private bool IsSameServerUrl(string url)
-        {
-            try
-            {
-                Uri asset = new Uri(url);
-                Uri config = new Uri(configUrl);
-                return asset.Scheme.Equals(config.Scheme, StringComparison.OrdinalIgnoreCase)
-                    && asset.Host.Equals(config.Host, StringComparison.OrdinalIgnoreCase)
-                    && asset.Port == config.Port;
-            }
-            catch
-            {
-                return false;
             }
         }
 
