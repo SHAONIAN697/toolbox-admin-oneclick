@@ -1857,7 +1857,7 @@ namespace ToolboxClient
         private void ApplyAppIcon(string url, string fallbackText)
         {
             string resolved = String.IsNullOrWhiteSpace(url) ? "" : ResolveAssetUrl(url);
-            string cacheKey = "34x34|" + resolved;
+            string cacheKey = "cover|34x34|" + resolved;
             Image image = null;
             if (!String.IsNullOrWhiteSpace(resolved))
             {
@@ -1873,7 +1873,7 @@ namespace ToolboxClient
             }
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image remote = LoadRemoteImage(resolved, 34, 34);
+                Image remote = LoadRemoteImage(resolved, 34, 34, true);
                 if (remote == null) return;
                 try
                 {
@@ -7908,11 +7908,11 @@ namespace ToolboxClient
             });
         }
 
-        private Image LoadRemoteImage(string url, int maxWidth, int maxHeight)
+        private Image LoadRemoteImage(string url, int maxWidth, int maxHeight, bool cropToFill = false)
         {
             if (String.IsNullOrWhiteSpace(url)) return null;
             url = ResolveAssetUrl(url);
-            string cacheKey = maxWidth + "x" + maxHeight + "|" + url;
+            string cacheKey = (cropToFill ? "cover|" : "") + maxWidth + "x" + maxHeight + "|" + url;
             lock (iconCacheLock)
             {
                 Image cached;
@@ -7934,7 +7934,7 @@ namespace ToolboxClient
                 using (Stream stream = response.GetResponseStream())
                 using (Image original = Image.FromStream(stream))
                 {
-                    Image resized = ResizeImage(original, maxWidth, maxHeight);
+                    Image resized = cropToFill ? ResizeImageToFill(original, maxWidth, maxHeight) : ResizeImage(original, maxWidth, maxHeight);
                     lock (iconCacheLock) iconCache[cacheKey] = resized;
                     return resized;
                 }
@@ -7976,6 +7976,25 @@ namespace ToolboxClient
                 graphics.SmoothingMode = SmoothingMode.HighQuality;
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 graphics.DrawImage(source, new Rectangle(0, 0, width, height));
+            }
+            return bitmap;
+        }
+
+        private static Image ResizeImageToFill(Image source, int width, int height)
+        {
+            double scale = Math.Max((double)width / source.Width, (double)height / source.Height);
+            int drawWidth = Math.Max(1, (int)Math.Ceiling(source.Width * scale));
+            int drawHeight = Math.Max(1, (int)Math.Ceiling(source.Height * scale));
+            int offsetX = (width - drawWidth) / 2;
+            int offsetY = (height - drawHeight) / 2;
+            Bitmap bitmap = new Bitmap(width, height);
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(source, new Rectangle(offsetX, offsetY, drawWidth, drawHeight));
             }
             return bitmap;
         }
