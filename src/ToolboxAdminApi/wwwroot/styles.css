@@ -3539,3 +3539,5 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
   .announcement-editor-grid .wide { grid-column: auto; }
   .announcement-popup-actions { flex-wrap: wrap; }
 }
+.password-field { display: flex; gap: 8px; align-items: center; }
+.password-field input { flex: 1; min-width: 0; }

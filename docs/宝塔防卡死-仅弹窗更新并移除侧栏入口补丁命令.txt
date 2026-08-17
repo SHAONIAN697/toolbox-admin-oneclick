@@ -1,0 +1,48 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到后台目录：$APP"; exit 1; }
+command -v patch >/dev/null 2>&1 || { echo "服务器缺少 patch 命令"; exit 1; }
+TS="$(date +%Y%m%d-%H%M%S)"; GZ="/tmp/toolbox-popup-$TS.patch.gz"; PATCH="${GZ%.gz}"; BACKUP="/www/backup/toolbox-popup-$TS"
+mkdir -p "$BACKUP/client-template"; cp -a "$APP/app.py" "$BACKUP/"; cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+cat > "$GZ.b64" <<'TOOLBOX_PATCH_B64'
+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
+TOOLBOX_PATCH_B64
+base64 -d "$GZ.b64" > "$GZ"
+echo "554c1eaa3a7187e8a32282868913b9ac319ba8c8e82e869b30cd514dc01e6d30  $GZ" | sha256sum -c -
+gzip -dc "$GZ" > "$PATCH"
+patch --dry-run --batch --forward -p1 -d "$APP" < "$PATCH"
+patch --batch --forward -p1 -d "$APP" < "$PATCH"
+python3 -m py_compile "$APP/app.py"
+grep -q '发现新版本' "$APP/client-template/ToolboxClient.cs"
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"; mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"; sleep 3; systemctl is-active --quiet "$SERVICE"
+rm -f "$GZ" "$GZ.b64" "$PATCH"
+echo "仅弹窗更新补丁完成。请重新生成并下载 EXE。备份：$BACKUP"

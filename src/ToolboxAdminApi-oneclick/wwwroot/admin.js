@@ -598,6 +598,7 @@ async function loadAll() {
     await loadNotices();
     await loadAdminAnnouncementsSafe();
     await loadBuiltinFunctions();
+    await loadClientVariants();
 
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
@@ -2015,6 +2016,16 @@ async function saveBuiltinFunctions() {
 async function loadBuiltinFunctions() {
   const result = await api('/api/admin/builtin-functions');
   state.builtinFunctions = result.functions || [];
+}
+
+async function loadClientVariants() {
+  const result = await api('/api/admin/client/variants');
+  const clientVariants = {};
+  (result.variants || []).forEach((variant) => {
+    if (variant?.id) clientVariants[variant.id] = variant;
+  });
+  if (!state.system) state.system = {};
+  state.system.clientVariants = clientVariants;
 }
 
 function variantSettings(variant) {

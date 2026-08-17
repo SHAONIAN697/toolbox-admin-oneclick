@@ -796,7 +796,16 @@ def client_variant_info(value):
 
 
 def public_client_variants():
-    return {"variants": [dict(CLIENT_VARIANTS[key]) for key in ("original", "studio", "tuner", "portal")]}
+    configured = read_system_settings().get("clientVariants") or {}
+    variants = []
+    for variant_id in ("original", "studio", "tuner", "portal"):
+        item = dict(CLIENT_VARIANTS[variant_id])
+        values = configured.get(variant_id) if isinstance(configured.get(variant_id), dict) else {}
+        for key in ("name", "badge", "description", "coverMode", "coverUrl"):
+            if key in values:
+                item[key] = values[key]
+        variants.append(item)
+    return {"variants": variants}
 
 
 def request_client_variant(handler, body=None):

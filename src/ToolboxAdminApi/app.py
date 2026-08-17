@@ -701,9 +701,6 @@ def ensure_config_defaults(config):
     if "admin_title" not in app:
         app["admin_title"] = DEFAULT_ADMIN_TITLE
         changed = True
-    if app.get("password_enabled") is False and app.get("password"):
-        app["password"] = ""
-        changed = True
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
@@ -966,6 +963,7 @@ def fetch_remote_config_payload(url):
 def public_toolbox_config(user_id):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
+    app.pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg)
@@ -1079,11 +1077,12 @@ def apply_app_patch(config, patch):
     for key, value in patch.items():
         if key == "password_enabled" and not value:
             app["password_enabled"] = False
-            app["password"] = ""
         elif key == "password_enabled":
             app["password_enabled"] = True
         elif key == "password" and value:
-            app["password"] = stored_password(str(value))
+            plain = str(value)
+            app["password"] = stored_password(plain)
+            app["password_plain"] = plain
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
         else:

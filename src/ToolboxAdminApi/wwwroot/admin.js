@@ -1070,7 +1070,7 @@ function renderApp() {
   $('appWidth').value = app.window_width || 1080;
   $('appHeight').value = app.window_height || 700;
   $('appPasswordEnabled').checked = app.password_enabled === undefined ? !!app.password : !!app.password_enabled;
-  $('appPassword').value = '';
+  $('appPassword').value = app.password_plain || '';
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
   $('appUpdateUrl').value = app.update_url || '';
   $('appUpdateTitle').value = app.update_title || '工具箱更新';
@@ -2633,7 +2633,11 @@ async function savePageAccess() {
     return;
   }
 
-  await saveWholeConfig('页面权限已保存；合并组内页面输入一次密码即可全部解锁。');
+  await api(configApiPath(), {
+    method: 'PUT',
+    body: JSON.stringify(state.config)
+  });
+  setStatus('页面权限已保存；合并组内页面输入一次密码即可全部解锁。');
 }
 
 function parsePositionValue(value) {
@@ -4990,7 +4994,12 @@ $('saveMailBtn').onclick = () => saveMailSettings().catch((error) => setStatus(e
 $('testMailBtn').onclick = () => testMailSettings().catch((error) => setStatus(error.message, true));
 $('appPasswordEnabled').onchange = () => {
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
-  if (!$('appPasswordEnabled').checked) $('appPassword').value = '';
+};
+$('toggleAppPassword').onclick = () => {
+  const input = $('appPassword');
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  $('toggleAppPassword').textContent = visible ? '显示' : '隐藏';
 };
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));

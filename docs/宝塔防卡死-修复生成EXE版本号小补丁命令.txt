@@ -1,0 +1,38 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到后台目录：$APP"; exit 1; }
+command -v patch >/dev/null 2>&1 || { echo "服务器缺少 patch 命令"; exit 1; }
+if grep -q 'CLIENT_APP_VERSION' "$APP/app.py"; then echo "EXE版本号补丁已经安装"; exit 0; fi
+TS="$(date +%Y%m%d-%H%M%S)"; GZ="/tmp/toolbox-version-$TS.patch.gz"; PATCH="${GZ%.gz}"; BACKUP="/www/backup/toolbox-version-$TS"
+mkdir -p "$BACKUP/client-template"; cp -a "$APP/app.py" "$BACKUP/"; cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+cat > "$GZ.b64" <<'TOOLBOX_PATCH_B64'
+H4sIAAAAAAAEAK1VbW+bSBD+7l+xx5eCDMROWidulGsdm0ZUrmMFktNJSKsFxs5eeOuytLbUH3/D
+Wy62E4W2xwf2beaZ2ZnZeUK+WhHDWHNJFHY0fe95tzmI3PMmYcwTnkvBZCpwmWUzJpnnzdOARZ7n
+Qpx5XhBxSKThwyoVYHxDRZ4mZpArRPGPchGgXJpGfrqp0CYZN9IEUCl4eNSVCBQxCY+i02q/BOnx
+JIQNOQ5Oj0fHK9McwLt3fjgmw8Fg9PZtzzAMwo72YI72UXr9fp/4r4t9/EiMkxN9RPr4PyW4TFgM
+ecYCIDvCPdJ+PJEgEhaRIE1ySTBWPFkTK/YhDCGcpsmKrz/naUIuiEKp9eXSms2sGZ1eLz7ZV/Sz
+c72gVDl/Da+2escEZ4msoaZz21q49G5yY09w/FmQOfMhehZpPrm05hVevwseFsVdnfMdtMlySe+s
+G8fudsHLgkehHdYQl7f2fEbtWWdFR7I4e6rruJMvyy7qNu6uBZdbB6Cxbi9c6+rGdv+mjmXVPpR1
+cToaDrAm+jgO9bNOtVF+jZ3yHcVFjBauQLqwkSrLMp0oRRZiJVI8ps3LUXBX0UxX8FjVznfB+Iqo
+TgVo2vmiiKJr8dc9l+CUXqiNDU170VoHE20uBXwtuIDwvGc8dxwUQkBVipM8h9iPtiaasjYQFBLd
+azdVrdxeYKBw1up++EAS+N5CqQOdDLQnxfaMmb3TMgx/uGK7ZCKHFmYp0rVgsblflTpJC9kCYWz+
+f89/IkV1um9FpJEfP8jBHZq81S63GahEG6/NaRpnTICbqv8d/3mBbqC4LERCVizK4RmfassYpDiT
+zn36PXnUkKLYVzgQxmjVYr3wt7gCy3CfKLJtF6JAxVKyYYOxPxid+EPTHJ+FZ+PxapcNatmm5zeL
+8gUfj0ajsrdXY9XdQ1iRmD0ArZmBwgZThNfRic9yoIWIdPKt7pcXM+vT5Hbu7nVL7X0duTwtBDaC
+i2ZiCkCKwYS/ebnpv9FJkN8zkdEI60OwSIWGNWhQ0Qb9B3lD0143cEAFh9DNLX4BraWDFzFpVFIJ
+Ivc7Iu9SwyEupqyJgLkGqT52LY2kgihDc6B0ucYTEjk04ZesQXnYHahllJew8pKCWrhmi68Thk+s
+wsV5W2XVaVVn9f14qGg6YRmnD7DVSetbO6uQ9Yq/KqaiOVLV0wrFXt77F4pa/kfDCQAA
+TOOLBOX_PATCH_B64
+base64 -d "$GZ.b64" > "$GZ"
+echo "25764b500c82941355c69bda4b10351b1d2fd512ac6efd9c1174700b02f71b27  $GZ" | sha256sum -c -
+gzip -dc "$GZ" > "$PATCH"
+patch --dry-run --batch --forward -p1 -d "$APP" < "$PATCH"
+patch --batch --forward -p1 -d "$APP" < "$PATCH"
+python3 -m py_compile "$APP/app.py"
+grep -q 'CLIENT_APP_VERSION' "$APP/app.py"
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"; mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"; sleep 3; systemctl is-active --quiet "$SERVICE"
+rm -f "$GZ" "$GZ.b64" "$PATCH"
+echo "版本号来源修复完成。请回后台重新生成并下载 EXE。备份：$BACKUP"

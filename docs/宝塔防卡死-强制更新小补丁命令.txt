@@ -1,0 +1,73 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到后台目录：$APP"; exit 1; }
+command -v patch >/dev/null 2>&1 || { echo "服务器缺少 patch 命令"; exit 1; }
+if grep -q "EnforceUpdatePolicy" "$APP/client-template/ToolboxClient.cs" && grep -q "appUpdateMinVersion" "$APP/wwwroot/admin.js"; then echo "补丁已经安装"; exit 0; fi
+TS="$(date +%Y%m%d-%H%M%S)"; GZ="/tmp/toolbox-update-$TS.patch.gz"; PATCH="${GZ%.gz}"; BACKUP="/www/backup/toolbox-update-$TS"
+mkdir -p "$BACKUP/client-template" "$BACKUP/wwwroot"
+cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+cp -a "$APP/wwwroot/admin.js" "$BACKUP/wwwroot/"
+cat > "$GZ.b64" <<'TOOLBOX_PATCH_B64'
+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
+FFz8HwAA
+TOOLBOX_PATCH_B64
+base64 -d "$GZ.b64" > "$GZ"
+echo "6b4cdf53b4206d6c98b8ce6a704737669abed78ae18062ae74b0c3e22b411ad0  $GZ" | sha256sum -c -
+gzip -dc "$GZ" > "$PATCH"
+patch --dry-run --batch --forward -p3 -d "$APP" < "$PATCH"
+patch --batch --forward -p3 -d "$APP" < "$PATCH"
+grep -q "EnforceUpdatePolicy" "$APP/client-template/ToolboxClient.cs"
+grep -q "appUpdateMinVersion" "$APP/wwwroot/admin.js"
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"
+mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"; sleep 3; systemctl is-active --quiet "$SERVICE"
+rm -f "$GZ" "$GZ.b64" "$PATCH"
+echo "小补丁更新完成。备份目录：$BACKUP"

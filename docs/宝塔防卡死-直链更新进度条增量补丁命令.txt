@@ -1,0 +1,47 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到后台目录：$APP"; exit 1; }
+command -v patch >/dev/null 2>&1 || { echo "服务器缺少 patch 命令"; exit 1; }
+grep -q "DownloadAndReplaceCurrentExe" "$APP/client-template/ToolboxClient.cs" || { echo "请先执行直链自动替换主程序小补丁"; exit 1; }
+if grep -q "FormatUpdateBytes" "$APP/client-template/ToolboxClient.cs"; then echo "更新进度条补丁已经安装"; exit 0; fi
+TS="$(date +%Y%m%d-%H%M%S)"; GZ="/tmp/toolbox-progress-$TS.patch.gz"; PATCH="${GZ%.gz}"; BACKUP="/www/backup/toolbox-progress-$TS"
+mkdir -p "$BACKUP/client-template"; cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+cat > "$GZ.b64" <<'TOOLBOX_PATCH_B64'
+H4sIAAAAAAAEAJ1XW4/bRBR+z68YLCHZxHESJ+1uKUVNsrtt1d2y6qbsA+FhYk+yQyceM57sZrut
+xAsSFwFvSEAFQnRFhQRqpUrlgYo/Q7Z94y9wxmPn4njTXfxgj4/P9TuXGfu010OlUp9KZOBy6+1O
+505ERNTpNPwBDWgkBZZcwGsYrmGJO51N7mHW6bTJIIQ756zLRy1GSSBLXdLjgpRCwfuCRJHjRQYy
+uuVIeBPOWGsjpCUeEI9R726n42lhCQoZliSjVCkp0MAnI1StrXa91arjuN6Ke9HtoWqlcrFeL5RK
+JYTLGTXlrJZCsVhE3dezXb2KSivuJdeuVlExXtRcBMQAD0gUYo+gOZECmr0ALhr0kTcUAr6tjwi6
+ggA5CBRLygMHKN5Q4i4j21juXc4VVq5pScXjtPigSwNixi/XiFTAq7Vp2ciQ2pXSMPQhmJKBiuja
+kPrOLXKgnqbltPlOrNY0bhkWfDYcMiKGtWAay2HktMlIgl3j5Pdfxg8f//Pnl69evBg/Px5/+vzl
+H09Pfnh28u0Tx3GMy4XirPAGFwOkPdiFTPEDUBGQg5huWhnmWb6JvYyNrIE5GaW1yYVPxI48ZAqm
+DMXZoCPir1HMeH+Zoh2JhdzmEVWZSdTM0ZwW5JCIbaxyuUyTroQdeo8kkaulWa9VbKhZdykCW3hE
+B8Dd5COQ7WEWkaXs0JLnYG/xQArOTufexF3CEpk2lSwNQNOPUF5BnDz8BHL08vPPJlkzbLRJeorR
+hZDbPIRVddVGu9SXe7CuXQLydUL7ezFP3QasAzmpkkCa6uao2wYeUHYIuFU3NJdOaZMz30IPMt5v
+J4OmiUUSQ0pJdM8yHC36eKF+qo+ujWKshwN4gy9xnuIXGDo2eh+zocKqsuDTLKJrRGLKlkL66u8f
+T74+ToH9avzFz+PvHqsey4F09XRI3QU/8uogchq+b85ke2lp5gileJ5XTgOxVGpnjx+Yco9G2dG0
+S7q6v5Ae3QmcE7KZFdBsznWCYSJEH1yXMrxNPh6SSGqSoza4Rh94PlR52OL3KGO4fMGppJP9TuyY
+KFedipGvfI0fBIxjPwWktYeDPvFR8QryCSN9EDd59yPiSRQR2LyEjU4RWd8HfQ3RjxCx5k0dFUoo
+czVJnwY3gn1+l5gKhIan5pSZmoTqOvsgR2qzIE7qzjYRHniC+0RtEm8al9EDK5uwM7iwKHC0SFIX
+hUyG2iY4uqU2N+gxM241taaBGXdanoe5jqnrnNGn9nXA+SrnC99JGz8RXSqkqz71Rm0vWOrSah5K
+Epkw1tTzNvEI3Sd+vDujcuxZHnObS8zilzZPZLQIMrPBWHnRxPmcpywv7g3KCJw+Qkbk8tJuRIeB
+N+FcVtHx4apWqdsX4WxVcy/YK2c+WmkFeWiDH6ynsUpdV+eoyY6XK5PGSqOQR2ThmDKfyck+n7Dm
+aqQ9BFlq4cAjjAFg9+9D8a4LwQV6A2bWkDErX/CUqKbmofoGoVQTMphGpaF0V/Q5tVa/ZLvVc4F5
+XtSW+PJ/0D0jsm1xuEZUXalqNJOzcR7jFrQnzAY46+i9xNCNnnT/o6evnh3/+9f38dAbOQmzvXj0
+tGcUNYdS8iBy3rs5S73hwdFwF4sA4FroqMLschp0KOi+GtBqQFEvPekvdjnjQN5XM8aaCmcmqKqz
+mAW9gyoWEkQORQDD7uFvL386Hj/6dfzkm2z7T0XeVQcYt76J3pp/TvQkfGVkKrqffJ88rdk/iopT
+qeifCnSteXabr7N1mo2tM9hY1K1VzmtMFN5cUJgIa1nFMsfxoFCc5jeT0i40G7oR6XqOpv95ZpLr
+EHa1mf7P9LwUh4X/ACUgQq2KDwAA
+TOOLBOX_PATCH_B64
+base64 -d "$GZ.b64" > "$GZ"
+echo "e33c6e68fa32338b5cb8da9e0579dfae0241c6824803ad1e9254869afcc71a0b  $GZ" | sha256sum -c -
+gzip -dc "$GZ" > "$PATCH"
+patch --dry-run --batch --forward -p1 -d "$APP" < "$PATCH"
+patch --batch --forward -p1 -d "$APP" < "$PATCH"
+grep -q "FormatUpdateBytes" "$APP/client-template/ToolboxClient.cs"
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"; mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"; sleep 3; systemctl is-active --quiet "$SERVICE"
+rm -f "$GZ" "$GZ.b64" "$PATCH"
+echo "更新进度条补丁完成。必须回后台重新生成并下载 EXE。备份：$BACKUP"

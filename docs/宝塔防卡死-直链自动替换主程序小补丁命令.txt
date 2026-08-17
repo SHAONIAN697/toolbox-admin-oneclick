@@ -1,0 +1,68 @@
+set -e
+SERVICE="toolbox-admin"
+APP="$(systemctl show "$SERVICE" -p WorkingDirectory --value 2>/dev/null || true)"
+[ -n "$APP" ] && [ "$APP" != "/" ] || APP="/www/wwwroot/gjx.vst76.cn"
+[ -d "$APP" ] || { echo "找不到后台目录：$APP"; exit 1; }
+command -v patch >/dev/null 2>&1 || { echo "服务器缺少 patch 命令"; exit 1; }
+if grep -q "DownloadAndReplaceCurrentExe" "$APP/client-template/ToolboxClient.cs"; then echo "直链自动替换补丁已经安装"; exit 0; fi
+TS="$(date +%Y%m%d-%H%M%S)"; GZ="/tmp/toolbox-self-update-$TS.patch.gz"; PATCH="${GZ%.gz}"; BACKUP="/www/backup/toolbox-self-update-$TS"
+mkdir -p "$BACKUP/client-template" "$BACKUP/wwwroot"
+cp -a "$APP/client-template/ToolboxClient.cs" "$BACKUP/client-template/"
+cp -a "$APP/wwwroot/admin.js" "$BACKUP/wwwroot/"
+cat > "$GZ.b64" <<'TOOLBOX_PATCH_B64'
+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
+4sEkuv4AXn9GubsfAAA=
+TOOLBOX_PATCH_B64
+base64 -d "$GZ.b64" > "$GZ"
+echo "61331713f7091cd00b62df099f0ae0af7a9942fac1b2686428ce6bebb51c90c0  $GZ" | sha256sum -c -
+gzip -dc "$GZ" > "$PATCH"
+patch --dry-run --batch --forward -p3 -d "$APP" < "$PATCH"
+patch --batch --forward -p3 -d "$APP" < "$PATCH"
+grep -q "DownloadAndReplaceCurrentExe" "$APP/client-template/ToolboxClient.cs"
+rm -rf "$APP/data/client-cache" "$APP/data/client-jobs"
+mkdir -p "$APP/data/client-cache" "$APP/data/client-jobs"
+systemctl restart "$SERVICE"; sleep 3; systemctl is-active --quiet "$SERVICE"
+rm -f "$GZ" "$GZ.b64" "$PATCH"
+echo "直链自动替换补丁完成。备份目录：$BACKUP"

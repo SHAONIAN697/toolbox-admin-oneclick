@@ -12550,10 +12550,76 @@ namespace ToolboxClient
 
         private bool VerifyPassword(string password, string stored)
         {
+            if (stored.StartsWith("pbkdf2_sha256$", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] pbkdf2Parts = stored.Split(new char[] { '$' });
+                int rounds;
+                byte[] salt;
+                byte[] expected;
+                if (pbkdf2Parts.Length != 4 || !Int32.TryParse(pbkdf2Parts[1], out rounds) || rounds <= 0 ||
+                    !TryHexBytes(pbkdf2Parts[2], out salt) || !TryHexBytes(pbkdf2Parts[3], out expected)) return false;
+                byte[] actual = Pbkdf2Sha256(Encoding.UTF8.GetBytes(password), salt, rounds, expected.Length);
+                int difference = actual.Length ^ expected.Length;
+                for (int i = 0; i < actual.Length && i < expected.Length; i++) difference |= actual[i] ^ expected[i];
+                return difference == 0;
+            }
             if (!stored.StartsWith("sha256$", StringComparison.OrdinalIgnoreCase)) return password == stored;
             string[] parts = stored.Split(new char[] { '$' });
             if (parts.Length != 3) return false;
             return Sha256Hex(parts[1] + password).Equals(parts[2], StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryHexBytes(string value, out byte[] bytes)
+        {
+            bytes = new byte[0];
+            if (String.IsNullOrEmpty(value) || value.Length % 2 != 0) return false;
+            byte[] result = new byte[value.Length / 2];
+            for (int i = 0; i < result.Length; i++)
+            {
+                int high = HexValue(value[i * 2]);
+                int low = HexValue(value[i * 2 + 1]);
+                if (high < 0 || low < 0) return false;
+                result[i] = (byte)((high << 4) | low);
+            }
+            bytes = result;
+            return true;
+        }
+
+        private static int HexValue(char value)
+        {
+            if (value >= '0' && value <= '9') return value - '0';
+            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+            return -1;
+        }
+
+        private static byte[] Pbkdf2Sha256(byte[] password, byte[] salt, int rounds, int outputLength)
+        {
+            byte[] output = new byte[outputLength];
+            using (HMACSHA256 hmac = new HMACSHA256(password))
+            {
+                int offset = 0;
+                for (int block = 1; offset < outputLength; block++)
+                {
+                    byte[] input = new byte[salt.Length + 4];
+                    Buffer.BlockCopy(salt, 0, input, 0, salt.Length);
+                    input[salt.Length] = (byte)(block >> 24);
+                    input[salt.Length + 1] = (byte)(block >> 16);
+                    input[salt.Length + 2] = (byte)(block >> 8);
+                    input[salt.Length + 3] = (byte)block;
+                    byte[] current = hmac.ComputeHash(input);
+                    byte[] derived = (byte[])current.Clone();
+                    for (int iteration = 1; iteration < rounds; iteration++)
+                    {
+                        current = hmac.ComputeHash(current);
+                        for (int i = 0; i < derived.Length; i++) derived[i] ^= current[i];
+                    }
+                    int count = Math.Min(derived.Length, outputLength - offset);
+                    Buffer.BlockCopy(derived, 0, output, offset, count);
+                    offset += count;
+                }
+            }
+            return output;
         }
 
         private string DownloadText(string url)
