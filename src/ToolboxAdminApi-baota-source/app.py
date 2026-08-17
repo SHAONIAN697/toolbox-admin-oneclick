@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -26,6 +27,8 @@ DATA = ROOT / "data"
 USERS_PATH = DATA / "users.json"
 MAIL_PATH = DATA / "mail.json"
 SYSTEM_PATH = DATA / "system.json"
+AUDIT_LOG_PATH = DATA / "audit-log.json"
+IP_CACHE_PATH = DATA / "ip-location-cache.json"
 NOTICES_PATH = DATA / "notices.json"
 ADMIN_ANNOUNCEMENTS_PATH = DATA / "admin-announcements.json"
 ADMIN_ANNOUNCEMENT_READS_PATH = DATA / "admin-announcement-reads.json"
@@ -419,7 +422,6 @@ def default_config():
             "theme_count": 19,
             "allow_client_theme": True,
             "default_view_mode": "grid",
-            "button_content_layout": "icon_left",
             "bg_path": "",
             "output_dir": "",
         },
@@ -456,10 +458,6 @@ def normalize_view_mode(value, default="grid"):
     if text in ("grid", "宫格", "gongge", "gridmode", "grid_mode"):
         return "grid"
     return default
-
-
-def normalize_button_content_layout(value):
-    return "icon_top" if str(value or "").strip().lower() == "icon_top" else "icon_left"
 
 
 def normalize_feature_settings(config):
@@ -507,6 +505,7 @@ def normalize_page_locks(config):
             changed = True
         password = str(lock.get("password") or "").strip()
         if password and not password.startswith("sha256$"):
+            lock["password_plain"] = password
             password = stored_password(password)
         if lock.get("password") != password:
             lock["password"] = password
@@ -540,8 +539,13 @@ def normalize_page_lock_groups(config):
             group = {"title": "", "password": "", "pages": []}
             groups[group_id] = group
             changed = True
+        enabled = config_bool(group.get("enabled"), False)
+        if group.get("enabled") is not enabled:
+            group["enabled"] = enabled
+            changed = True
         password = str(group.get("password") or "").strip()
         if password and not password.startswith("sha256$"):
+            group["password_plain"] = password
             password = stored_password(password)
         if group.get("password") != password:
             group["password"] = password
@@ -708,16 +712,9 @@ def ensure_config_defaults(config):
     if "admin_title" not in app:
         app["admin_title"] = DEFAULT_ADMIN_TITLE
         changed = True
-    if app.get("password_enabled") is False and app.get("password"):
-        app["password"] = ""
-        changed = True
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
-        changed = True
-    button_content_layout = normalize_button_content_layout(app.get("button_content_layout"))
-    if app.get("button_content_layout") != button_content_layout:
-        app["button_content_layout"] = button_content_layout
         changed = True
     if normalize_feature_settings(config):
         changed = True
@@ -977,6 +974,11 @@ def fetch_remote_config_payload(url):
 def public_toolbox_config(user_id):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
+    app.pop("password_plain", None)
+    for lock in (cfg.get("page_locks") or {}).values():
+        if isinstance(lock, dict): lock.pop("password_plain", None)
+    for group in (cfg.get("page_lock_groups") or {}).values():
+        if isinstance(group, dict): group.pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg)
@@ -1090,15 +1092,14 @@ def apply_app_patch(config, patch):
     for key, value in patch.items():
         if key == "password_enabled" and not value:
             app["password_enabled"] = False
-            app["password"] = ""
         elif key == "password_enabled":
             app["password_enabled"] = True
-        elif key == "password" and value:
-            app["password"] = stored_password(str(value))
+        elif key == "password":
+            plain = str(value or "")
+            app["password"] = stored_password(plain) if plain else ""
+            app["password_plain"] = plain
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
-        elif key == "button_content_layout":
-            app[key] = normalize_button_content_layout(value)
         else:
             app[key] = value
     ensure_config_defaults(config)
@@ -1183,9 +1184,10 @@ def handle_desktop_login(handler):
     body = handler.read_body()
     user = find_user_by_username((body.get("username") or "").strip())
     if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
+        audit_log("login_failed", user, handler, False, body.get("username") or "")
         return handler.send_json({"error": "用户名或密码错误。"}, 401)
     token = random_hex(32)
-    user = mark_user_login(user["id"])
+    user = mark_user_login(user["id"], handler)
     SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
     save_sessions()
     return handler.send_json({"token": token, "user": public_user(user)})
@@ -1227,6 +1229,8 @@ def default_system_settings():
             "tokenTtlMinutes": 10080,
             "lockBuildAfterFirstIssue": False,
         },
+        "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
+            "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
     }
 
 
@@ -1405,7 +1409,7 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
-    for section in ("locations", "pay", "integrity", "clientBuild"):
+    for section in ("locations", "pay", "integrity", "clientBuild", "ipLocation"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -1706,6 +1710,8 @@ def public_user(user, store=None):
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
+        "lastLoginIp": (user.get("loginIpHistory") or [{}])[0],
+        "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
     }
     return data
 
@@ -1718,13 +1724,124 @@ def find_user_by_username(username):
     return next((u for u in read_users()["users"] if u.get("username") == username), None)
 
 
-def mark_user_login(user_id):
+def request_ip(handler):
+    peer = str(handler.client_address[0] or "").strip()
+    try:
+        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted_proxy = False
+    if trusted_proxy:
+        forwarded = str(handler.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        real_ip = str(handler.headers.get("X-Real-IP") or "").strip()
+        for candidate in (forwarded, real_ip):
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                continue
+    return peer
+
+
+def fetch_json_url(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdmin/1.0"})
+    with urllib.request.urlopen(req, timeout=4) as response:
+        charset = response.headers.get_content_charset() or ("gbk" if "pconline" in url else "utf-8")
+        return json.loads(response.read().decode(charset, "replace"))
+
+
+def locate_ip(ip, bypass_cache=False):
+    if not ip or ip in ("127.0.0.1", "::1"):
+        return "本机/内网"
+    cache = read_json(IP_CACHE_PATH, {})
+    cfg = read_system_settings().get("ipLocation") or {}
+    cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
+    if not bypass_cache and time.time() - cached.get("time", 0) < 86400 * 30:
+        cached_address = str(cached.get("address") or "")
+        if not cfg.get("unifiedChinese", True) or re.search(r"[\u3400-\u9fff]", cached_address):
+            return cached_address
+    providers = cfg.get("providers") or ["system"]
+    if cfg.get("mode") == "system": providers = ["system"]
+    results = []
+    for provider in providers:
+        address = ""
+        try:
+            if provider == "system":
+                data = fetch_json_url("https://ipwho.is/" + quote(ip))
+                if data.get("success") is not False:
+                    address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "amap" and cfg.get("amapKey"):
+                data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
+                if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
+            elif provider == "baidu" and cfg.get("baiduKey"):
+                data = fetch_json_url("https://api.map.baidu.com/location/ip?coor=bd09ll&ip=%s&ak=%s" % (quote(ip), quote(cfg["baiduKey"])))
+                detail = (data.get("content") or {}).get("address_detail") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("province", "city", "district", "street", "street_number"))
+            elif provider == "tencent" and cfg.get("tencentKey"):
+                data = fetch_json_url("https://apis.map.qq.com/ws/location/v1/ip?ip=%s&key=%s" % (quote(ip), quote(cfg["tencentKey"])))
+                detail = (data.get("result") or {}).get("ad_info") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("nation", "province", "city", "district"))
+            elif provider == "ip-api":
+                data = fetch_json_url("http://ip-api.com/json/%s?lang=zh-CN" % quote(ip))
+                if data.get("status") == "success": address = "".join(str(data.get(k) or "") for k in ("country", "regionName", "city", "district"))
+            elif provider == "ipapi-co":
+                data = fetch_json_url("https://ipapi.co/%s/json/" % quote(ip))
+                if not data.get("error"): address = "".join(str(data.get(k) or "") for k in ("country_name", "region", "city"))
+            elif provider == "ip-sb":
+                data = fetch_json_url("https://api.ip.sb/geoip/%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "pconline":
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+        except Exception:
+            continue
+        if address:
+            results.append({"provider": provider, "address": address})
+            if cfg.get("mode") == "first": break
+    address = results[0]["address"] if results else "未知位置"
+    if cfg.get("mode") == "consensus" and results:
+        counts = {}
+        for item in results: counts[item["address"]] = counts.get(item["address"], 0) + 1
+        winner, votes = max(counts.items(), key=lambda item: item[1])
+        if votes >= max(1, int(cfg.get("threshold") or 2)): address = winner
+    if cfg.get("unifiedChinese", True):
+        chinese = next((item["address"] for item in results if re.search(r"[\u3400-\u9fff]", item["address"])), "")
+        if chinese:
+            address = chinese
+        elif address != "未知位置":
+            try:
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                converted = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+                if re.search(r"[\u3400-\u9fff]", converted): address = converted
+            except Exception:
+                pass
+        address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
+    cache[ip] = {"address": address, "time": time.time()}
+    write_json(IP_CACHE_PATH, cache)
+    return address
+
+
+def audit_log(action, user=None, handler=None, success=True, detail=""):
+    data = read_json(AUDIT_LOG_PATH, {"items": []})
+    data.setdefault("items", []).insert(0, {"time": now_iso(), "action": action, "success": bool(success),
+        "userId": (user or {}).get("id", ""), "username": (user or {}).get("username", ""),
+        "ip": request_ip(handler) if handler else "", "path": getattr(handler, "route", "") if handler else "", "detail": str(detail or "")[:500]})
+    data["items"] = data["items"][:5000]
+    write_json(AUDIT_LOG_PATH, data)
+
+
+def mark_user_login(user_id, handler=None):
     store = read_users()
     login_at = now_iso()
     for row in store["users"]:
         if row.get("id") == user_id:
             row["lastLoginAt"] = login_at
+            if handler:
+                ip = request_ip(handler)
+                history = [x for x in row.get("loginIpHistory", []) if isinstance(x, dict)]
+                history.insert(0, {"ip": ip, "address": locate_ip(ip), "time": login_at})
+                row["loginIpHistory"] = history[:3]
             write_users(store)
+            audit_log("login_success", row, handler)
             return row
     return find_user_by_id(user_id)
 
@@ -2973,7 +3090,7 @@ class Handler(BaseHTTPRequestHandler):
                     invite["active"] = False
                 write_users(store)
                 token = random_hex(32)
-                user = mark_user_login(user["id"])
+                user = mark_user_login(user["id"], self)
                 SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
                 save_sessions()
                 return self.send_json({"token": token, "user": public_user(user)})
@@ -3021,6 +3138,8 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                    audit_log("backend_" + method.lower(), auth["user"], self, True, path)
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
                 if path.startswith("/api/admin"):
@@ -3034,6 +3153,15 @@ class Handler(BaseHTTPRequestHandler):
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
+        if path == "/api/super/audit" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "forbidden"}, 403)
+            return self.send_json(read_json(AUDIT_LOG_PATH, {"items": []}))
+        if path == "/api/super/ip-location/test" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "forbidden"}, 403)
+            ip = str(self.read_body().get("ip") or request_ip(self)).strip()
+            return self.send_json({"ip": ip, "address": locate_ip(ip, True)})
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)

@@ -26,7 +26,10 @@
   clientBuildStartedAt: 0,
   inviteRefreshTimer: null,
   inviteRefreshBusy: false,
-  inviteSnapshot: ''
+  inviteSnapshot: '',
+  auditRefreshTimer: null,
+  auditRefreshBusy: false,
+  auditItems: []
 };
 
 function applyDesktopTokenFromUrl() {
@@ -186,6 +189,7 @@ const NAV_ICONS = {
   mail: '✉',
   buttons: '▦',
   users: '♙',
+  audit: '▧',
   system: '⚙',
   json: '▤',
   exchange: '⇄',
@@ -198,6 +202,7 @@ const VIEW_TITLES = {
   account: ['账号资料', '修改当前账号的基础信息和登录密码。'],
   buttons: ['按钮管理', '配置工具箱里的页面、分组、按钮和动作。'],
   users: ['用户管理', '管理账号、邀请码和用户专属对接地址。'],
+  audit: ['操作日志', '查看所有账号的后台登录和操作记录。'],
   system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
   exchange: ['配置交换', '导出、导入配置文件，或生成云端链接分享给别人。'],
@@ -217,6 +222,15 @@ function setupSidebar() {
   toggle.setAttribute('aria-label', '展开/收起菜单');
   toggle.textContent = '☰';
   sidebar.insertBefore(toggle, brand);
+  const systemNav = sidebar.querySelector('.nav[data-view="system"]');
+  if (systemNav && !sidebar.querySelector('.nav[data-view="audit"]')) {
+    const auditNav = document.createElement('button');
+    auditNav.className = 'nav super-only';
+    auditNav.dataset.view = 'audit';
+    auditNav.type = 'button';
+    auditNav.textContent = '操作日志';
+    systemNav.insertAdjacentElement('afterend', auditNav);
+  }
 
   sidebar.querySelectorAll('.nav').forEach((button) => {
     const view = button.dataset.view || '';
@@ -949,7 +963,8 @@ function renderUserContext() {
 }
 
 function switchView(view) {
-  if (view === 'system' && !isSuper()) {
+  if (view === 'audit' && isSuper()) ensureAuditView();
+  if ((view === 'system' || view === 'audit') && !isSuper()) {
     view = 'overview';
   }
   if (view === 'users' && !isManager()) {
@@ -967,6 +982,8 @@ function switchView(view) {
   const panel = $(`view-${view}`);
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
+  if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
+  syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
   if ($('pageSubtitle')) $('pageSubtitle').textContent = title[1];
@@ -1031,7 +1048,6 @@ function renderApp() {
   $('appThemeCount').value = app.theme_count || 19;
   $('appAllowClientTheme').checked = app.allow_client_theme !== false;
   if ($('appDefaultViewMode')) $('appDefaultViewMode').value = app.default_view_mode === 'list' ? 'list' : 'grid';
-  renderButtonContentLayout(app.button_content_layout);
   $('appLogo').value = app.logo_text || '';
   $('appIcon').value = app.icon || app.icon_url || '';
   ensureExeIconField();
@@ -1045,7 +1061,7 @@ function renderApp() {
   $('appWidth').value = app.window_width || 1080;
   $('appHeight').value = app.window_height || 700;
   $('appPasswordEnabled').checked = app.password_enabled === undefined ? !!app.password : !!app.password_enabled;
-  $('appPassword').value = '';
+  $('appPassword').value = app.password_plain || '';
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
   $('appUpdateUrl').value = app.update_url || '';
   $('appUpdateTitle').value = app.update_title || '工具箱更新';
@@ -1222,6 +1238,185 @@ function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') 
   return panel;
 }
 
+function ensureAuditView() {
+  if ($('view-audit')) return;
+  const view = document.createElement('section');
+  view.id = 'view-audit';
+  view.className = 'view';
+  view.innerHTML = `<div class="panel audit-panel">
+    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><button id="refreshAuditBtn" type="button">刷新</button></div>
+    <div class="audit-filters">
+      <input id="auditUserFilter" type="search" list="auditUserOptions" autocomplete="off" placeholder="搜索或选择用户">
+      <datalist id="auditUserOptions"></datalist>
+      <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址">
+      <input id="auditKeywordFilter" type="search" placeholder="搜索全部日志信息">
+      <select id="auditActionFilter"><option value="">全部操作类型</option><option value="login">登录记录</option><option value="POST">新增操作</option><option value="PATCH">修改操作</option><option value="PUT">保存操作</option><option value="DELETE">删除操作</option></select>
+      <select id="auditRiskFilter"><option value="">全部风险</option><option value="high">高风险</option><option value="medium">需关注</option><option value="low">无风险</option></select>
+      <label>开始时间<input id="auditStartFilter" type="datetime-local"></label>
+      <label>结束时间<input id="auditEndFilter" type="datetime-local"></label>
+      <button id="resetAuditFiltersBtn" type="button" class="secondary">清除筛选</button>
+    </div>
+    <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>用户</th><th>操作日志</th><th>时间</th><th>IP 地址</th><th>风险评估</th></tr></thead><tbody id="auditLogRows"><tr><td colspan="5">正在读取日志...</td></tr></tbody></table></div>
+  </div>`;
+  document.querySelector('main').appendChild(view);
+  $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
+  restoreAuditFilters();
+  ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'].forEach((id) => {
+    $(id).addEventListener('input', () => { saveAuditFilters(); renderAuditLog(); });
+    $(id).addEventListener('change', () => { saveAuditFilters(); renderAuditLog(); });
+  });
+  $('resetAuditFiltersBtn').onclick = () => {
+    ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'].forEach((id) => { $(id).value = ''; });
+    saveAuditFilters();
+    renderAuditLog();
+  };
+}
+
+async function loadAuditLog() {
+  if (state.auditRefreshBusy) return;
+  state.auditRefreshBusy = true;
+  ensureAuditView();
+  try {
+    const data = await api('/api/super/audit');
+    state.auditItems = data.items || [];
+    updateAuditUserOptions();
+    renderAuditLog();
+  } finally {
+    state.auditRefreshBusy = false;
+  }
+}
+
+const AUDIT_FILTER_STORAGE_KEY = 'toolbox_audit_filters';
+const AUDIT_FILTER_IDS = ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'];
+
+function saveAuditFilters() {
+  const filters = Object.fromEntries(AUDIT_FILTER_IDS.map((id) => [id, $(id)?.value || '']));
+  localStorage.setItem(AUDIT_FILTER_STORAGE_KEY, JSON.stringify(filters));
+}
+
+function restoreAuditFilters() {
+  try {
+    const filters = JSON.parse(localStorage.getItem(AUDIT_FILTER_STORAGE_KEY) || '{}');
+    AUDIT_FILTER_IDS.forEach((id) => { if ($(id) && typeof filters[id] === 'string') $(id).value = filters[id]; });
+  } catch (_) {}
+}
+
+function updateAuditUserOptions() {
+  const options = $('auditUserOptions');
+  const users = [...new Set(state.users.map((user) => String(user.username || '').trim()).filter(Boolean))].sort();
+  const signature = JSON.stringify(users);
+  if (!options || options.dataset.optionsSignature === signature) return;
+  options.replaceChildren(...users.map((name) => {
+    const user = state.users.find((item) => item.username === name);
+    const option = new Option(name, name);
+    option.label = user?.displayName && user.displayName !== name ? `${user.displayName}（${name}）` : name;
+    return option;
+  }));
+  options.dataset.optionsSignature = signature;
+}
+
+function auditAccount(item) {
+  const actor = String(item.actor || item.username || '');
+  if (actor) return actor;
+  const target = String(item.target || '');
+  return String(item.action || '').startsWith('login_') && state.users.some((user) => user.username === target) ? target : '未知用户';
+}
+
+function auditUserSearchText(item) {
+  const account = auditAccount(item);
+  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
+  return `${account} ${user?.displayName || ''} ${user?.username || ''}`;
+}
+
+function auditRisk(item) {
+  const action = String(item.action || '');
+  const path = String(item.path || '');
+  if (action === 'login_failed' || action === 'backend_delete') return 'high';
+  if (/(account|users|system|mail|template)/.test(path) && /^backend_(patch|put|post)$/.test(action)) return 'high';
+  if (/^backend_(patch|put|post)$/.test(action)) return 'medium';
+  return 'low';
+}
+
+function renderAuditLog() {
+  const user = ($('auditUserFilter')?.value || '').trim().toLowerCase();
+  const ip = ($('auditIpFilter')?.value || '').trim().toLowerCase();
+  const keyword = ($('auditKeywordFilter')?.value || '').trim().toLowerCase();
+  const actionType = $('auditActionFilter')?.value || '';
+  const risk = $('auditRiskFilter')?.value || '';
+  const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0;
+  const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
+  const items = state.auditItems.filter((item) => {
+    const account = auditAccount(item);
+    const description = describeAuditEntry(item);
+    const itemTime = new Date(item.time).getTime();
+    if (user && !auditUserSearchText(item).toLowerCase().includes(user)) return false;
+    if (ip && !String(item.ip || '').toLowerCase().includes(ip)) return false;
+    const riskLabel = { high: '高风险', medium: '需关注', low: '无风险' }[auditRisk(item)];
+    const searchable = `${auditUserSearchText(item)} ${description} ${item.action || ''} ${item.path || ''} ${item.ip || ''} ${formatDateTime(item.time)} ${riskLabel} ${JSON.stringify(item)}`;
+    if (keyword && !searchable.toLowerCase().includes(keyword)) return false;
+    if (actionType === 'login' && !String(item.action || '').startsWith('login_')) return false;
+    if (actionType && actionType !== 'login' && String(item.action || '') !== `backend_${actionType.toLowerCase()}`) return false;
+    if (risk && auditRisk(item) !== risk) return false;
+    if (start && itemTime < start) return false;
+    if (end && itemTime > end) return false;
+    return true;
+  });
+  const riskLabels = { high: '高风险', medium: '需关注', low: '无风险' };
+  const visibleItems = items.slice(0, 1000);
+  $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visibleItems.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
+  $('auditLogRows').innerHTML = visibleItems.map((item) => {
+    const account = auditAccount(item);
+    const level = auditRisk(item);
+    return `<tr title="原始记录：${escapeHtml(`${item.action || ''} ${item.path || ''}`)}"><td><strong>${escapeHtml(account)}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td>${escapeHtml(item.ip || '未记录')}</td><td><span class="audit-risk ${level}">${riskLabels[level]}</span></td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+}
+
+function syncAuditAutoRefresh(view) {
+  if (state.auditRefreshTimer) {
+    window.clearInterval(state.auditRefreshTimer);
+    state.auditRefreshTimer = null;
+  }
+  if (view !== 'audit' || !isSuper()) return;
+  state.auditRefreshTimer = window.setInterval(() => {
+    if (state.activeView !== 'audit' || document.visibilityState !== 'visible') return;
+    loadAuditLog().catch(() => {});
+  }, 2000);
+}
+
+function describeAuditEntry(item) {
+  const action = String(item.action || '');
+  const path = String(item.path || '');
+  if (action === 'login_success') return '登录后台成功';
+  if (action === 'login_failed') return '登录后台失败（账号或密码错误）';
+
+  const method = action.replace(/^backend_/, '').toUpperCase();
+  const methodNames = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
+  const targets = [
+    [/\/api\/admin\/buttons$/, '按钮'],
+    [/\/api\/admin\/account$/, '账号资料'],
+    [/\/api\/admin\/app$/, '基础信息'],
+    [/\/api\/admin\/popup$/, '弹窗设置'],
+    [/\/api\/admin\/config\/import$/, '导入配置'],
+    [/\/api\/admin\/config\/share$/, '配置分享'],
+    [/\/api\/admin\/config$/, '后台配置'],
+    [/\/api\/admin\/notices\/mail$/, '通知邮件'],
+    [/\/api\/admin\/notices$/, '通知'],
+    [/\/api\/admin\/announcements/, '更新公告'],
+    [/\/api\/admin\/client\/build$/, '工具箱客户端'],
+    [/\/api\/super\/users\/batch$/, '用户批量设置'],
+    [/\/api\/super\/users$/, '用户'],
+    [/\/api\/super\/invites/, '邀请码'],
+    [/\/api\/super\/mail/, '邮箱设置'],
+    [/\/api\/super\/system/, '系统设置'],
+    [/\/api\/super\/template/, '用户模板'],
+    [/\/api\/super\/orders/, '订单']
+  ];
+  const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
+  const operation = methodNames[method] || '操作';
+  const result = item.success === false ? '失败' : '成功';
+  return `${operation}${target}${result}`;
+}
+
 function ensureDownloadCleanupBasicField(grid) {
   if (!grid || $('deleteDownloadsOnExit')) return;
   const label = document.createElement('label');
@@ -1336,6 +1531,15 @@ function renderAccount() {
   $('accountDisplayName').value = user.displayName || '';
   $('accountCurrentPassword').value = '';
   $('accountNewPassword').value = '';
+  let ip = $('accountLastLoginIp');
+  if (!ip) {
+    const label = document.createElement('label');
+    label.innerHTML = '最后登录 IP<input id="accountLastLoginIp" readonly>';
+    $('accountDisplayName').closest('.form-grid').appendChild(label);
+    ip = $('accountLastLoginIp');
+  }
+  const last = user.lastLoginIp || {};
+  ip.value = last.ip ? `${last.ip} · ${last.address || '未知位置'}` : '暂无记录';
 }
 
 function renderMailSettings() {
@@ -1412,7 +1616,10 @@ function renderUsers() {
     tableWrap.hidden = true;
   }
   const panel = tbody.closest('.panel');
-  setPanelCounter(panel, 'userTotalCount', state.users.length);
+  ensureUserBatchTools(panel);
+  const userQuery = ($('userListSearch')?.value || '').trim().toLowerCase();
+  const visibleUsers = state.users.filter((user) => !userQuery || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`.toLowerCase().includes(userQuery));
+  setPanelCounter(panel, 'userTotalCount', visibleUsers.length === state.users.length ? state.users.length : `${visibleUsers.length}/${state.users.length}`);
   let cards = $('userCards');
   if (!cards && panel) {
     cards = document.createElement('div');
@@ -1420,13 +1627,12 @@ function renderUsers() {
     cards.className = 'user-card-list';
     panel.appendChild(cards);
   }
-  ensureUserBatchTools(panel);
   if (!cards) return;
   cards.classList.add('collapsible-body');
   cards.hidden = !!panel?.classList.contains('is-collapsed');
   cards.innerHTML = '';
 
-  state.users.forEach((user) => {
+  visibleUsers.forEach((user) => {
     const endpoint = `${location.origin}/api/toolbox/config?key=${encodeURIComponent(user.apiKey || '')}`;
     const card = document.createElement('div');
     card.className = 'user-card';
@@ -1439,7 +1645,7 @@ function renderUsers() {
         <div class="user-summary">
           <strong>${escapeHtml(user.displayName || user.username || '')}</strong>
           <span>${escapeHtml(user.username || '')} · ${escapeHtml(user.email || '未填写邮箱')}</span>
-          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
+          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))} · IP：${escapeHtml(user.lastLoginIp?.ip || '暂无')} ${escapeHtml(user.lastLoginIp?.address || '')}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
         </div>
         <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</span>
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
@@ -1455,6 +1661,7 @@ function renderUsers() {
         ` : ''}
       </div>
       <div class="user-card-detail" hidden>
+        <div class="login-ip-history"><strong>最近三次登录 IP</strong>${(user.loginIpHistory || []).map(item => `<div>${escapeHtml(formatDateTime(item.time))} · ${escapeHtml(item.ip || '')} · ${escapeHtml(item.address || '未知位置')}</div>`).join('') || '<div>暂无记录</div>'}</div>
         <div class="form-grid">
           <label>账号<input data-field="username" value="${escapeAttr(user.username || '')}"><small>${escapeHtml(user.id || '')}</small></label>
           <label>邮箱<input data-field="email" type="email" value="${escapeAttr(user.email || '')}"></label>
@@ -1539,6 +1746,7 @@ function ensureUserBatchTools(panel) {
   bar.id = 'userBatchBar';
   bar.className = 'batch-bar collapsible-body';
   bar.innerHTML = `
+    <input id="userListSearch" type="search" autocomplete="off" placeholder="搜索昵称、用户名或邮箱">
     <label class="checkline"><input id="userSelectAll" type="checkbox"> 全选</label>
     <button data-user-batch="enable">批量启用</button>
     <button data-user-batch="disable">批量停用</button>
@@ -1549,6 +1757,7 @@ function ensureUserBatchTools(panel) {
   const head = panel.querySelector('.panel-head');
   head?.insertAdjacentElement('afterend', bar);
   if (panel.classList.contains('is-collapsed')) bar.hidden = true;
+  $('userListSearch').oninput = () => renderUsers();
   $('userSelectAll').onchange = (event) => {
     document.querySelectorAll('.user-check:not(:disabled)').forEach((box) => { box.checked = event.target.checked; });
   };
@@ -1772,6 +1981,17 @@ function renderSystemSettings() {
   const agent = state.system.agent || {};
   const pay = state.system.pay || {};
   const integrity = state.system.integrity || {};
+  ensureIpLocationPanel();
+  const ipLocation = state.system.ipLocation || {};
+  document.querySelectorAll('[data-ip-provider]').forEach(input => { input.checked = (ipLocation.providers || ['system']).includes(input.value); });
+  if ($('ipLocationMode')) $('ipLocationMode').value = ipLocation.mode || 'consensus';
+  if ($('ipLocationThreshold')) $('ipLocationThreshold').value = Number(ipLocation.threshold || 2);
+  if ($('ipUnifiedChinese')) $('ipUnifiedChinese').checked = ipLocation.unifiedChinese !== false;
+  if ($('ipAmapKey')) $('ipAmapKey').value = ipLocation.amapKey || '';
+  if ($('ipBaiduKey')) $('ipBaiduKey').value = ipLocation.baiduKey || '';
+  if ($('ipTencentKey')) $('ipTencentKey').value = ipLocation.tencentKey || '';
+  if ($('ipAmapSecret')) $('ipAmapSecret').value = ipLocation.amapSecret || '';
+  if ($('ipTencentSecret')) $('ipTencentSecret').value = ipLocation.tencentSecret || '';
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
   if ($('systemMenuName')) $('systemMenuName').value = locations.adminSystemName || '系统管理';
   if ($('systemFrontendGlow')) $('systemFrontendGlow').checked = locations.frontendActiveGlow !== false;
@@ -2352,7 +2572,7 @@ function ensurePageLockGroups() {
     state.config.page_lock_groups = {};
   }
   if (!state.config.page_lock_groups.default || typeof state.config.page_lock_groups.default !== 'object' || Array.isArray(state.config.page_lock_groups.default)) {
-    state.config.page_lock_groups.default = { title: '合并页面密码', password: '', pages: [] };
+    state.config.page_lock_groups.default = { title: '合并页面密码', enabled: false, password: '', pages: [] };
   }
   const group = state.config.page_lock_groups.default;
   if (!Array.isArray(group.pages)) group.pages = [];
@@ -2410,10 +2630,10 @@ function ensurePageAccessPanel() {
     </div>
     <div class="page-lock-group-box">
       <div class="page-lock-group-head">
-        <strong>合并页面密码</strong>
+        <div class="page-lock-group-title"><strong>合并页面密码</strong><label class="checkline"><input id="mergedPageLockEnabled" type="checkbox"> 启用</label></div>
         <small>从现有页面中逐个选择；这些页面输入一次密码后全部解锁。</small>
       </div>
-      <input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码">
+      <div class="password-field"><input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码"><button type="button" data-password-toggle="mergedPageLockPassword">显示</button></div>
       <div id="mergedPageLockSelectors" class="page-lock-group-selectors"></div>
       <button id="addMergedPageLockBtn" class="page-lock-group-add" type="button">＋ 添加页面</button>
       <label class="checkline page-lock-independent-toggle"><input id="showIndependentPageLocks" type="checkbox"> 设置独立页面密码</label>
@@ -2482,7 +2702,7 @@ function renderMergedPageLockSelectors(pages, locks, mergedGroup) {
 }
 
 function refreshMergedPageLockRows(locks, mergedGroup) {
-  const mergedPages = new Set(mergedGroup.pages.filter(Boolean));
+  const mergedPages = new Set(mergedGroup.enabled === true ? mergedGroup.pages.filter(Boolean) : []);
   const hasMergedPassword = !!mergedGroup.password || !!$('mergedPageLockPassword')?.value.trim();
   document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
     const pageId = row.dataset.pageLockId || '';
@@ -2528,8 +2748,16 @@ function renderPageAccessControls() {
   }
   if (independentArea) independentArea.hidden = !showIndependent;
   const mergedPassword = $('mergedPageLockPassword');
+  const mergedEnabled = $('mergedPageLockEnabled');
+  if (mergedEnabled) {
+    mergedEnabled.checked = mergedGroup.enabled === true;
+    mergedEnabled.onchange = () => {
+      mergedGroup.enabled = mergedEnabled.checked;
+      refreshMergedPageLockRows(locks, mergedGroup);
+    };
+  }
   if (mergedPassword) {
-    mergedPassword.value = '';
+    mergedPassword.value = mergedGroup.password_plain || '';
     mergedPassword.placeholder = mergedGroup.password ? '已设置，留空不修改' : '输入合并密码';
   }
   const softwareEnabled = $('softwareCatalogEnabled');
@@ -2549,7 +2777,7 @@ function renderPageAccessControls() {
         <td><strong>${escapeHtml(page.title)}</strong></td>
         <td>${escapeHtml(page.type)}</td>
         <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
-        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}"></td>
+        <td><div class="password-field"><input id="pageLockPassword_${escapeAttr(page.id)}" data-page-lock-password type="password" value="${escapeAttr(lock.password_plain || '')}" placeholder="输入独立密码"><button type="button" data-password-toggle="pageLockPassword_${escapeAttr(page.id)}">显示</button></div></td>
         <td><span data-page-lock-status class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置独立密码' : '未设置独立密码'}</span></td>
       </tr>
     `;
@@ -2566,8 +2794,10 @@ async function savePageAccess() {
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
   const mergedGroup = groups.default;
+  mergedGroup.enabled = $('mergedPageLockEnabled')?.checked === true;
   const mergedPassword = $('mergedPageLockPassword')?.value.trim() || '';
-  if (mergedPassword) mergedGroup.password = mergedPassword;
+  mergedGroup.password = mergedPassword;
+  mergedGroup.password_plain = mergedPassword;
   mergedGroup.title = '合并页面密码';
   const showIndependent = $('showIndependentPageLocks')?.checked === true;
   mergedGroup.show_independent = showIndependent;
@@ -2582,22 +2812,14 @@ async function savePageAccess() {
     const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
     const next = { ...current };
     const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
-    const merged = mergedPageSet.has(pageId);
+    const merged = mergedGroup.enabled && mergedPageSet.has(pageId);
     next.enabled = merged || (showIndependent && row.querySelector('[data-page-lock-enabled]')?.checked === true);
     next.title = title;
     if (merged) {
       next.group = 'default';
     } else {
       delete next.group;
-      if (showIndependent && password) next.password = password;
-    }
-    if (merged && !mergedGroup.password) {
-      missingPasswordFor = '合并页面密码';
-      return;
-    }
-    if (showIndependent && next.enabled && !merged && !next.password) {
-      missingPasswordFor = title;
-      return;
+      if (showIndependent) { next.password = password; next.password_plain = password; }
     }
     locks[pageId] = next;
   });
@@ -3132,48 +3354,25 @@ async function saveAppBasicSettings() {
   await saveWholeConfig('基础信息已保存。');
 }
 
-function normalizeButtonContentLayout(value) {
-  return value === 'icon_top' ? 'icon_top' : 'icon_left';
-}
-
-function renderButtonContentLayout(value) {
-  const normalized = normalizeButtonContentLayout(value);
-  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
-    input.checked = input.value === normalized;
-  });
-}
-
-let savingButtonContentLayout = false;
-async function saveButtonContentLayout(nextValue) {
-  if (savingButtonContentLayout) return;
-  const previous = normalizeButtonContentLayout(state.config.app?.button_content_layout);
-  const next = normalizeButtonContentLayout(nextValue);
-  if (next === previous) return;
-  const status = $('buttonContentLayoutStatus');
-  savingButtonContentLayout = true;
-  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = true; });
-  if (status) {
-    status.classList.remove('error', 'success');
-    status.textContent = '正在保存按钮布局……';
-  }
-  try {
-    const saved = await api(appApiPath(), { method: 'PATCH', body: JSON.stringify({ button_content_layout: next }) });
-    state.config = saved;
-    renderButtonContentLayout(saved.app?.button_content_layout);
-    if (status) {
-      status.classList.add('success');
-      status.textContent = '按钮布局已保存，工具箱将在 5 秒内同步。';
-    }
-  } catch (error) {
-    renderButtonContentLayout(previous);
-    if (status) {
-      status.classList.add('error');
-      status.textContent = `按钮布局保存失败：${error.message}`;
-    }
-  } finally {
-    savingButtonContentLayout = false;
-    document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = false; });
-  }
+function ensureIpLocationPanel() {
+  if ($('ipLocationPanel')) return;
+  const view = $('view-system');
+  const panel = document.createElement('div');
+  panel.id = 'ipLocationPanel';
+  panel.className = 'panel collapsible-panel is-collapsed';
+  panel.dataset.collapsiblePanel = '';
+  panel.innerHTML = `<div class="panel-head"><h2>IP 定位接口</h2><button id="saveIpLocationBtn" type="button">保存设置</button></div>
+    <div class="ip-location-settings"><div class="form-grid compact"><label>定位模式<select id="ipLocationMode"><option value="consensus">智能一致性（推荐）</option><option value="first">单接口优先（按顺序取第一个成功）</option><option value="system">仅系统自带</option></select></label><label>一致性阈值<input id="ipLocationThreshold" type="number" min="1" max="8" value="2"></label><label class="toggle-line">统一输出中文<span><input id="ipUnifiedChinese" type="checkbox"> 开启</span></label></div>
+    <div class="ip-provider-grid"><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德（推荐）</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯（推荐）</label><label class="checkline"><input data-ip-provider value="ip-api" type="checkbox"> ip-api.com</label><label class="checkline"><input data-ip-provider value="ipapi-co" type="checkbox"> ipapi.co</label><label class="checkline"><input data-ip-provider value="system" type="checkbox"> ipwho.is</label><label class="checkline"><input data-ip-provider value="ip-sb" type="checkbox"> ip.sb</label><label class="checkline"><input data-ip-provider value="pconline" type="checkbox"> 太平洋 IP</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label></div>
+    <div class="form-grid compact"><label>高德 Key<input id="ipAmapKey"></label><label>高德数据签名密钥<input id="ipAmapSecret"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>腾讯签名校验 Secret Key<input id="ipTencentSecret"></label><label>百度 AK<input id="ipBaiduKey"></label></div>
+    <div class="ip-test-row"><input id="ipLocationTestInput" placeholder="输入要测试的 IPv4/IPv6"><button id="testIpLocationBtn" type="button">测试</button><span id="ipLocationTestResult"></span></div></div>`;
+  view.prepend(panel);
+  setupCollapsiblePanels();
+  $('saveIpLocationBtn').onclick = () => saveSystemSettings('ipLocation').catch(e => setStatus(e.message, true));
+  $('testIpLocationBtn').onclick = async () => {
+    const result = await api('/api/super/ip-location/test', {method: 'POST', body: JSON.stringify({ip: $('ipLocationTestInput').value.trim()})});
+    $('ipLocationTestResult').textContent = `${result.ip} · ${result.address}`;
+  };
 }
 
 async function saveAppLoginSettings() {
@@ -3190,17 +3389,10 @@ async function saveAppLoginSettings() {
 async function saveAppPasswordSettings() {
   const passwordEnabled = $('appPasswordEnabled').checked;
   const newPassword = $('appPassword').value.trim();
-  const hasExistingPassword = !!(state.config.app && state.config.app.password);
-
-  if (passwordEnabled && !hasExistingPassword && !newPassword) {
-    setStatus('开启工具箱密码时，请先填写新密码。', true);
-    return;
-  }
-
   const patch = {
-    password_enabled: passwordEnabled
+    password_enabled: passwordEnabled,
+    password: newPassword
   };
-  if (newPassword) patch.password = newPassword;
   await saveAppPatch(patch, '启动密码已保存。');
 }
 
@@ -4279,6 +4471,14 @@ async function saveSystemSettings(section) {
       rotateSecret: $('integrityRotateSecret')?.checked || false
     };
   }
+  if (section === 'ipLocation') {
+    body.ipLocation = {
+      providers: [...document.querySelectorAll('[data-ip-provider]:checked')].map(x => x.value),
+      mode: $('ipLocationMode').value, threshold: Number($('ipLocationThreshold').value || 2), unifiedChinese: $('ipUnifiedChinese').checked,
+      amapKey: $('ipAmapKey').value.trim(), amapSecret: $('ipAmapSecret').value.trim(), baiduKey: $('ipBaiduKey').value.trim(),
+      tencentKey: $('ipTencentKey').value.trim(), tencentSecret: $('ipTencentSecret').value.trim()
+    };
+  }
   state.system = await api('/api/super/system', {
     method: 'PATCH',
     body: JSON.stringify(body)
@@ -5002,18 +5202,27 @@ $('targetUserSelect').onchange = async () => {
 };
 
 $('saveAppBtn').onclick = () => saveApp().catch((error) => setStatus(error.message, true));
-document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
-  input.onchange = () => {
-    if (input.checked) saveButtonContentLayout(input.value);
-  };
-});
 $('saveAccountBtn').onclick = () => saveAccount().catch((error) => setStatus(error.message, true));
 $('saveMailBtn').onclick = () => saveMailSettings().catch((error) => setStatus(error.message, true));
 $('testMailBtn').onclick = () => testMailSettings().catch((error) => setStatus(error.message, true));
 $('appPasswordEnabled').onchange = () => {
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
-  if (!$('appPasswordEnabled').checked) $('appPassword').value = '';
 };
+$('toggleAppPassword').onclick = () => {
+  const input = $('appPassword');
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  $('toggleAppPassword').textContent = visible ? '显示' : '隐藏';
+};
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-password-toggle]');
+  if (!button) return;
+  const input = $(button.dataset.passwordToggle);
+  if (!input) return;
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  button.textContent = visible ? '显示' : '隐藏';
+});
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));
 $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(error.message, true));
