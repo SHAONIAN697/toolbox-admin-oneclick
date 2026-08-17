@@ -2884,6 +2884,7 @@ namespace ToolboxClient
             {
                 unlockedPagePasswords[unlockKey] = stored;
                 status.Text = "页面已解锁。";
+                if (ResourceSearchEnabled()) BuildResourceSearchIndex();
                 return true;
             }
             status.Text = "页面已锁定。";
@@ -7644,11 +7645,13 @@ namespace ToolboxClient
             foreach (KeyValuePair<string, object> pair in pages)
             {
                 if (pair.Key.Equals("settings", StringComparison.OrdinalIgnoreCase) || pair.Key.Equals("downloads", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!IsPageSearchable(pair.Key)) continue;
                 Dictionary<string, object> page = AsDict(pair.Value);
                 AddResourceSearchSections(pair.Key, PageLabel(page, pair.Key), AsList(Get(page, "sections")));
             }
             foreach (object tabObj in AsList(Get(config, "toolbox_tabs")))
             {
+                if (!IsPageSearchable("toolbox")) continue;
                 Dictionary<string, object> tab = AsDict(tabObj);
                 string tabName = GetText(tab, "name", GetText(tab, "title", "\u5de5\u5177\u7bb1"));
                 AddResourceSearchSections("toolbox", tabName, AsList(Get(tab, "sections")));
@@ -8341,6 +8344,18 @@ namespace ToolboxClient
                 TryDeleteUpdateFile(tempExe);
                 MessageBox.Show("更新下载失败：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+
+        private bool IsPageSearchable(string pageId)
+        {
+            Dictionary<string, object> lockConfig = PageLockConfig(pageId);
+            if (!BoolValue(lockConfig, "enabled", false)) return true;
+            string groupId = GetText(lockConfig, "group", "").Trim();
+            Dictionary<string, object> groupConfig = String.IsNullOrWhiteSpace(groupId) ? new Dictionary<string, object>() : PageLockGroupConfig(groupId);
+            string stored = String.IsNullOrWhiteSpace(groupId) ? GetText(lockConfig, "password", "") : GetText(groupConfig, "password", "");
+            string unlockKey = String.IsNullOrWhiteSpace(groupId) ? pageId : "group:" + groupId;
+            string unlockedHash;
+            return !String.IsNullOrWhiteSpace(stored) && unlockedPagePasswords.TryGetValue(unlockKey, out unlockedHash) && unlockedHash.Equals(stored, StringComparison.Ordinal);
         }
 
         private static string FormatUpdateBytes(long value)
