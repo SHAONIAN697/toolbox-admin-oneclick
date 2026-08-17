@@ -322,6 +322,13 @@ def locate_ip(ip, bypass_cache=False):
     if cfg.get("unifiedChinese", True):
         chinese = next((item["address"] for item in results if re.search(r"[\u3400-\u9fff]", item["address"])), "")
         address = chinese or address
+        repeated = re.fullmatch(r"(.+?)\1", address, flags=re.I)
+        if repeated: address = repeated.group(1)
+        location_names = {"Autonomous Region": "", "Hulun Buir": "呼伦贝尔市", "Hulunbuir": "呼伦贝尔市", "Beijing": "北京市", "Shanghai": "上海市", "Tianjin": "天津市", "Chongqing": "重庆市", "Hebei": "河北省", "Shanxi": "山西省", "Liaoning": "辽宁省", "Jilin": "吉林省", "Heilongjiang": "黑龙江省", "Jiangsu": "江苏省", "Zhejiang": "浙江省", "Anhui": "安徽省", "Fujian": "福建省", "Jiangxi": "江西省", "Shandong": "山东省", "Henan": "河南省", "Hubei": "湖北省", "Hunan": "湖南省", "Guangdong": "广东省", "Hainan": "海南省", "Sichuan": "四川省", "Guizhou": "贵州省", "Yunnan": "云南省", "Shaanxi": "陕西省", "Gansu": "甘肃省", "Qinghai": "青海省", "Taiwan": "台湾省", "Inner Mongolia": "内蒙古自治区", "Guangxi": "广西壮族自治区", "Tibet": "西藏自治区", "Ningxia": "宁夏回族自治区", "Xinjiang": "新疆维吾尔自治区", "Hong Kong": "香港特别行政区", "Macao": "澳门特别行政区", "Macau": "澳门特别行政区"}
+        for english in sorted(location_names, key=len, reverse=True):
+            address = re.sub(re.escape(english), location_names[english], address, flags=re.I)
+        if re.search(r"[\u3400-\u9fff]", address):
+            address = re.sub(r"[A-Za-z][A-Za-z ._-]*", "", address).strip()
         address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
     cache[ip] = {"address": address, "time": time.time()}
     write_json(IP_CACHE_PATH, cache)

@@ -1254,8 +1254,8 @@ function ensureAuditView() {
   view.innerHTML = `<div class="panel audit-panel">
     <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><button id="refreshAuditBtn" type="button">刷新</button></div>
     <div class="audit-filters">
-      <input id="auditUserFilter" type="search" list="auditUserOptions" placeholder="筛选用户"><datalist id="auditUserOptions"></datalist>
-      <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址"><input id="auditKeywordFilter" type="search" placeholder="搜索操作内容">
+      <input id="auditUserFilter" type="search" list="auditUserOptions" autocomplete="off" placeholder="搜索或选择用户"><datalist id="auditUserOptions"></datalist>
+      <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址"><input id="auditKeywordFilter" type="search" placeholder="搜索全部日志信息">
       <select id="auditActionFilter"><option value="">全部操作类型</option><option value="login">登录记录</option><option value="POST">新增操作</option><option value="PATCH">修改操作</option><option value="PUT">保存操作</option><option value="DELETE">删除操作</option></select>
       <select id="auditRiskFilter"><option value="">全部风险</option><option value="high">高风险</option><option value="medium">需关注</option><option value="low">无风险</option></select>
       <label>开始时间<input id="auditStartFilter" type="datetime-local"></label><label>结束时间<input id="auditEndFilter" type="datetime-local"></label>
@@ -1283,14 +1283,39 @@ async function loadAuditLog() {
   try {
     const data = await api('/api/super/audit');
     state.auditItems = data.items || [];
-    const users = [...new Set(state.auditItems.map(auditAccount).filter((name) => name !== '未知用户'))].sort();
-    $('auditUserOptions').innerHTML = users.map((name) => `<option value="${escapeAttr(name)}"></option>`).join('');
+    updateAuditUserOptions();
     renderAuditLog();
   } finally { state.auditRefreshBusy = false; }
 }
 
-function auditAccount(item) { return String(item.actor || item.username || item.detail || item.target || '未知用户'); }
+function auditAccount(item) {
+  const actor = String(item.actor || item.username || '');
+  if (actor) return actor;
+  const target = String(item.target || '');
+  return String(item.action || '').startsWith('login_') && state.users.some((user) => user.username === target) ? target : '未知用户';
+}
 function auditPath(item) { const value = String(item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item.path || ''); }
+
+function updateAuditUserOptions() {
+  const options = $('auditUserOptions');
+  const users = [...new Set(state.users.map((user) => String(user.username || '').trim()).filter(Boolean))].sort();
+  const signature = JSON.stringify(users);
+  if (!options || options.dataset.optionsSignature === signature) return;
+  options.replaceChildren(...users.map((name) => {
+    const user = state.users.find((item) => item.username === name);
+    const option = new Option(name, name);
+    option.label = user?.displayName && user.displayName !== name ? `${user.displayName}（${name}）` : name;
+    return option;
+  }));
+  options.dataset.optionsSignature = signature;
+}
+
+function auditUserSearchText(item) {
+  const account = auditAccount(item);
+  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
+  return `${account} ${user?.displayName || ''} ${user?.username || ''}`;
+}
+
 function auditRisk(item) {
   const action = String(item.action || ''); const path = auditPath(item);
   if (item.success === false || action.includes('delete') || action.includes('blocked') || action.includes('reauth_failed')) return 'high';
@@ -1316,9 +1341,11 @@ function renderAuditLog() {
   const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0; const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
   const items = state.auditItems.filter((item) => {
     const account = auditAccount(item); const description = describeAuditEntry(item); const itemTime = new Date(item.time).getTime(); const action = String(item.action || '');
-    if (user && !account.toLowerCase().includes(user)) return false;
+    if (user && !auditUserSearchText(item).toLowerCase().includes(user)) return false;
     if (ip && !String(item.ip || '').toLowerCase().includes(ip)) return false;
-    if (keyword && !`${description} ${action} ${auditPath(item)}`.toLowerCase().includes(keyword)) return false;
+    const riskLabel = { high: '高风险', medium: '需关注', low: '无风险' }[auditRisk(item)];
+    const searchable = `${auditUserSearchText(item)} ${description} ${action} ${auditPath(item)} ${item.ip || ''} ${formatDateTime(item.time)} ${riskLabel} ${JSON.stringify(item)}`;
+    if (keyword && !searchable.toLowerCase().includes(keyword)) return false;
     if (actionType === 'login' && !action.startsWith('login_')) return false;
     if (actionType && actionType !== 'login' && action !== `backend_${actionType.toLowerCase()}`) return false;
     if (risk && auditRisk(item) !== risk) return false;
@@ -1548,7 +1575,10 @@ function renderUsers() {
     tableWrap.hidden = true;
   }
   const panel = tbody.closest('.panel');
-  setPanelCounter(panel, 'userTotalCount', state.users.length);
+  ensureUserBatchTools(panel);
+  const userQuery = ($('userListSearch')?.value || '').trim().toLowerCase();
+  const visibleUsers = state.users.filter((user) => !userQuery || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`.toLowerCase().includes(userQuery));
+  setPanelCounter(panel, 'userTotalCount', visibleUsers.length === state.users.length ? state.users.length : `${visibleUsers.length}/${state.users.length}`);
   let cards = $('userCards');
   if (!cards && panel) {
     cards = document.createElement('div');
@@ -1556,13 +1586,12 @@ function renderUsers() {
     cards.className = 'user-card-list';
     panel.appendChild(cards);
   }
-  ensureUserBatchTools(panel);
   if (!cards) return;
   cards.classList.add('collapsible-body');
   cards.hidden = !!panel?.classList.contains('is-collapsed');
   cards.innerHTML = '';
 
-  state.users.forEach((user) => {
+  visibleUsers.forEach((user) => {
     const endpoint = `${location.origin}/api/toolbox/config?key=${encodeURIComponent(user.apiKey || '')}`;
     const card = document.createElement('div');
     card.className = 'user-card';
@@ -1676,6 +1705,7 @@ function ensureUserBatchTools(panel) {
   bar.id = 'userBatchBar';
   bar.className = 'batch-bar collapsible-body';
   bar.innerHTML = `
+    <input id="userListSearch" type="search" autocomplete="off" placeholder="搜索昵称、用户名或邮箱">
     <label class="checkline"><input id="userSelectAll" type="checkbox"> 全选</label>
     <button data-user-batch="enable">批量启用</button>
     <button data-user-batch="disable">批量停用</button>
@@ -1686,6 +1716,7 @@ function ensureUserBatchTools(panel) {
   const head = panel.querySelector('.panel-head');
   head?.insertAdjacentElement('afterend', bar);
   if (panel.classList.contains('is-collapsed')) bar.hidden = true;
+  $('userListSearch').oninput = () => renderUsers();
   $('userSelectAll').onchange = (event) => {
     document.querySelectorAll('.user-check:not(:disabled)').forEach((box) => { box.checked = event.target.checked; });
   };

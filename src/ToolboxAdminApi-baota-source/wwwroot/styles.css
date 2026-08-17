@@ -1587,6 +1587,8 @@ body.is-super-admin #appLoginPanel {
   gap: 12px;
 }
 
+#userListSearch { width: min(360px, 100%); min-width: 220px; margin-right: auto; }
+
 .user-card {
   border: 1px solid var(--line);
   border-radius: 8px;
