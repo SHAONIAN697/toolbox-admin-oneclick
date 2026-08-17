@@ -1078,11 +1078,13 @@ namespace ToolboxClient
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 1,
+                RowCount = 2,
                 BackColor = Color.White
             };
             brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44F));
             brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
             brandIcon = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.CenterImage, BackColor = side.BackColor };
             brandTitle = new Label
             {
@@ -1090,13 +1092,23 @@ namespace ToolboxClient
                 ForeColor = Color.FromArgb(15, 23, 42),
                 Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
                 Padding = new Padding(6, 0, 0, 0),
-                TextAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.BottomLeft,
                 AutoEllipsis = true
             };
             brandTitle.Resize += delegate { FitBrandTitle(brandTitle.Text); };
-            brandSubtitle = new Label { Visible = false, Width = 1, Height = 1 };
+            brandSubtitle = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font(Font.FontFamily, 8F, FontStyle.Regular),
+                Padding = new Padding(6, 0, 0, 0),
+                TextAlign = ContentAlignment.TopLeft,
+                AutoEllipsis = true
+            };
             brandPanel.Controls.Add(brandIcon, 0, 0);
+            brandPanel.SetRowSpan(brandIcon, 2);
             brandPanel.Controls.Add(brandTitle, 1, 0);
+            brandPanel.Controls.Add(brandSubtitle, 1, 1);
             AttachBrandPopupEntry(brandPanel);
             sideLayout.Controls.Add(brandPanel, 0, 0);
 
@@ -2654,6 +2666,7 @@ namespace ToolboxClient
             BackColor = Bg;
             ForeColor = TextColor;
             ApplyStudioThemeToControlTree(this);
+            if (brandSubtitle != null) brandSubtitle.ForeColor = Muted;
         }
 
         private void ApplyStudioThemeToControlTree(Control root)
