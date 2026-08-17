@@ -2694,7 +2694,7 @@ def custom_client_icon(app, target_dir):
             return cached_icon
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdminApi"})
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with urllib.request.urlopen(request, timeout=45) as response:
             data = response.read(2 * 1024 * 1024)
             content_type = response.headers.get("Content-Type", "").lower()
         icon_path = Path(target_dir) / "client-icon.ico"
@@ -3205,6 +3205,8 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EXE_FILE_VERSION__"', csharp_literal(exe_version))
     with tempfile.TemporaryDirectory() as td:
         icon_file = custom_client_icon(app_config, td)
+        embedded_brand_icon = base64.b64encode(icon_file.read_bytes()).decode("ascii")
+        source = source.replace('"__EMBEDDED_BRAND_ICON_BASE64__"', csharp_literal(embedded_brand_icon))
         src = Path(td) / "ToolboxClient.cs"
         exe = Path(td) / file_name
         src.write_text(source, encoding="utf-8")

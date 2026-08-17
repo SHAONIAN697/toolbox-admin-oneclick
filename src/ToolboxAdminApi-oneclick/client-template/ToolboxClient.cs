@@ -31,6 +31,7 @@ namespace ToolboxClient
     {
         private const string ConfigUrl = "__CONFIG_URL__";
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
+        internal const string EmbeddedBrandIconBase64 = "__EMBEDDED_BRAND_ICON_BASE64__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
         internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
@@ -1866,6 +1867,7 @@ namespace ToolboxClient
             {
                 lock (iconCacheLock) iconCache.TryGetValue(cacheKey, out image);
             }
+            if (image == null) image = LoadEmbeddedBrandIcon();
             SetAppIconImage(image ?? CreateBrandBadge(fallbackText));
 
             if (image != null || String.IsNullOrWhiteSpace(resolved)) return;
@@ -1888,6 +1890,33 @@ namespace ToolboxClient
                 }
                 catch { }
             });
+        }
+
+        private Image LoadEmbeddedBrandIcon()
+        {
+            const string cacheKey = "embedded-brand-icon|34x34";
+            lock (iconCacheLock)
+            {
+                Image cached;
+                if (iconCache.TryGetValue(cacheKey, out cached)) return cached;
+            }
+            try
+            {
+                string encoded = Program.EmbeddedBrandIconBase64;
+                if (String.IsNullOrWhiteSpace(encoded) || encoded.StartsWith("__", StringComparison.Ordinal)) return null;
+                byte[] bytes = Convert.FromBase64String(encoded);
+                using (MemoryStream stream = new MemoryStream(bytes))
+                using (Image original = Image.FromStream(stream, true, true))
+                {
+                    Image resized = ResizeImageToFill(original, 34, 34);
+                    lock (iconCacheLock) iconCache[cacheKey] = resized;
+                    return resized;
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void SetAppIconImage(Image image)
