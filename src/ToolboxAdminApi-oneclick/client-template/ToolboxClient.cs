@@ -33,6 +33,7 @@ namespace ToolboxClient
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
+        internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
         internal const string BuildId = "__BUILD_ID__";
         internal const string BuildStamp = "__BUILD_STAMP__";
         internal const string IntegritySeed = "__INTEGRITY_SEED__";
@@ -194,6 +195,8 @@ namespace ToolboxClient
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
+        private bool updatePromptShown = false;
+        private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly object launchDownloadedFileLock = new object();
@@ -2068,6 +2071,9 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
+            Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
+            if (EnforceUpdatePolicy(updateApp)) return;
+
             SuspendLayout();
             side.SuspendLayout();
             nav.SuspendLayout();
@@ -8224,6 +8230,220 @@ namespace ToolboxClient
         private void DownloadFile(string url)
         {
             DownloadFile(url, "");
+        }
+
+        private bool OpenUpdateTarget(string target)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((target ?? "").Trim(), UriKind.Absolute, out uri))
+            {
+                Open(target);
+                return false;
+            }
+            if (IsCloudShareUrl(uri))
+            {
+                Open(target);
+                return false;
+            }
+            if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            {
+                DownloadAndReplaceCurrentExe(uri);
+                return true;
+            }
+            Open(target);
+            return false;
+        }
+
+        private static bool IsCloudShareUrl(Uri uri)
+        {
+            string host = (uri == null ? "" : uri.Host).Trim().ToLowerInvariant();
+            if (String.IsNullOrWhiteSpace(host)) return false;
+            string[] domains = new string[]
+            {
+                "123pan.com", "123684.com", "123865.com", "pan.baidu.com", "pan.quark.cn",
+                "cloud.189.cn", "aliyundrive.com", "alipan.com", "weiyun.com", "drive.uc.cn"
+            };
+            foreach (string domain in domains)
+            {
+                if (host == domain || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return host.IndexOf("lanzou", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void DownloadAndReplaceCurrentExe(Uri uri)
+        {
+            if (selfUpdateDownloading) return;
+            selfUpdateDownloading = true;
+            string currentExe = Application.ExecutablePath;
+            string tempExe = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".exe");
+            status.Text = "正在下载工具箱更新...";
+            Form updateWindow = new Form
+            {
+                Text = "工具箱更新",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(430, 132),
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ControlBox = false
+            };
+            Label updateTitle = new Label { Text = "正在下载最新版工具箱", Left = 20, Top = 18, Width = 390, Height = 24, Font = new Font(Font.FontFamily, 11F, FontStyle.Bold) };
+            ProgressBar updateProgress = new ProgressBar { Left = 20, Top = 54, Width = 390, Height = 22, Minimum = 0, Maximum = 100 };
+            Label updateDetail = new Label { Text = "正在连接下载服务器...", Left = 20, Top = 88, Width = 390, Height = 22 };
+            updateWindow.Controls.Add(updateTitle);
+            updateWindow.Controls.Add(updateProgress);
+            updateWindow.Controls.Add(updateDetail);
+            updateWindow.Show(this);
+
+            WebClient client = new WebClient();
+            client.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 ToolboxUpdater/1.0";
+            client.DownloadProgressChanged += delegate(object sender, DownloadProgressChangedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    int percent = Math.Max(0, Math.Min(100, e.ProgressPercentage));
+                    status.Text = "正在下载工具箱更新 " + percent + "%";
+                    updateProgress.Value = percent;
+                    updateDetail.Text = FormatUpdateBytes(e.BytesReceived) + " / " + FormatUpdateBytes(e.TotalBytesToReceive) + "  (" + percent + "%)";
+                }));
+            };
+            client.DownloadFileCompleted += delegate(object sender, AsyncCompletedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    selfUpdateDownloading = false;
+                    client.Dispose();
+                    updateWindow.Close();
+                    if (e.Cancelled || e.Error != null)
+                    {
+                        updatePromptShown = false;
+                        TryDeleteUpdateFile(tempExe);
+                        MessageBox.Show("更新下载失败：" + (e.Error == null ? "下载已取消" : e.Error.Message), "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!IsWindowsExecutable(tempExe))
+                    {
+                        updatePromptShown = false;
+                        TryDeleteUpdateFile(tempExe);
+                        MessageBox.Show("更新地址返回的不是有效 Windows EXE；网盘分享链接请直接填写分享页地址。", "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    LaunchSelfUpdater(tempExe, currentExe);
+                }));
+            };
+            try { client.DownloadFileAsync(uri, tempExe); }
+            catch (Exception ex)
+            {
+                selfUpdateDownloading = false;
+                updatePromptShown = false;
+                client.Dispose();
+                updateWindow.Close();
+                TryDeleteUpdateFile(tempExe);
+                MessageBox.Show("更新下载失败：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private static string FormatUpdateBytes(long value)
+        {
+            if (value < 0) return "未知大小";
+            if (value >= 1024L * 1024L * 1024L) return (value / (1024d * 1024d * 1024d)).ToString("0.00") + " GB";
+            if (value >= 1024L * 1024L) return (value / (1024d * 1024d)).ToString("0.00") + " MB";
+            if (value >= 1024L) return (value / 1024d).ToString("0.0") + " KB";
+            return value + " B";
+        }
+
+        private static bool IsWindowsExecutable(string path)
+        {
+            try { using (FileStream stream = File.OpenRead(path)) return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z'; }
+            catch { return false; }
+        }
+
+        private static void TryDeleteUpdateFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        private void LaunchSelfUpdater(string downloadedExe, string currentExe)
+        {
+            string script = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".cmd");
+            string body = "@echo off\r\nsetlocal\r\nset /a tries=0\r\n:retry\r\nset /a tries+=1\r\ncopy /Y \"" + downloadedExe + "\" \"" + currentExe + "\" >nul 2>&1\r\nif not errorlevel 1 goto done\r\nif %tries% GEQ 120 goto failed\r\nping 127.0.0.1 -n 2 >nul\r\ngoto retry\r\n:done\r\ndel /F /Q \"" + downloadedExe + "\" >nul 2>&1\r\nstart \"\" \"" + currentExe + "\"\r\ndel \"%~f0\"\r\nexit /b 0\r\n:failed\r\nstart \"\" explorer.exe /select,\"" + downloadedExe + "\"\r\nexit /b 1\r\n";
+            File.WriteAllText(script, body, Encoding.Default);
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"") { UseShellExecute = false, CreateNoWindow = true };
+            Process.Start(psi);
+            Close();
+            Application.Exit();
+        }
+
+        private bool EnforceUpdatePolicy(Dictionary<string, object> app)
+        {
+            app = UpdatePolicyForCurrentVariant(app);
+            string updateUrl = GetText(app, "update_url", GetText(app, "client_update_url", "")).Trim();
+            string minimum = GetText(app, "update_min_version", "").Trim();
+            string latest = GetText(app, "version", "").Trim();
+            Version configuredMinimum;
+            Version configuredLatest;
+            bool hasMinimum = TryParseVersion(minimum, out configuredMinimum);
+            bool hasLatest = TryParseVersion(latest, out configuredLatest);
+            Version updateTarget = hasLatest ? configuredLatest : configuredMinimum;
+            Version minimumAllowed = hasMinimum ? configuredMinimum : updateTarget;
+            Version current;
+            if (!TryParseVersion(Program.ClientAppVersion, out current)) current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            bool blocked = BoolValue(app, "update_force", false) && current.CompareTo(minimumAllowed) < 0;
+            if (String.IsNullOrWhiteSpace(updateUrl) || (!hasMinimum && !hasLatest) || (!blocked && current.CompareTo(updateTarget) >= 0)) return false;
+            if (updatePromptShown) return blocked;
+            updatePromptShown = true;
+            HideStartupOverlay();
+            Activate();
+            BringToFront();
+
+            string titleText = GetText(app, "update_title", "工具箱更新").Trim();
+            string message = blocked
+                ? "当前版本 " + DisplayVersion(current) + " 已停止使用，最低可用版本为 " + DisplayVersion(minimumAllowed) + "。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。"
+                : "发现新版本 " + DisplayVersion(updateTarget) + "，当前版本为 " + DisplayVersion(current) + "。\r\n\r\n点击“是”立即更新；点击“否”继续使用当前版本。";
+            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, blocked ? MessageBoxButtons.OKCancel : MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            bool accepted = blocked ? result == DialogResult.OK : result == DialogResult.Yes;
+            if (accepted)
+            {
+                try { if (OpenUpdateTarget(updateUrl)) return true; }
+                catch (Exception ex) { MessageBox.Show("无法打开更新地址：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            }
+            if (!blocked) return false;
+            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+            return true;
+        }
+
+        private static Dictionary<string, object> UpdatePolicyForCurrentVariant(Dictionary<string, object> app)
+        {
+            Dictionary<string, object> variants = AsDict(Get(app, "update_variants"));
+            Dictionary<string, object> selected = AsDict(Get(variants, Program.ClientVariant));
+            if (selected.Count == 0) return app;
+            Dictionary<string, object> policy = new Dictionary<string, object>(app, StringComparer.OrdinalIgnoreCase);
+            policy["version"] = GetText(selected, "version", GetText(app, "version", ""));
+            policy["update_url"] = GetText(selected, "url", GetText(app, "update_url", ""));
+            policy["update_title"] = GetText(selected, "title", GetText(app, "update_title", "工具箱更新"));
+            policy["update_button"] = GetText(selected, "button", GetText(app, "update_button", "下载最新版"));
+            policy["update_min_version"] = GetText(selected, "minVersion", GetText(app, "update_min_version", ""));
+            policy["update_force"] = BoolValue(selected, "force", BoolValue(app, "update_force", false));
+            return policy;
+        }
+
+        private static bool TryParseVersion(string value, out Version version)
+        {
+            version = null;
+            string text = (value ?? "").Trim();
+            if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase)) text = text.Substring(1);
+            Match match = Regex.Match(text, @"\d+(?:\.\d+){0,3}");
+            if (!match.Success) return false;
+            string normalized = match.Value.IndexOf('.') >= 0 ? match.Value : match.Value + ".0";
+            return Version.TryParse(normalized, out version);
+        }
+
+        private static string DisplayVersion(Version version)
+        {
+            if (version == null) return "0.0";
+            if (version.Revision > 0) return version.ToString(4);
+            if (version.Build > 0) return version.ToString(3);
+            return version.ToString(2);
         }
 
         private void DownloadFile(string url, string displayName)
@@ -15345,7 +15565,7 @@ namespace ToolboxClient
             Bounds = bounds;
             BackColor = background;
             ShowInTaskbar = false;
-            TopMost = true;
+            TopMost = false;
 
             LoadingSpinnerControl spinner = new LoadingSpinnerControl
             {

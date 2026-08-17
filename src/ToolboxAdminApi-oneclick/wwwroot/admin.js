@@ -1066,11 +1066,21 @@ function renderApp() {
   $('appPasswordEnabled').checked = app.password_enabled === undefined ? !!app.password : !!app.password_enabled;
   $('appPassword').value = app.password_plain || '';
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
-  $('appUpdateUrl').value = app.update_url || '';
-  $('appUpdateTitle').value = app.update_title || '工具箱更新';
-  $('appUpdateButton').value = app.update_button || '下载最新版';
-  $('appUpdateMinVersion').value = app.update_min_version || '';
-  $('appUpdateForce').checked = app.update_force === true;
+  const updateVariants = app.update_variants || {};
+  CLIENT_VARIANTS.forEach((variant) => {
+    const settings = updateVariants[variant.id] || (variant.id === 'original' ? {
+      version: app.version || '', url: app.update_url || '', title: app.update_title || '工具箱更新',
+      button: app.update_button || '下载最新版', minVersion: app.update_min_version || '', force: app.update_force === true
+    } : {});
+    const card = document.querySelector(`[data-update-variant="${variant.id}"]`);
+    if (!card) return;
+    card.querySelector('[data-update-field="version"]').value = settings.version || '';
+    card.querySelector('[data-update-field="url"]').value = settings.url || '';
+    card.querySelector('[data-update-field="title"]').value = settings.title || '工具箱更新';
+    card.querySelector('[data-update-field="button"]').value = settings.button || '下载最新版';
+    card.querySelector('[data-update-field="minVersion"]').value = settings.minVersion || '';
+    card.querySelector('[data-update-field="force"]').checked = settings.force === true;
+  });
   $('appExeTitle').value = app.exe_title || app.title || '';
   $('appExeDescription').value = app.exe_description || app.subtitle || '';
   $('appExeProduct').value = app.exe_product || app.title || '';
@@ -1127,12 +1137,15 @@ function organizeOverviewCards() {
   const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel', 'saveAppExeBtn', '保存 EXE');
   const pageAccessPanel = ensurePageAccessPanel();
   const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel', 'saveAppUpdateBtn', '保存更新入口');
+  updatePanel.classList.add('collapsible-panel', 'is-collapsed');
+  updatePanel.dataset.collapsiblePanel = '';
+  updatePanel.dataset.defaultCollapsed = '1';
   const popupPanel = createPopupOverviewPanel();
   view.insertBefore(loginPanel, stats);
   view.insertBefore(passwordPanel, stats);
-  view.insertBefore(pageAccessPanel, stats);
   view.insertBefore(propertyPanel, stats);
   view.insertBefore(updatePanel, stats);
+  view.insertBefore(pageAccessPanel, stats);
   view.insertBefore(popupPanel, stats);
   setupCollapsiblePanels();
   bindOverviewSaveActions();
@@ -1141,7 +1154,8 @@ function organizeOverviewCards() {
   moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
   moveLabels(grid, passwordPanel.querySelector('.form-grid'), ['appPasswordEnabled', 'appPassword']);
   moveLabels(grid, propertyPanel.querySelector('.form-grid'), ['appExeTitle', 'appExeDescription', 'appExeProduct', 'appExeVersion', 'appExeCompany', 'appExeCopyright']);
-  moveLabels(grid, updatePanel.querySelector('.form-grid'), ['appUpdateUrl', 'appUpdateTitle', 'appUpdateButton', 'appUpdateMinVersion', 'appUpdateForce']);
+  const updateVariants = $('appUpdateVariants');
+  if (updateVariants) updatePanel.querySelector('.form-grid').appendChild(updateVariants);
 }
 
 function createPopupOverviewPanel() {
@@ -1454,26 +1468,24 @@ function ensureExeIconField() {
 }
 
 function ensureUpdateFields() {
-  if ($('appUpdateUrl')) return;
+  if ($('appUpdateVariants')) return;
   const grid = $('appPassword')?.closest('.form-grid');
   if (!grid) return;
-  const updateUrl = document.createElement('label');
-  updateUrl.className = 'wide';
-  updateUrl.innerHTML = '工具箱更新链接<input id="appUpdateUrl" placeholder="EXE 直链将自动替换主程序；网盘或网页链接将跳转浏览器">';
-  const updateTitle = document.createElement('label');
-  updateTitle.innerHTML = '更新入口标题<input id="appUpdateTitle" placeholder="例如：工具箱更新">';
-  const updateButton = document.createElement('label');
-  updateButton.innerHTML = '更新按钮文字<input id="appUpdateButton" placeholder="例如：下载最新版">';
-  const updateMinVersion = document.createElement('label');
-  updateMinVersion.innerHTML = '最低可用版本<input id="appUpdateMinVersion" placeholder="例如：3.0；留空则使用上方版本号">';
-  const updateForce = document.createElement('label');
-  updateForce.className = 'toggle-line';
-  updateForce.innerHTML = '强制更新<span><input id="appUpdateForce" type="checkbox"> 低于最低版本时禁止使用</span>';
-  grid.appendChild(updateUrl);
-  grid.appendChild(updateTitle);
-  grid.appendChild(updateButton);
-  grid.appendChild(updateMinVersion);
-  grid.appendChild(updateForce);
+  const wrap = document.createElement('div');
+  wrap.id = 'appUpdateVariants';
+  wrap.className = 'update-variant-list';
+  wrap.innerHTML = CLIENT_VARIANTS.map((variant) => `<section class="update-variant-card" data-update-variant="${escapeAttr(variant.id)}">
+    <h3>${escapeHtml(variant.label)}</h3>
+    <div class="form-grid compact">
+      <label>当前最新版<input data-update-field="version" placeholder="例如：4.0"></label>
+      <label>最低可用版本<input data-update-field="minVersion" placeholder="例如：3.0"></label>
+      <label class="wide">更新链接<input data-update-field="url" placeholder="新版 EXE、网盘或网页地址"></label>
+      <label>弹窗标题<input data-update-field="title" placeholder="工具箱更新"></label>
+      <label>更新按钮文字<input data-update-field="button" placeholder="下载最新版"></label>
+      <label class="toggle-line wide">强制更新<span><input data-update-field="force" type="checkbox"> 低于最低版本时禁止使用</span></label>
+    </div>
+  </section>`).join('');
+  grid.appendChild(wrap);
 }
 
 function renderAccount() {
@@ -3571,19 +3583,27 @@ async function saveAppExeSettings() {
 }
 
 async function saveAppUpdateSettings() {
-  const updateUrl = $('appUpdateUrl')?.value.trim() || '';
-  const updateForce = Boolean($('appUpdateForce')?.checked);
-  if (updateForce && !updateUrl) {
-    setStatus('开启强制更新前必须填写工具箱更新链接。', true);
-    return;
-  }
+  const updateVariants = {};
+  document.querySelectorAll('[data-update-variant]').forEach((card) => {
+    const value = (field) => card.querySelector(`[data-update-field="${field}"]`)?.value.trim() || '';
+    const settings = {
+      version: value('version'), minVersion: value('minVersion'), url: value('url'),
+      title: value('title') || '工具箱更新', button: value('button') || '下载最新版',
+      force: card.querySelector('[data-update-field="force"]')?.checked === true
+    };
+    if (settings.force && !settings.url) throw new Error(`${CLIENT_VARIANTS.find((item) => item.id === card.dataset.updateVariant)?.label || '工具箱'}开启强制更新前必须填写更新链接。`);
+    updateVariants[card.dataset.updateVariant] = settings;
+  });
+  const original = updateVariants.original || {};
   await saveAppPatch({
-    update_url: updateUrl,
-    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
-    update_button: $('appUpdateButton')?.value.trim() || '下载最新版',
-    update_min_version: $('appUpdateMinVersion')?.value.trim() || '',
-    update_force: updateForce
-  }, '更新入口已保存。');
+    update_variants: updateVariants,
+    version: original.version || state.config?.app?.version || '',
+    update_url: original.url || '',
+    update_title: original.title || '工具箱更新',
+    update_button: original.button || '下载最新版',
+    update_min_version: original.minVersion || '',
+    update_force: original.force === true
+  }, '四个工具箱版本的更新设置已保存。');
 }
 
 async function saveApp() {

@@ -3607,3 +3607,9 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
   .announcement-editor-grid .wide { grid-column: auto; }
   .announcement-popup-actions { flex-wrap: wrap; }
 }
+
+.update-variant-list { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.update-variant-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.update-variant-card h3 { margin: 0 0 12px; font-size: 15px; }
+.update-variant-card .form-grid { margin: 0; }
+@media (max-width: 900px) { .update-variant-list { grid-template-columns: 1fr; } }
