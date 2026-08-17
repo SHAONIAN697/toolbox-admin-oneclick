@@ -486,12 +486,17 @@ namespace ToolboxClient
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            if (WindowState == FormWindowState.Minimized) return;
             if (portalVariant) UpdatePortalWindowRegion();
             if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
                 QueueContentResizeRender();
             }
             LayoutResourceSearchChrome();
+            if (IsHandleCreated && content != null && !content.IsDisposed)
+            {
+                BeginInvoke(new Action(delegate { UpdateContentScrolling(); }));
+            }
         }
 
         protected override CreateParams CreateParams
@@ -2958,7 +2963,7 @@ namespace ToolboxClient
 
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
                 {
-                    MarkNavButtonActive(currentPage);
+                    ShowPage(currentPage);
                     return;
                 }
                 foreach (string key in navButtons.Keys)
@@ -3033,7 +3038,7 @@ namespace ToolboxClient
 
             if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
             {
-                MarkNavButtonActive(currentPage);
+                ShowPage(currentPage);
                 return;
             }
 
@@ -3242,6 +3247,7 @@ namespace ToolboxClient
         private void EndContentRender()
         {
             contentRendering = false;
+            UpdateContentScrolling();
             if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
             {
                 pageSwitchTimer.Stop();
@@ -3461,6 +3467,7 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
+            ResetContentScrollState();
             bool oldVisible = content.Visible;
             if (studioVariant)
             {
@@ -3512,12 +3519,7 @@ namespace ToolboxClient
                 content.WrapContents = !listMode;
 
                 List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-                buttons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
+                SortButtonsByConfiguredPosition(buttons);
                 if (buttons.Count == 0)
                 {
                     AddEmptyMessage("这里还没有按钮。");
@@ -3541,7 +3543,7 @@ namespace ToolboxClient
                 int columns = (portalVariant || studioVariant) ? 3 : 4;
                 const int gap = 12;
                 int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 150);
-                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * (columns - 1)) / columns);
+                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * columns) / columns);
                 int cardHeight = listMode ? 52 : (portalVariant ? 118 : (studioVariant ? 42 : 52));
                 for (int i = 0; i < buttons.Count; i++)
                 {
@@ -3600,12 +3602,7 @@ namespace ToolboxClient
                         buttons.Add(AsDict(buttonObj));
                     }
                     if (buttons.Count == 0) continue;
-                    buttons.Sort((a, b) =>
-                    {
-                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                        if (result != 0) return result;
-                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                    });
+                    SortButtonsByConfiguredPosition(buttons);
 
                     Panel group = CreateStudioGroup(section, buttons, available, i);
                     content.Controls.Add(group);
@@ -3653,12 +3650,7 @@ namespace ToolboxClient
                         buttons.Add(AsDict(buttonObj));
                     }
                     if (buttons.Count == 0) continue;
-                    buttons.Sort((a, b) =>
-                    {
-                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                        if (result != 0) return result;
-                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                    });
+                    SortButtonsByConfiguredPosition(buttons);
                     content.Controls.Add(CreateTunerGroup(section, buttons, available, i));
                 }
 
@@ -4263,7 +4255,7 @@ namespace ToolboxClient
             IList<object> sections = AsList(Get(page, "sections"));
             List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
             if (sections.Count > 0) foreach (object obj in AsList(Get(AsDict(sections[0]), "buttons"))) buttons.Add(AsDict(obj));
-            buttons.Sort((a, b) => IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0)));
+            SortButtonsByConfiguredPosition(buttons);
             return buttons;
         }
 
@@ -4724,12 +4716,7 @@ namespace ToolboxClient
             content.BackColor = Bg;
 
             List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-            buttons.Sort((a, b) =>
-            {
-                int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                if (result != 0) return result;
-                return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-            });
+            SortButtonsByConfiguredPosition(buttons);
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
             int available = PortalContentWidth();
@@ -4849,12 +4836,7 @@ namespace ToolboxClient
                 {
                     buttons.Add(AsDict(buttonObj));
                 }
-                buttons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
+                SortButtonsByConfiguredPosition(buttons);
 
                 string sectionTitle = PortalLabel(GetText(section, "title", ""), "");
                 bool showHeading = !String.IsNullOrWhiteSpace(sectionTitle);
@@ -7358,6 +7340,49 @@ namespace ToolboxClient
             return buttons;
         }
 
+        private static void SortButtonsByConfiguredPosition(List<Dictionary<string, object>> buttons)
+        {
+            List<KeyValuePair<int, Dictionary<string, object>>> indexed = new List<KeyValuePair<int, Dictionary<string, object>>>();
+            for (int i = 0; i < buttons.Count; i++) indexed.Add(new KeyValuePair<int, Dictionary<string, object>>(i, buttons[i]));
+            indexed.Sort(delegate(KeyValuePair<int, Dictionary<string, object>> a, KeyValuePair<int, Dictionary<string, object>> b)
+            {
+                int result = IntValue(a.Value, "sort", 0).CompareTo(IntValue(b.Value, "sort", 0));
+                return result != 0 ? result : a.Key.CompareTo(b.Key);
+            });
+            buttons.Clear();
+            foreach (KeyValuePair<int, Dictionary<string, object>> item in indexed) buttons.Add(item.Value);
+        }
+
+        private void ResetContentScrollState()
+        {
+            if (content == null || content.IsDisposed) return;
+            content.AutoScrollPosition = Point.Empty;
+            content.AutoScrollMinSize = Size.Empty;
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+        }
+
+        private void UpdateContentScrolling()
+        {
+            if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
+            int requiredBottom = content.Padding.Top;
+            foreach (Control child in content.Controls)
+            {
+                if (!child.Visible) continue;
+                requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
+            }
+            bool needsVerticalScroll = requiredBottom > content.ClientSize.Height + 2;
+            if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
+            if (!needsVerticalScroll)
+            {
+                content.AutoScrollPosition = Point.Empty;
+                content.AutoScrollMinSize = Size.Empty;
+                content.VerticalScroll.Visible = false;
+            }
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+        }
+
         private void BuildResourceSearchChrome()
         {
             resourceSearchTimer = new System.Windows.Forms.Timer();
@@ -8205,6 +8230,7 @@ namespace ToolboxClient
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
             ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
         }
@@ -8304,6 +8330,7 @@ namespace ToolboxClient
             if (progressPanel != null) progressPanel.Visible = false;
             UpdateDownloadBadges();
             RenderActiveDownloads();
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             StartQueuedDownloads();
         }
 
@@ -8764,6 +8791,7 @@ namespace ToolboxClient
             }
             UpdateDownloadBadges();
             RenderActiveDownloads();
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             return true;
         }
 

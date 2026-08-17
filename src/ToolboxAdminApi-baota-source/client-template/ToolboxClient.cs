@@ -2959,7 +2959,7 @@ namespace ToolboxClient
 
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
                 {
-                    MarkNavButtonActive(currentPage);
+                    ShowPage(currentPage);
                     return;
                 }
                 foreach (string key in navButtons.Keys)
@@ -3034,7 +3034,7 @@ namespace ToolboxClient
 
             if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
             {
-                MarkNavButtonActive(currentPage);
+                ShowPage(currentPage);
                 return;
             }
 
