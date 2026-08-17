@@ -7970,8 +7970,8 @@ namespace ToolboxClient
             {
                 string requestUrl = IsSameServerUrl(url) ? WithRuntimeToken(url) : url;
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(requestUrl);
-                request.Timeout = 10000;
-                request.ReadWriteTimeout = 10000;
+                request.Timeout = 45000;
+                request.ReadWriteTimeout = 45000;
                 request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36";
                 request.Accept = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
                 request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
@@ -7979,11 +7979,16 @@ namespace ToolboxClient
                 request.KeepAlive = false;
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
-                using (Image original = Image.FromStream(stream))
+                using (MemoryStream imageBytes = new MemoryStream())
                 {
-                    Image resized = cropToFill ? ResizeImageToFill(original, maxWidth, maxHeight) : ResizeImage(original, maxWidth, maxHeight);
-                    lock (iconCacheLock) iconCache[cacheKey] = resized;
-                    return resized;
+                    stream.CopyTo(imageBytes);
+                    imageBytes.Position = 0;
+                    using (Image original = Image.FromStream(imageBytes, true, true))
+                    {
+                        Image resized = cropToFill ? ResizeImageToFill(original, maxWidth, maxHeight) : ResizeImage(original, maxWidth, maxHeight);
+                        lock (iconCacheLock) iconCache[cacheKey] = resized;
+                        return resized;
+                    }
                 }
             }
             catch
