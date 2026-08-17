@@ -7996,7 +7996,36 @@ namespace ToolboxClient
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 graphics.DrawImage(source, new Rectangle(offsetX, offsetY, drawWidth, drawHeight));
             }
+            RemoveConnectedDarkBackground(bitmap);
             return bitmap;
+        }
+
+        private static void RemoveConnectedDarkBackground(Bitmap bitmap)
+        {
+            if (bitmap == null || bitmap.Width < 2 || bitmap.Height < 2) return;
+            bool[,] visited = new bool[bitmap.Width, bitmap.Height];
+            Queue<Point> queue = new Queue<Point>();
+            Action<int, int> enqueue = delegate(int x, int y)
+            {
+                if (x < 0 || y < 0 || x >= bitmap.Width || y >= bitmap.Height || visited[x, y]) return;
+                Color color = bitmap.GetPixel(x, y);
+                if (color.A == 0 || (color.R <= 58 && color.G <= 58 && color.B <= 58))
+                {
+                    visited[x, y] = true;
+                    queue.Enqueue(new Point(x, y));
+                }
+            };
+            for (int x = 0; x < bitmap.Width; x++) { enqueue(x, 0); enqueue(x, bitmap.Height - 1); }
+            for (int y = 0; y < bitmap.Height; y++) { enqueue(0, y); enqueue(bitmap.Width - 1, y); }
+            while (queue.Count > 0)
+            {
+                Point point = queue.Dequeue();
+                bitmap.SetPixel(point.X, point.Y, Color.Transparent);
+                enqueue(point.X - 1, point.Y);
+                enqueue(point.X + 1, point.Y);
+                enqueue(point.X, point.Y - 1);
+                enqueue(point.X, point.Y + 1);
+            }
         }
 
         private static GraphicsPath RoundRect(Rectangle rect, int radius)
