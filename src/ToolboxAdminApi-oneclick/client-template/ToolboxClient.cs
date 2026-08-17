@@ -105,6 +105,8 @@ namespace ToolboxClient
         private Dictionary<string, object> config = new Dictionary<string, object>();
         private Panel side;
         private PictureBox brandIcon;
+        private Image brandSourceImage;
+        private bool brandBackgroundHooked;
         private Label brandTitle;
         private Label brandSubtitle;
         private FlowLayoutPanel nav;
@@ -429,6 +431,7 @@ namespace ToolboxClient
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (runtimeIcon != null) runtimeIcon.Dispose();
+            if (brandSourceImage != null) brandSourceImage.Dispose();
             if (refreshTimer != null)
             {
                 refreshTimer.Stop();
@@ -1890,6 +1893,27 @@ namespace ToolboxClient
         private void SetAppIconImage(Image image)
         {
             if (image == null || brandIcon == null || brandIcon.IsDisposed) return;
+            Image previousSource = brandSourceImage;
+            brandSourceImage = new Bitmap(image);
+            if (previousSource != null) previousSource.Dispose();
+
+            if (!brandBackgroundHooked && brandIcon.Parent != null)
+            {
+                brandBackgroundHooked = true;
+                brandIcon.Parent.BackColorChanged += delegate
+                {
+                    if (brandIcon == null || brandIcon.IsDisposed || brandSourceImage == null) return;
+                    RenderBrandIcon();
+                };
+            }
+
+            RenderBrandIcon();
+            RenderTaskbarIcon();
+        }
+
+        private void RenderBrandIcon()
+        {
+            if (brandSourceImage == null || brandIcon == null || brandIcon.IsDisposed) return;
             Color brandBackground = brandIcon.Parent == null ? brandIcon.BackColor : brandIcon.Parent.BackColor;
             brandIcon.BackColor = brandBackground;
             Bitmap displayImage = new Bitmap(34, 34);
@@ -1899,29 +1923,34 @@ namespace ToolboxClient
                 displayGraphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 displayGraphics.SmoothingMode = SmoothingMode.HighQuality;
                 displayGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                int x = (34 - image.Width) / 2;
-                int y = (34 - image.Height) / 2;
-                displayGraphics.DrawImage(image, x, y, image.Width, image.Height);
+                int x = (34 - brandSourceImage.Width) / 2;
+                int y = (34 - brandSourceImage.Height) / 2;
+                displayGraphics.DrawImage(brandSourceImage, x, y, brandSourceImage.Width, brandSourceImage.Height);
             }
             Image previousImage = brandIcon.Image;
             brandIcon.Image = displayImage;
-            if (previousImage != null && !Object.ReferenceEquals(previousImage, image)) previousImage.Dispose();
+            if (previousImage != null && !Object.ReferenceEquals(previousImage, brandSourceImage)) previousImage.Dispose();
+        }
 
+        private void RenderTaskbarIcon()
+        {
+            if (brandSourceImage == null || IsDisposed) return;
             using (Bitmap iconBitmap = new Bitmap(32, 32))
-            using (Graphics g = Graphics.FromImage(iconBitmap))
+            using (Graphics graphics = Graphics.FromImage(iconBitmap))
             {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(displayImage, 0, 0, 32, 32);
+                graphics.Clear(Color.Transparent);
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(brandSourceImage, new Rectangle(0, 0, 32, 32));
                 IntPtr handle = iconBitmap.GetHicon();
                 try
                 {
                     Icon nextIcon = (Icon)Icon.FromHandle(handle).Clone();
-                    Icon old = runtimeIcon;
+                    Icon previousIcon = runtimeIcon;
                     runtimeIcon = nextIcon;
                     Icon = runtimeIcon;
-                    if (old != null) old.Dispose();
+                    if (previousIcon != null) previousIcon.Dispose();
                 }
                 finally
                 {
@@ -2124,7 +2153,10 @@ namespace ToolboxClient
             FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
             title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : appTitle);
-            ApplyAppIcon(GetText(app, "icon", GetText(app, "icon_url", "")), GetText(app, "logo_text", "Y"));
+            string brandIconUrl = GetText(app, "icon", GetText(app, "icon_url", GetText(app, "icon_path", "")));
+            if (String.IsNullOrWhiteSpace(brandIconUrl))
+                brandIconUrl = GetText(app, "exe_icon", GetText(app, "exe_icon_url", ""));
+            ApplyAppIcon(brandIconUrl, GetText(app, "logo_text", "Y"));
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
@@ -7936,7 +7968,8 @@ namespace ToolboxClient
             }
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                string requestUrl = IsSameServerUrl(url) ? WithRuntimeToken(url) : url;
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(requestUrl);
                 request.Timeout = 10000;
                 request.ReadWriteTimeout = 10000;
                 request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36";
@@ -7964,15 +7997,31 @@ namespace ToolboxClient
             string value = (url ?? "").Trim();
             if (value.StartsWith("//")) return "https:" + value;
             if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
-            if (!value.StartsWith("/")) return value;
             try
             {
                 Uri config = new Uri(configUrl);
-                return config.GetLeftPart(UriPartial.Authority) + value;
+                if (value.StartsWith("/")) return config.GetLeftPart(UriPartial.Authority) + value;
+                return new Uri(config, value).AbsoluteUri;
             }
             catch
             {
                 return value;
+            }
+        }
+
+        private bool IsSameServerUrl(string url)
+        {
+            try
+            {
+                Uri asset = new Uri(url);
+                Uri config = new Uri(configUrl);
+                return asset.Scheme.Equals(config.Scheme, StringComparison.OrdinalIgnoreCase)
+                    && asset.Host.Equals(config.Host, StringComparison.OrdinalIgnoreCase)
+                    && asset.Port == config.Port;
+            }
+            catch
+            {
+                return false;
             }
         }
 
