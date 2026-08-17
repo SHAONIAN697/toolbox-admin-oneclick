@@ -1890,10 +1890,12 @@ namespace ToolboxClient
         private void SetAppIconImage(Image image)
         {
             if (image == null || brandIcon == null || brandIcon.IsDisposed) return;
+            Color brandBackground = brandIcon.Parent == null ? brandIcon.BackColor : brandIcon.Parent.BackColor;
+            brandIcon.BackColor = brandBackground;
             Bitmap displayImage = new Bitmap(34, 34);
             using (Graphics displayGraphics = Graphics.FromImage(displayImage))
             {
-                displayGraphics.Clear(brandIcon.BackColor);
+                displayGraphics.Clear(brandBackground);
                 displayGraphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 displayGraphics.SmoothingMode = SmoothingMode.HighQuality;
                 displayGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
@@ -7937,13 +7939,11 @@ namespace ToolboxClient
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
                 request.Timeout = 10000;
                 request.ReadWriteTimeout = 10000;
-                request.UserAgent = "ToolboxClient";
+                request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36";
                 request.Accept = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
                 request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
                 request.AllowAutoRedirect = true;
                 request.KeepAlive = false;
-                try { Uri imageUri = new Uri(url); request.Referer = imageUri.GetLeftPart(UriPartial.Authority) + "/"; }
-                catch { }
                 using (WebResponse response = request.GetResponse())
                 using (Stream stream = response.GetResponseStream())
                 using (Image original = Image.FromStream(stream))
