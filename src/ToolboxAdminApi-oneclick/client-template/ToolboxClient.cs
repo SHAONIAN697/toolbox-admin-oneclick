@@ -1874,6 +1874,7 @@ namespace ToolboxClient
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Image remote = LoadRemoteImage(resolved, 34, 34, true);
+                lock (iconCacheLock) failedIcons.Remove("app|" + cacheKey);
                 if (remote == null) return;
                 try
                 {
@@ -1889,7 +1890,20 @@ namespace ToolboxClient
         private void SetAppIconImage(Image image)
         {
             if (image == null || brandIcon == null || brandIcon.IsDisposed) return;
-            brandIcon.Image = image;
+            Bitmap displayImage = new Bitmap(34, 34);
+            using (Graphics displayGraphics = Graphics.FromImage(displayImage))
+            {
+                displayGraphics.Clear(brandIcon.BackColor);
+                displayGraphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                displayGraphics.SmoothingMode = SmoothingMode.HighQuality;
+                displayGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                int x = (34 - image.Width) / 2;
+                int y = (34 - image.Height) / 2;
+                displayGraphics.DrawImage(image, x, y, image.Width, image.Height);
+            }
+            Image previousImage = brandIcon.Image;
+            brandIcon.Image = displayImage;
+            if (previousImage != null && !Object.ReferenceEquals(previousImage, image)) previousImage.Dispose();
 
             using (Bitmap iconBitmap = new Bitmap(32, 32))
             using (Graphics g = Graphics.FromImage(iconBitmap))
@@ -1897,7 +1911,7 @@ namespace ToolboxClient
                 g.Clear(Color.Transparent);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(image, 0, 0, 32, 32);
+                g.DrawImage(displayImage, 0, 0, 32, 32);
                 IntPtr handle = iconBitmap.GetHicon();
                 try
                 {
