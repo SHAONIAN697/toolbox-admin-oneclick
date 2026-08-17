@@ -145,6 +145,7 @@ namespace ToolboxClient
         private const string TunerDriversPageId = "tuner_drivers";
         private const string TunerLinksPageId = "tuner_links";
         private string currentPage = "";
+        private string buttonContentLayout = "icon_left";
         private IList<object> currentSections = new List<object>();
         private Label studioOverviewClockLabel;
         private Label studioOverviewCpuValueLabel;
@@ -2063,12 +2064,15 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
+            Point previousScroll = CaptureContentScroll();
+            string previousButtonContentLayout = buttonContentLayout;
             SuspendLayout();
             side.SuspendLayout();
             nav.SuspendLayout();
             content.SuspendLayout();
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
+            buttonContentLayout = NormalizeButtonContentLayout(GetText(app, "button_content_layout", "icon_left"));
             ApplyTheme((studioVariant || tunerVariant) ? "银光素白" : CurrentTheme(app));
             ApplyTemplatePalette();
             if (tunerVariant)
@@ -2162,6 +2166,10 @@ namespace ToolboxClient
                 LayoutResourceSearchChrome();
                 RestorePausedDownloadTasksOnce();
                 if (tunerVariant) ForceTunerLayoutRefresh();
+                if (!previousButtonContentLayout.Equals(buttonContentLayout, StringComparison.Ordinal))
+                {
+                    RestoreContentScrollSoon(previousScroll);
+                }
             }
 
             content.ResumeLayout();
@@ -2856,7 +2864,6 @@ namespace ToolboxClient
             if (!BoolValue(lockConfig, "enabled", false)) return true;
             string groupId = GetText(lockConfig, "group", "").Trim();
             Dictionary<string, object> groupConfig = String.IsNullOrWhiteSpace(groupId) ? new Dictionary<string, object>() : PageLockGroupConfig(groupId);
-            if (!String.IsNullOrWhiteSpace(groupId) && !BoolValue(groupConfig, "enabled", false)) return true;
             string stored = String.IsNullOrWhiteSpace(groupId) ? GetText(lockConfig, "password", "") : GetText(groupConfig, "password", "");
             string unlockKey = String.IsNullOrWhiteSpace(groupId) ? id : "group:" + groupId;
             if (String.IsNullOrWhiteSpace(stored))
@@ -2959,7 +2966,7 @@ namespace ToolboxClient
 
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
                 {
-                    ShowPage(currentPage);
+                    MarkNavButtonActive(currentPage);
                     return;
                 }
                 foreach (string key in navButtons.Keys)
@@ -3034,7 +3041,7 @@ namespace ToolboxClient
 
             if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
             {
-                ShowPage(currentPage);
+                MarkNavButtonActive(currentPage);
                 return;
             }
 
@@ -7742,6 +7749,7 @@ namespace ToolboxClient
                 TextImageRelation = TextImageRelation.ImageBeforeText
             };
             action.FlatAppearance.BorderColor = Line;
+            ApplyBusinessButtonLayout(action, !String.IsNullOrWhiteSpace(iconUrl));
             action.FlatAppearance.MouseOverBackColor = Blend(PanelBg, Accent, 0.08F);
             action.Click += delegate { ExecuteResourceSearchResult(entry); };
             string description = GetText(entry.Item, "description", GetText(entry.Item, "subtitle", ""));
@@ -7804,6 +7812,7 @@ namespace ToolboxClient
                 PortalMode = portalVariant && !listMode,
                 ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
             };
+            ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl));
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
             card.Click += delegate
             {
@@ -7812,6 +7821,32 @@ namespace ToolboxClient
             };
             QueueButtonIconLoad(iconUrl, card);
             return card;
+        }
+
+        private static string NormalizeButtonContentLayout(string value)
+        {
+            return String.Equals((value ?? "").Trim(), "icon_top", StringComparison.OrdinalIgnoreCase) ? "icon_top" : "icon_left";
+        }
+
+        private void ApplyBusinessButtonLayout(Control control, bool hasConfiguredIcon)
+        {
+            bool iconTop = hasConfiguredIcon && buttonContentLayout == "icon_top" && !listMode;
+            ActionCard card = control as ActionCard;
+            if (card != null)
+            {
+                card.IconTop = iconTop;
+                if (hasConfiguredIcon)
+                    card.Height = iconTop ? Math.Max(card.Height, Math.Max(76, Font.Height * 5)) : Math.Max(card.Height, Math.Max(50, Font.Height * 3));
+                return;
+            }
+            Button button = control as Button;
+            if (button == null || !hasConfiguredIcon) return;
+            button.TextImageRelation = iconTop ? TextImageRelation.ImageAboveText : TextImageRelation.ImageBeforeText;
+            button.ImageAlign = iconTop ? ContentAlignment.MiddleCenter : ContentAlignment.MiddleLeft;
+            button.TextAlign = iconTop ? ContentAlignment.MiddleCenter : ContentAlignment.MiddleLeft;
+            button.Padding = iconTop ? new Padding(8, 7, 8, 7) : new Padding(10, 4, 10, 4);
+            button.Height = iconTop ? Math.Max(button.Height, Math.Max(76, Font.Height * 5)) : Math.Max(button.Height, Math.Max(50, Font.Height * 3));
+            button.AutoEllipsis = true;
         }
 
         private string BuildActionTip(string name, string action, string target, string description)
@@ -12557,76 +12592,10 @@ namespace ToolboxClient
 
         private bool VerifyPassword(string password, string stored)
         {
-            if (stored.StartsWith("pbkdf2_sha256$", StringComparison.OrdinalIgnoreCase))
-            {
-                string[] pbkdf2Parts = stored.Split(new char[] { '$' });
-                int rounds;
-                byte[] salt;
-                byte[] expected;
-                if (pbkdf2Parts.Length != 4 || !Int32.TryParse(pbkdf2Parts[1], out rounds) || rounds <= 0 ||
-                    !TryHexBytes(pbkdf2Parts[2], out salt) || !TryHexBytes(pbkdf2Parts[3], out expected)) return false;
-                byte[] actual = Pbkdf2Sha256(Encoding.UTF8.GetBytes(password), salt, rounds, expected.Length);
-                int difference = actual.Length ^ expected.Length;
-                for (int i = 0; i < actual.Length && i < expected.Length; i++) difference |= actual[i] ^ expected[i];
-                return difference == 0;
-            }
             if (!stored.StartsWith("sha256$", StringComparison.OrdinalIgnoreCase)) return password == stored;
             string[] parts = stored.Split(new char[] { '$' });
             if (parts.Length != 3) return false;
             return Sha256Hex(parts[1] + password).Equals(parts[2], StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool TryHexBytes(string value, out byte[] bytes)
-        {
-            bytes = new byte[0];
-            if (String.IsNullOrEmpty(value) || value.Length % 2 != 0) return false;
-            byte[] result = new byte[value.Length / 2];
-            for (int i = 0; i < result.Length; i++)
-            {
-                int high = HexValue(value[i * 2]);
-                int low = HexValue(value[i * 2 + 1]);
-                if (high < 0 || low < 0) return false;
-                result[i] = (byte)((high << 4) | low);
-            }
-            bytes = result;
-            return true;
-        }
-
-        private static int HexValue(char value)
-        {
-            if (value >= '0' && value <= '9') return value - '0';
-            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-            return -1;
-        }
-
-        private static byte[] Pbkdf2Sha256(byte[] password, byte[] salt, int rounds, int outputLength)
-        {
-            byte[] output = new byte[outputLength];
-            using (HMACSHA256 hmac = new HMACSHA256(password))
-            {
-                int offset = 0;
-                for (int block = 1; offset < outputLength; block++)
-                {
-                    byte[] input = new byte[salt.Length + 4];
-                    Buffer.BlockCopy(salt, 0, input, 0, salt.Length);
-                    input[salt.Length] = (byte)(block >> 24);
-                    input[salt.Length + 1] = (byte)(block >> 16);
-                    input[salt.Length + 2] = (byte)(block >> 8);
-                    input[salt.Length + 3] = (byte)block;
-                    byte[] current = hmac.ComputeHash(input);
-                    byte[] derived = (byte[])current.Clone();
-                    for (int iteration = 1; iteration < rounds; iteration++)
-                    {
-                        current = hmac.ComputeHash(current);
-                        for (int i = 0; i < derived.Length; i++) derived[i] ^= current[i];
-                    }
-                    int count = Math.Min(derived.Length, outputLength - offset);
-                    Buffer.BlockCopy(derived, 0, output, offset, count);
-                    offset += count;
-                }
-            }
-            return output;
         }
 
         private string DownloadText(string url)
@@ -14331,6 +14300,7 @@ namespace ToolboxClient
             public Color AccentColor = Accent;
             public bool ListMode;
             public bool PortalMode;
+            public bool IconTop;
             public ActionInfo ActionInfo;
 
             public ActionCard()
@@ -14374,7 +14344,7 @@ namespace ToolboxClient
                     e.Graphics.FillPath(stripe, stripePath);
                 }
 
-                if (PortalMode)
+                if (PortalMode && !IconTop)
                 {
                     int iconSize = 28;
                     Rectangle iconRect = new Rectangle(18, 20, iconSize, iconSize);
@@ -14407,6 +14377,17 @@ namespace ToolboxClient
                     return;
                 }
 
+                if (IconTop)
+                {
+                    int iconSize = Math.Min(32, Math.Max(24, Height / 3));
+                    Rectangle iconRect = new Rectangle((Width - iconSize) / 2, 10, iconSize, iconSize);
+                    if (IconImage != null) e.Graphics.DrawImage(IconImage, iconRect);
+                    else using (SolidBrush placeholder = new SolidBrush(Color.FromArgb(28, AccentColor))) e.Graphics.FillRectangle(placeholder, iconRect);
+                    Rectangle topTitle = new Rectangle(10, iconRect.Bottom + 5, Width - 20, Math.Max(24, Height - iconRect.Bottom - 10));
+                    TextRenderer.DrawText(e.Graphics, Title, Font, topTitle, TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+                    return;
+                }
+
                 int textX = 18;
                 if (IconImage != null)
                 {
@@ -14415,9 +14396,7 @@ namespace ToolboxClient
                     scale = Math.Min(1D, scale);
                     int drawW = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
                     int drawH = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
-                    int iconY = (Height - drawH) / 2;
-                    int iconX = textX + (iconBox - drawW) / 2;
-                    e.Graphics.DrawImage(IconImage, iconX, iconY, drawW, drawH);
+                    e.Graphics.DrawImage(IconImage, textX + (iconBox - drawW) / 2, (Height - drawH) / 2, drawW, drawH);
                     textX += iconBox + 10;
                 }
 
