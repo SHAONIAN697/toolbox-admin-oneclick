@@ -33,6 +33,7 @@ namespace ToolboxClient
         internal const string EmbeddedConfigJson = "__EMBEDDED_CONFIG_JSON__";
         internal const string ClientVariant = "__CLIENT_VARIANT__";
         internal const string ClientVariantLabel = "__CLIENT_VARIANT_LABEL__";
+        internal const string ClientAppVersion = "__CLIENT_APP_VERSION__";
         internal const string BuildId = "__BUILD_ID__";
         internal const string BuildStamp = "__BUILD_STAMP__";
         internal const string IntegritySeed = "__INTEGRITY_SEED__";
@@ -104,6 +105,8 @@ namespace ToolboxClient
         private Dictionary<string, object> config = new Dictionary<string, object>();
         private Panel side;
         private PictureBox brandIcon;
+        private Image brandSourceImage;
+        private bool brandBackgroundHooked;
         private Label brandTitle;
         private Label brandSubtitle;
         private FlowLayoutPanel nav;
@@ -145,7 +148,6 @@ namespace ToolboxClient
         private const string TunerDriversPageId = "tuner_drivers";
         private const string TunerLinksPageId = "tuner_links";
         private string currentPage = "";
-        private string buttonContentLayout = "icon_left";
         private IList<object> currentSections = new List<object>();
         private Label studioOverviewClockLabel;
         private Label studioOverviewCpuValueLabel;
@@ -171,6 +173,7 @@ namespace ToolboxClient
         private System.Windows.Forms.Timer softwareRenderTimer;
         private System.Windows.Forms.Timer pageSwitchTimer;
         private System.Windows.Forms.Timer contentResizeTimer;
+        private System.Windows.Forms.Timer businessIconRefreshTimer;
         private string softwareCatalogQuery = "";
         private string softwareCatalogCategory = "全部";
         private bool softwareCatalogLayoutUpdating = false;
@@ -191,10 +194,13 @@ namespace ToolboxClient
         private bool wingetCatalogSearching = false;
         private int wingetCatalogSearchVersion = 0;
         private bool listMode = false;
+        private string buttonContentLayout = "icon_left";
         private bool passwordUnlocked = false;
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
+        private bool updatePromptShown = false;
+        private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
         private readonly object launchDownloadedFileLock = new object();
@@ -468,6 +474,12 @@ namespace ToolboxClient
                 contentResizeTimer.Dispose();
                 contentResizeTimer = null;
             }
+            if (businessIconRefreshTimer != null)
+            {
+                businessIconRefreshTimer.Stop();
+                businessIconRefreshTimer.Dispose();
+                businessIconRefreshTimer = null;
+            }
             if (tunerClockTimer != null)
             {
                 tunerClockTimer.Stop();
@@ -487,12 +499,17 @@ namespace ToolboxClient
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            if (WindowState == FormWindowState.Minimized) return;
             if (portalVariant) UpdatePortalWindowRegion();
             if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
                 QueueContentResizeRender();
             }
             LayoutResourceSearchChrome();
+            if (IsHandleCreated && content != null && !content.IsDisposed)
+            {
+                BeginInvoke(new Action(delegate { UpdateContentScrolling(); }));
+            }
         }
 
         protected override CreateParams CreateParams
@@ -1068,11 +1085,13 @@ namespace ToolboxClient
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 1,
+                RowCount = 2,
                 BackColor = Color.White
             };
             brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44F));
             brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
             brandIcon = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.CenterImage, BackColor = side.BackColor };
             brandTitle = new Label
             {
@@ -1080,13 +1099,26 @@ namespace ToolboxClient
                 ForeColor = Color.FromArgb(15, 23, 42),
                 Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
                 Padding = new Padding(6, 0, 0, 0),
-                TextAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.BottomLeft,
                 AutoEllipsis = true
             };
             brandTitle.Resize += delegate { FitBrandTitle(brandTitle.Text); };
-            brandSubtitle = new Label { Visible = false, Width = 1, Height = 1 };
+            brandSubtitle = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Font = new Font(
+                    Font.FontFamily,
+                    8F,
+                    FontStyle.Regular),
+                Padding = new Padding(6, 0, 0, 0),
+                TextAlign = ContentAlignment.TopLeft,
+                AutoEllipsis = true
+            };
             brandPanel.Controls.Add(brandIcon, 0, 0);
+            brandPanel.SetRowSpan(brandIcon, 2);
             brandPanel.Controls.Add(brandTitle, 1, 0);
+            brandPanel.Controls.Add(brandSubtitle, 1, 1);
             AttachBrandPopupEntry(brandPanel);
             sideLayout.Controls.Add(brandPanel, 0, 0);
 
@@ -1849,56 +1881,147 @@ namespace ToolboxClient
 
         private void ApplyAppIcon(string url, string fallbackText)
         {
-            string resolved = String.IsNullOrWhiteSpace(url) ? "" : ResolveAssetUrl(url);
+            string resolved = String.IsNullOrWhiteSpace(url)
+                ? ""
+                : ResolveAssetUrl(url);
+
             string cacheKey = "34x34|" + resolved;
             Image image = null;
+
             if (!String.IsNullOrWhiteSpace(resolved))
             {
-                lock (iconCacheLock) iconCache.TryGetValue(cacheKey, out image);
+                lock (iconCacheLock)
+                    iconCache.TryGetValue(
+                        cacheKey, out image);
             }
-            SetAppIconImage(image ?? CreateBrandBadge(fallbackText));
 
-            if (image != null || String.IsNullOrWhiteSpace(resolved)) return;
+            SetAppIconImage(
+                image ?? CreateBrandBadge(fallbackText));
+
+            if (image != null ||
+                String.IsNullOrWhiteSpace(resolved))
+                return;
+
             lock (iconCacheLock)
             {
-                if (failedIcons.Contains("app|" + cacheKey)) return;
+                if (failedIcons.Contains(
+                        "app|" + cacheKey))
+                    return;
+
                 failedIcons.Add("app|" + cacheKey);
             }
+
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image remote = LoadRemoteImage(resolved, 34, 34);
+                Image remote =
+                    LoadRemoteImage(resolved, 34, 34);
+
                 if (remote == null) return;
+
                 try
                 {
                     BeginInvoke(new Action(delegate
                     {
-                        if (!IsDisposed) SetAppIconImage(remote);
+                        if (!IsDisposed)
+                            SetAppIconImage(remote);
                     }));
                 }
-                catch { }
+                catch
+                {
+                }
             });
         }
 
         private void SetAppIconImage(Image image)
         {
             if (image == null || brandIcon == null || brandIcon.IsDisposed) return;
-            brandIcon.Image = image;
+
+            Image previousSource = brandSourceImage;
+            brandSourceImage = new Bitmap(image);
+            if (previousSource != null) previousSource.Dispose();
+
+            if (!brandBackgroundHooked && brandIcon.Parent != null)
+            {
+                brandBackgroundHooked = true;
+                brandIcon.Parent.BackColorChanged += delegate
+                {
+                    if (brandIcon == null || brandIcon.IsDisposed ||
+                        brandSourceImage == null) return;
+
+                    RenderBrandIcon();
+                };
+            }
+
+            RenderBrandIcon();
+            RenderTaskbarIcon();
+        }
+
+        private void RenderBrandIcon()
+        {
+            if (brandSourceImage == null || brandIcon == null ||
+                brandIcon.IsDisposed) return;
+
+            Color background = brandIcon.Parent == null
+                ? brandIcon.BackColor
+                : brandIcon.Parent.BackColor;
+
+            brandIcon.BackColor = background;
+
+            Bitmap displayImage = new Bitmap(34, 34);
+            using (Graphics graphics = Graphics.FromImage(displayImage))
+            {
+                graphics.Clear(background);
+                graphics.InterpolationMode =
+                    InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+                int x = (34 - brandSourceImage.Width) / 2;
+                int y = (34 - brandSourceImage.Height) / 2;
+
+                graphics.DrawImage(
+                    brandSourceImage,
+                    x, y,
+                    brandSourceImage.Width,
+                    brandSourceImage.Height);
+            }
+
+            Image previousImage = brandIcon.Image;
+            brandIcon.Image = displayImage;
+
+            if (previousImage != null &&
+                !Object.ReferenceEquals(previousImage, brandSourceImage))
+                previousImage.Dispose();
+        }
+
+        private void RenderTaskbarIcon()
+        {
+            if (brandSourceImage == null || IsDisposed) return;
 
             using (Bitmap iconBitmap = new Bitmap(32, 32))
-            using (Graphics g = Graphics.FromImage(iconBitmap))
+            using (Graphics graphics = Graphics.FromImage(iconBitmap))
             {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(image, 0, 0, 32, 32);
+                graphics.Clear(Color.Transparent);
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.InterpolationMode =
+                    InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(
+                    brandSourceImage,
+                    new Rectangle(0, 0, 32, 32));
+
                 IntPtr handle = iconBitmap.GetHicon();
                 try
                 {
-                    Icon nextIcon = (Icon)Icon.FromHandle(handle).Clone();
-                    Icon old = runtimeIcon;
+                    Icon nextIcon =
+                        (Icon)Icon.FromHandle(handle).Clone();
+                    Icon previousIcon = runtimeIcon;
+
                     runtimeIcon = nextIcon;
                     Icon = runtimeIcon;
-                    if (old != null) old.Dispose();
+
+                    if (previousIcon != null)
+                        previousIcon.Dispose();
                 }
                 finally
                 {
@@ -2066,6 +2189,9 @@ namespace ToolboxClient
         {
             Point previousScroll = CaptureContentScroll();
             string previousButtonContentLayout = buttonContentLayout;
+            Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
+            if (EnforceUpdatePolicy(updateApp)) return;
+
             SuspendLayout();
             side.SuspendLayout();
             nav.SuspendLayout();
@@ -2101,7 +2227,10 @@ namespace ToolboxClient
             FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
             title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : appTitle);
-            ApplyAppIcon(GetText(app, "icon", GetText(app, "icon_url", "")), GetText(app, "logo_text", "Y"));
+            string brandIconUrl = GetText(app, "icon", GetText(app, "icon_url", GetText(app, "icon_path", "")));
+            if (String.IsNullOrWhiteSpace(brandIconUrl))
+                brandIconUrl = GetText(app, "exe_icon", GetText(app, "exe_icon_url", ""));
+            ApplyAppIcon(brandIconUrl, GetText(app, "logo_text", "Y"));
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
@@ -2167,9 +2296,7 @@ namespace ToolboxClient
                 RestorePausedDownloadTasksOnce();
                 if (tunerVariant) ForceTunerLayoutRefresh();
                 if (!previousButtonContentLayout.Equals(buttonContentLayout, StringComparison.Ordinal))
-                {
                     RestoreContentScrollSoon(previousScroll);
-                }
             }
 
             content.ResumeLayout();
@@ -2604,6 +2731,8 @@ namespace ToolboxClient
             BackColor = Bg;
             ForeColor = TextColor;
             ApplyStudioThemeToControlTree(this);
+            if (brandSubtitle != null)
+                brandSubtitle.ForeColor = Muted;
         }
 
         private void ApplyStudioThemeToControlTree(Control root)
@@ -2881,6 +3010,7 @@ namespace ToolboxClient
             {
                 unlockedPagePasswords[unlockKey] = stored;
                 status.Text = "页面已解锁。";
+                if (ResourceSearchEnabled()) BuildResourceSearchIndex();
                 return true;
             }
             status.Text = "页面已锁定。";
@@ -2966,7 +3096,7 @@ namespace ToolboxClient
 
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
                 {
-                    MarkNavButtonActive(currentPage);
+                    ShowPage(currentPage);
                     return;
                 }
                 foreach (string key in navButtons.Keys)
@@ -3041,7 +3171,7 @@ namespace ToolboxClient
 
             if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
             {
-                MarkNavButtonActive(currentPage);
+                ShowPage(currentPage);
                 return;
             }
 
@@ -3250,6 +3380,7 @@ namespace ToolboxClient
         private void EndContentRender()
         {
             contentRendering = false;
+            UpdateContentScrolling();
             if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
             {
                 pageSwitchTimer.Stop();
@@ -3469,6 +3600,7 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
+            ResetContentScrollState();
             bool oldVisible = content.Visible;
             if (studioVariant)
             {
@@ -3520,12 +3652,7 @@ namespace ToolboxClient
                 content.WrapContents = !listMode;
 
                 List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-                buttons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
+                SortButtonsByConfiguredPosition(buttons);
                 if (buttons.Count == 0)
                 {
                     AddEmptyMessage("这里还没有按钮。");
@@ -3549,7 +3676,7 @@ namespace ToolboxClient
                 int columns = (portalVariant || studioVariant) ? 3 : 4;
                 const int gap = 12;
                 int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 150);
-                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * (columns - 1)) / columns);
+                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * columns) / columns);
                 int cardHeight = listMode ? 52 : (portalVariant ? 118 : (studioVariant ? 42 : 52));
                 for (int i = 0; i < buttons.Count; i++)
                 {
@@ -3608,12 +3735,7 @@ namespace ToolboxClient
                         buttons.Add(AsDict(buttonObj));
                     }
                     if (buttons.Count == 0) continue;
-                    buttons.Sort((a, b) =>
-                    {
-                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                        if (result != 0) return result;
-                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                    });
+                    SortButtonsByConfiguredPosition(buttons);
 
                     Panel group = CreateStudioGroup(section, buttons, available, i);
                     content.Controls.Add(group);
@@ -3661,12 +3783,7 @@ namespace ToolboxClient
                         buttons.Add(AsDict(buttonObj));
                     }
                     if (buttons.Count == 0) continue;
-                    buttons.Sort((a, b) =>
-                    {
-                        int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                        if (result != 0) return result;
-                        return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                    });
+                    SortButtonsByConfiguredPosition(buttons);
                     content.Controls.Add(CreateTunerGroup(section, buttons, available, i));
                 }
 
@@ -4271,7 +4388,7 @@ namespace ToolboxClient
             IList<object> sections = AsList(Get(page, "sections"));
             List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
             if (sections.Count > 0) foreach (object obj in AsList(Get(AsDict(sections[0]), "buttons"))) buttons.Add(AsDict(obj));
-            buttons.Sort((a, b) => IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0)));
+            SortButtonsByConfiguredPosition(buttons);
             return buttons;
         }
 
@@ -4732,12 +4849,7 @@ namespace ToolboxClient
             content.BackColor = Bg;
 
             List<Dictionary<string, object>> buttons = CollectButtons(currentSections);
-            buttons.Sort((a, b) =>
-            {
-                int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                if (result != 0) return result;
-                return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-            });
+            SortButtonsByConfiguredPosition(buttons);
 
             Dictionary<string, object> app = AsDict(Get(config, "app"));
             int available = PortalContentWidth();
@@ -4857,12 +4969,7 @@ namespace ToolboxClient
                 {
                     buttons.Add(AsDict(buttonObj));
                 }
-                buttons.Sort((a, b) =>
-                {
-                    int result = IntValue(a, "sort", 0).CompareTo(IntValue(b, "sort", 0));
-                    if (result != 0) return result;
-                    return String.Compare(GetText(a, "name", ""), GetText(b, "name", ""), StringComparison.CurrentCultureIgnoreCase);
-                });
+                SortButtonsByConfiguredPosition(buttons);
 
                 string sectionTitle = PortalLabel(GetText(section, "title", ""), "");
                 bool showHeading = !String.IsNullOrWhiteSpace(sectionTitle);
@@ -7366,6 +7473,49 @@ namespace ToolboxClient
             return buttons;
         }
 
+        private static void SortButtonsByConfiguredPosition(List<Dictionary<string, object>> buttons)
+        {
+            List<KeyValuePair<int, Dictionary<string, object>>> indexed = new List<KeyValuePair<int, Dictionary<string, object>>>();
+            for (int i = 0; i < buttons.Count; i++) indexed.Add(new KeyValuePair<int, Dictionary<string, object>>(i, buttons[i]));
+            indexed.Sort(delegate(KeyValuePair<int, Dictionary<string, object>> a, KeyValuePair<int, Dictionary<string, object>> b)
+            {
+                int result = IntValue(a.Value, "sort", 0).CompareTo(IntValue(b.Value, "sort", 0));
+                return result != 0 ? result : a.Key.CompareTo(b.Key);
+            });
+            buttons.Clear();
+            foreach (KeyValuePair<int, Dictionary<string, object>> item in indexed) buttons.Add(item.Value);
+        }
+
+        private void ResetContentScrollState()
+        {
+            if (content == null || content.IsDisposed) return;
+            content.AutoScrollPosition = Point.Empty;
+            content.AutoScrollMinSize = Size.Empty;
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+        }
+
+        private void UpdateContentScrolling()
+        {
+            if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
+            int requiredBottom = content.Padding.Top;
+            foreach (Control child in content.Controls)
+            {
+                if (!child.Visible) continue;
+                requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
+            }
+            bool needsVerticalScroll = requiredBottom > content.ClientSize.Height + 2;
+            if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
+            if (!needsVerticalScroll)
+            {
+                content.AutoScrollPosition = Point.Empty;
+                content.AutoScrollMinSize = Size.Empty;
+                content.VerticalScroll.Visible = false;
+            }
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+        }
+
         private void BuildResourceSearchChrome()
         {
             resourceSearchTimer = new System.Windows.Forms.Timer();
@@ -7621,15 +7771,44 @@ namespace ToolboxClient
             foreach (KeyValuePair<string, object> pair in pages)
             {
                 if (pair.Key.Equals("settings", StringComparison.OrdinalIgnoreCase) || pair.Key.Equals("downloads", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!IsPageSearchable(pair.Key)) continue;
                 Dictionary<string, object> page = AsDict(pair.Value);
                 AddResourceSearchSections(pair.Key, PageLabel(page, pair.Key), AsList(Get(page, "sections")));
             }
             foreach (object tabObj in AsList(Get(config, "toolbox_tabs")))
             {
+                if (!IsPageSearchable("toolbox")) continue;
                 Dictionary<string, object> tab = AsDict(tabObj);
                 string tabName = GetText(tab, "name", GetText(tab, "title", "\u5de5\u5177\u7bb1"));
                 AddResourceSearchSections("toolbox", tabName, AsList(Get(tab, "sections")));
             }
+        }
+
+        private bool IsPageSearchable(string pageId)
+        {
+            Dictionary<string, object> lockConfig = PageLockConfig(pageId);
+            if (!BoolValue(lockConfig, "enabled", false)) return true;
+
+            string groupId = GetText(lockConfig, "group", "").Trim();
+            Dictionary<string, object> groupConfig =
+                String.IsNullOrWhiteSpace(groupId)
+                    ? new Dictionary<string, object>()
+                    : PageLockGroupConfig(groupId);
+
+            string stored = String.IsNullOrWhiteSpace(groupId)
+                ? GetText(lockConfig, "password", "")
+                : GetText(groupConfig, "password", "");
+
+            string unlockKey = String.IsNullOrWhiteSpace(groupId)
+                ? pageId
+                : "group:" + groupId;
+
+            string unlockedHash;
+            return !String.IsNullOrWhiteSpace(stored)
+                && unlockedPagePasswords.TryGetValue(
+                    unlockKey, out unlockedHash)
+                && unlockedHash.Equals(
+                    stored, StringComparison.Ordinal);
         }
 
         private void AddResourceSearchSections(string pageId, string pageTitle, IList<object> sections)
@@ -7836,7 +8015,16 @@ namespace ToolboxClient
             {
                 card.IconTop = iconTop;
                 if (hasConfiguredIcon)
-                    card.Height = iconTop ? Math.Max(card.Height, Math.Max(76, Font.Height * 5)) : Math.Max(card.Height, Math.Max(50, Font.Height * 3));
+                {
+                    if (iconTop)
+                    {
+                        int squareSize = Math.Max(80, Math.Min(96, 52 + Font.Height * 2));
+                        card.Width = squareSize;
+                        card.Height = squareSize;
+                        card.Margin = new Padding(0, 0, 10, 10);
+                    }
+                    else card.Height = Math.Max(card.Height, Math.Max(50, Font.Height * 3));
+                }
                 return;
             }
             Button button = control as Button;
@@ -7845,7 +8033,14 @@ namespace ToolboxClient
             button.ImageAlign = iconTop ? ContentAlignment.MiddleCenter : ContentAlignment.MiddleLeft;
             button.TextAlign = iconTop ? ContentAlignment.MiddleCenter : ContentAlignment.MiddleLeft;
             button.Padding = iconTop ? new Padding(8, 7, 8, 7) : new Padding(10, 4, 10, 4);
-            button.Height = iconTop ? Math.Max(button.Height, Math.Max(76, Font.Height * 5)) : Math.Max(button.Height, Math.Max(50, Font.Height * 3));
+            if (iconTop)
+            {
+                int squareSize = Math.Max(80, Math.Min(96, 52 + Font.Height * 2));
+                button.Width = squareSize;
+                button.Height = squareSize;
+                button.Margin = new Padding(0, 0, 10, 10);
+            }
+            else button.Height = Math.Max(button.Height, Math.Max(50, Font.Height * 3));
             button.AutoEllipsis = true;
         }
 
@@ -7860,14 +8055,14 @@ namespace ToolboxClient
 
         private Image LoadButtonIcon(string url)
         {
-            return LoadRemoteImage(url, 24, 24);
+            return LoadRemoteImage(url, 32, 32);
         }
 
         private Image GetCachedButtonIcon(string url)
         {
             if (String.IsNullOrWhiteSpace(url)) return null;
             string resolved = ResolveAssetUrl(url);
-            string cacheKey = "24x24|" + resolved;
+            string cacheKey = "32x32|" + resolved;
             lock (iconCacheLock)
             {
                 Image cached;
@@ -7880,7 +8075,7 @@ namespace ToolboxClient
         {
             if (String.IsNullOrWhiteSpace(url) || target == null) return;
             string resolved = ResolveAssetUrl(url);
-            string cacheKey = "24x24|" + resolved;
+            string cacheKey = "32x32|" + resolved;
             lock (iconCacheLock)
             {
                 if (iconCache.ContainsKey(cacheKey) || failedIcons.Contains(cacheKey)) return;
@@ -7888,56 +8083,117 @@ namespace ToolboxClient
             }
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image image = LoadRemoteImage(resolved, 24, 24);
+                Image image = LoadRemoteImage(resolved, 32, 32);
                 if (image == null) return;
                 try
                 {
                     BeginInvoke(new Action(delegate
                     {
-                        if (target == null || target.IsDisposed) return;
-                        TemplateActionButton templateButton = target as TemplateActionButton;
-                        ActionCard actionCard = target as ActionCard;
-                        TunerActionButton tunerButton = target as TunerActionButton;
-                        Button standardButton = target as Button;
-                        if (templateButton != null) templateButton.IconImage = image;
-                        if (actionCard != null) actionCard.IconImage = image;
-                        if (tunerButton != null) tunerButton.IconImage = image;
-                        if (standardButton != null) standardButton.Image = image;
-                        target.Invalidate();
+                        if (target != null && !target.IsDisposed)
+                        {
+                            TemplateActionButton templateButton = target as TemplateActionButton;
+                            ActionCard actionCard = target as ActionCard;
+                            TunerActionButton tunerButton = target as TunerActionButton;
+                            Button standardButton = target as Button;
+                            if (templateButton != null) templateButton.IconImage = image;
+                            if (actionCard != null) actionCard.IconImage = image;
+                            if (tunerButton != null) tunerButton.IconImage = image;
+                            if (standardButton != null) standardButton.Image = image;
+                            target.Invalidate();
+                        }
+                        ScheduleBusinessIconRefresh();
                     }));
                 }
                 catch { }
             });
         }
 
-        private Image LoadRemoteImage(string url, int maxWidth, int maxHeight)
+        private void ScheduleBusinessIconRefresh()
         {
-            if (String.IsNullOrWhiteSpace(url)) return null;
+            if (IsDisposed || Disposing || content == null) return;
+            if (businessIconRefreshTimer == null)
+            {
+                businessIconRefreshTimer = new System.Windows.Forms.Timer { Interval = 120 };
+                businessIconRefreshTimer.Tick += delegate
+                {
+                    businessIconRefreshTimer.Stop();
+                    if (IsDisposed || Disposing || !configApplied) return;
+                    Point scrollPosition = CaptureContentScroll();
+                    RenderCurrentSections();
+                    RestoreContentScrollSoon(scrollPosition);
+                };
+            }
+            businessIconRefreshTimer.Stop();
+            businessIconRefreshTimer.Start();
+        }
+
+        private Image LoadRemoteImage(
+            string url,
+            int maxWidth,
+            int maxHeight)
+        {
+            if (String.IsNullOrWhiteSpace(url))
+                return null;
+
             url = ResolveAssetUrl(url);
-            string cacheKey = maxWidth + "x" + maxHeight + "|" + url;
+
+            string cacheKey =
+                maxWidth + "x" + maxHeight + "|" + url;
+
             lock (iconCacheLock)
             {
                 Image cached;
-                if (iconCache.TryGetValue(cacheKey, out cached)) return cached;
+                if (iconCache.TryGetValue(
+                        cacheKey, out cached))
+                    return cached;
             }
+
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                HttpWebRequest request =
+                    (HttpWebRequest)WebRequest.Create(url);
+
                 request.Timeout = 10000;
                 request.ReadWriteTimeout = 10000;
                 request.UserAgent = "ToolboxClient";
-                request.Accept = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
-                request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                request.Accept =
+                    "image/avif,image/webp,image/apng,"
+                    + "image/*,*/*;q=0.8";
+
+                request.AutomaticDecompression =
+                    DecompressionMethods.GZip |
+                    DecompressionMethods.Deflate;
+
                 request.AllowAutoRedirect = true;
                 request.KeepAlive = false;
-                try { Uri imageUri = new Uri(url); request.Referer = imageUri.GetLeftPart(UriPartial.Authority) + "/"; }
-                catch { }
-                using (WebResponse response = request.GetResponse())
-                using (Stream stream = response.GetResponseStream())
-                using (Image original = Image.FromStream(stream))
+
+                try
                 {
-                    Image resized = ResizeImage(original, maxWidth, maxHeight);
-                    lock (iconCacheLock) iconCache[cacheKey] = resized;
+                    Uri imageUri = new Uri(url);
+                    request.Referer =
+                        imageUri.GetLeftPart(
+                            UriPartial.Authority) + "/";
+                }
+                catch
+                {
+                }
+
+                using (WebResponse response =
+                    request.GetResponse())
+                using (Stream stream =
+                    response.GetResponseStream())
+                using (Image original =
+                    Image.FromStream(stream))
+                {
+                    Image resized =
+                        ResizeImage(
+                            original,
+                            maxWidth,
+                            maxHeight);
+
+                    lock (iconCacheLock)
+                        iconCache[cacheKey] = resized;
+
                     return resized;
                 }
             }
@@ -7950,13 +8206,26 @@ namespace ToolboxClient
         private string ResolveAssetUrl(string url)
         {
             string value = (url ?? "").Trim();
-            if (value.StartsWith("//")) return "https:" + value;
-            if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
-            if (!value.StartsWith("/")) return value;
+
+            if (value.StartsWith("//"))
+                return "https:" + value;
+
+            if (value.StartsWith(
+                    "http://",
+                    StringComparison.OrdinalIgnoreCase) ||
+                value.StartsWith(
+                    "https://",
+                    StringComparison.OrdinalIgnoreCase))
+                return value;
+
+            if (!value.StartsWith("/"))
+                return value;
+
             try
             {
                 Uri config = new Uri(configUrl);
-                return config.GetLeftPart(UriPartial.Authority) + value;
+                return config.GetLeftPart(
+                    UriPartial.Authority) + value;
             }
             catch
             {
@@ -7982,6 +8251,114 @@ namespace ToolboxClient
             return bitmap;
         }
 
+        private static Image ResizeImageToFill(
+            Image source, int width, int height)
+        {
+            double scale = Math.Max(
+                (double)width / source.Width,
+                (double)height / source.Height);
+
+            int drawWidth = Math.Max(
+                1, (int)Math.Ceiling(source.Width * scale));
+            int drawHeight = Math.Max(
+                1, (int)Math.Ceiling(source.Height * scale));
+
+            int offsetX = (width - drawWidth) / 2;
+            int offsetY = (height - drawHeight) / 2;
+
+            Bitmap bitmap = new Bitmap(width, height);
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.InterpolationMode =
+                    InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode =
+                    SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode =
+                    PixelOffsetMode.HighQuality;
+
+                graphics.DrawImage(
+                    source,
+                    new Rectangle(
+                        offsetX,
+                        offsetY,
+                        drawWidth,
+                        drawHeight));
+            }
+
+            RemoveConnectedDarkBackground(bitmap);
+            return bitmap;
+        }
+
+        private static void RemoveConnectedDarkBackground(
+            Bitmap bitmap)
+        {
+            if (bitmap == null
+                || bitmap.Width < 2
+                || bitmap.Height < 2)
+            {
+                return;
+            }
+
+            bool[,] visited =
+                new bool[bitmap.Width, bitmap.Height];
+
+            Queue<Point> queue = new Queue<Point>();
+
+            Action<int, int> enqueue = delegate(int x, int y)
+            {
+                if (x < 0
+                    || y < 0
+                    || x >= bitmap.Width
+                    || y >= bitmap.Height
+                    || visited[x, y])
+                {
+                    return;
+                }
+
+                Color color = bitmap.GetPixel(x, y);
+
+                bool transparent = color.A == 0;
+                bool darkBackground =
+                    color.R <= 58
+                    && color.G <= 58
+                    && color.B <= 58;
+
+                if (transparent || darkBackground)
+                {
+                    visited[x, y] = true;
+                    queue.Enqueue(new Point(x, y));
+                }
+            };
+
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                enqueue(x, 0);
+                enqueue(x, bitmap.Height - 1);
+            }
+
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                enqueue(0, y);
+                enqueue(bitmap.Width - 1, y);
+            }
+
+            while (queue.Count > 0)
+            {
+                Point point = queue.Dequeue();
+
+                bitmap.SetPixel(
+                    point.X,
+                    point.Y,
+                    Color.Transparent);
+
+                enqueue(point.X - 1, point.Y);
+                enqueue(point.X + 1, point.Y);
+                enqueue(point.X, point.Y - 1);
+                enqueue(point.X, point.Y + 1);
+            }
+        }
+
         private static GraphicsPath RoundRect(Rectangle rect, int radius)
         {
             int d = radius * 2;
@@ -8004,7 +8381,7 @@ namespace ToolboxClient
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download") DownloadFile(target, name);
+                if (action == "download") DownloadFile(ResolveServerUrl(target), name);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -8014,6 +8391,14 @@ namespace ToolboxClient
             {
                 MessageBox.Show(ex.Message, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+
+        private string ResolveServerUrl(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || !value.StartsWith("/")) return value;
+            Uri configUri;
+            if (Uri.TryCreate(configUrl, UriKind.Absolute, out configUri)) return configUri.GetLeftPart(UriPartial.Authority) + value;
+            return value;
         }
 
         private void Open(string target)
@@ -8229,10 +8614,225 @@ namespace ToolboxClient
             DownloadFile(url, "");
         }
 
+        private bool OpenUpdateTarget(string target)
+        {
+            Uri uri;
+            if (!Uri.TryCreate((target ?? "").Trim(), UriKind.Absolute, out uri))
+            {
+                Open(target);
+                return false;
+            }
+            if (IsCloudShareUrl(uri))
+            {
+                Open(target);
+                return false;
+            }
+            if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            {
+                DownloadAndReplaceCurrentExe(uri);
+                return true;
+            }
+            Open(target);
+            return false;
+        }
+
+        private static bool IsCloudShareUrl(Uri uri)
+        {
+            string host = (uri == null ? "" : uri.Host).Trim().ToLowerInvariant();
+            if (String.IsNullOrWhiteSpace(host)) return false;
+            string[] domains = new string[]
+            {
+                "123pan.com", "123684.com", "123865.com", "pan.baidu.com", "pan.quark.cn",
+                "cloud.189.cn", "aliyundrive.com", "alipan.com", "weiyun.com", "drive.uc.cn"
+            };
+            foreach (string domain in domains)
+            {
+                if (host == domain || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return host.IndexOf("lanzou", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void DownloadAndReplaceCurrentExe(Uri uri)
+        {
+            if (selfUpdateDownloading) return;
+            selfUpdateDownloading = true;
+            string currentExe = Application.ExecutablePath;
+            string tempExe = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".exe");
+            status.Text = "正在下载工具箱更新...";
+            Form updateWindow = new Form
+            {
+                Text = "工具箱更新",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                ClientSize = new Size(430, 132),
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ControlBox = false
+            };
+            Label updateTitle = new Label { Text = "正在下载最新版工具箱", Left = 20, Top = 18, Width = 390, Height = 24, Font = new Font(Font.FontFamily, 11F, FontStyle.Bold) };
+            ProgressBar updateProgress = new ProgressBar { Left = 20, Top = 54, Width = 390, Height = 22, Minimum = 0, Maximum = 100 };
+            Label updateDetail = new Label { Text = "正在连接下载服务器...", Left = 20, Top = 88, Width = 390, Height = 22 };
+            updateWindow.Controls.Add(updateTitle);
+            updateWindow.Controls.Add(updateProgress);
+            updateWindow.Controls.Add(updateDetail);
+            updateWindow.Show(this);
+
+            WebClient client = new WebClient();
+            client.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 ToolboxUpdater/1.0";
+            client.DownloadProgressChanged += delegate(object sender, DownloadProgressChangedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    int percent = Math.Max(0, Math.Min(100, e.ProgressPercentage));
+                    status.Text = "正在下载工具箱更新 " + percent + "%";
+                    updateProgress.Value = percent;
+                    updateDetail.Text = FormatUpdateBytes(e.BytesReceived) + " / " + FormatUpdateBytes(e.TotalBytesToReceive) + "  (" + percent + "%)";
+                }));
+            };
+            client.DownloadFileCompleted += delegate(object sender, AsyncCompletedEventArgs e)
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    selfUpdateDownloading = false;
+                    client.Dispose();
+                    updateWindow.Close();
+                    if (e.Cancelled || e.Error != null)
+                    {
+                        updatePromptShown = false;
+                        TryDeleteUpdateFile(tempExe);
+                        MessageBox.Show("更新下载失败：" + (e.Error == null ? "下载已取消" : e.Error.Message), "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!IsWindowsExecutable(tempExe))
+                    {
+                        updatePromptShown = false;
+                        TryDeleteUpdateFile(tempExe);
+                        MessageBox.Show("更新地址返回的不是有效 Windows EXE；网盘分享链接请直接填写分享页地址。", "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    LaunchSelfUpdater(tempExe, currentExe);
+                }));
+            };
+            try { client.DownloadFileAsync(uri, tempExe); }
+            catch (Exception ex)
+            {
+                selfUpdateDownloading = false;
+                updatePromptShown = false;
+                client.Dispose();
+                updateWindow.Close();
+                TryDeleteUpdateFile(tempExe);
+                MessageBox.Show("更新下载失败：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private static string FormatUpdateBytes(long value)
+        {
+            if (value < 0) return "未知大小";
+            if (value >= 1024L * 1024L * 1024L) return (value / (1024d * 1024d * 1024d)).ToString("0.00") + " GB";
+            if (value >= 1024L * 1024L) return (value / (1024d * 1024d)).ToString("0.00") + " MB";
+            if (value >= 1024L) return (value / 1024d).ToString("0.0") + " KB";
+            return value + " B";
+        }
+
+        private static bool IsWindowsExecutable(string path)
+        {
+            try { using (FileStream stream = File.OpenRead(path)) return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z'; }
+            catch { return false; }
+        }
+
+        private static void TryDeleteUpdateFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        private void LaunchSelfUpdater(string downloadedExe, string currentExe)
+        {
+            string script = Path.Combine(Path.GetTempPath(), "toolbox-update-" + Guid.NewGuid().ToString("N") + ".cmd");
+            string body = "@echo off\r\nsetlocal\r\nset /a tries=0\r\n:retry\r\nset /a tries+=1\r\ncopy /Y \"" + downloadedExe + "\" \"" + currentExe + "\" >nul 2>&1\r\nif not errorlevel 1 goto done\r\nif %tries% GEQ 120 goto failed\r\nping 127.0.0.1 -n 2 >nul\r\ngoto retry\r\n:done\r\ndel /F /Q \"" + downloadedExe + "\" >nul 2>&1\r\nstart \"\" \"" + currentExe + "\"\r\ndel \"%~f0\"\r\nexit /b 0\r\n:failed\r\nstart \"\" explorer.exe /select,\"" + downloadedExe + "\"\r\nexit /b 1\r\n";
+            File.WriteAllText(script, body, Encoding.Default);
+            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + script + "\"\"") { UseShellExecute = false, CreateNoWindow = true };
+            Process.Start(psi);
+            Close();
+            Application.Exit();
+        }
+
+        private bool EnforceUpdatePolicy(Dictionary<string, object> app)
+        {
+            app = UpdatePolicyForCurrentVariant(app);
+            string updateUrl = GetText(app, "update_url", GetText(app, "client_update_url", "")).Trim();
+            string minimum = GetText(app, "update_min_version", "").Trim();
+            string latest = GetText(app, "version", "").Trim();
+            Version configuredMinimum;
+            Version configuredLatest;
+            bool hasMinimum = TryParseVersion(minimum, out configuredMinimum);
+            bool hasLatest = TryParseVersion(latest, out configuredLatest);
+            Version updateTarget = hasLatest ? configuredLatest : configuredMinimum;
+            Version minimumAllowed = hasMinimum ? configuredMinimum : updateTarget;
+            Version current;
+            if (!TryParseVersion(Program.ClientAppVersion, out current)) current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0);
+            bool blocked = BoolValue(app, "update_force", false) && current.CompareTo(minimumAllowed) < 0;
+            if (String.IsNullOrWhiteSpace(updateUrl) || (!hasMinimum && !hasLatest) || (!blocked && current.CompareTo(updateTarget) >= 0)) return false;
+            if (updatePromptShown) return blocked;
+            updatePromptShown = true;
+            HideStartupOverlay();
+            Activate();
+            BringToFront();
+
+            string titleText = GetText(app, "update_title", "工具箱更新").Trim();
+            string message = blocked
+                ? "当前版本 " + DisplayVersion(current) + " 已停止使用，最低可用版本为 " + DisplayVersion(minimumAllowed) + "。\r\n\r\n点击“确定”获取最新版；关闭或取消将退出工具箱。"
+                : "发现新版本 " + DisplayVersion(updateTarget) + "，当前版本为 " + DisplayVersion(current) + "。\r\n\r\n点击“是”立即更新；点击“否”继续使用当前版本。";
+            DialogResult result = MessageBox.Show(message, String.IsNullOrWhiteSpace(titleText) ? "工具箱更新" : titleText, blocked ? MessageBoxButtons.OKCancel : MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            bool accepted = blocked ? result == DialogResult.OK : result == DialogResult.Yes;
+            if (accepted)
+            {
+                try { if (OpenUpdateTarget(updateUrl)) return true; }
+                catch (Exception ex) { MessageBox.Show("无法打开更新地址：" + ex.Message, "工具箱更新", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            }
+            if (!blocked) return false;
+            BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
+            return true;
+        }
+
+        private static Dictionary<string, object> UpdatePolicyForCurrentVariant(Dictionary<string, object> app)
+        {
+            Dictionary<string, object> variants = AsDict(Get(app, "update_variants"));
+            Dictionary<string, object> selected = AsDict(Get(variants, Program.ClientVariant));
+            if (selected.Count == 0) return app;
+            Dictionary<string, object> policy = new Dictionary<string, object>(app, StringComparer.OrdinalIgnoreCase);
+            policy["version"] = GetText(selected, "version", GetText(app, "version", ""));
+            policy["update_url"] = GetText(selected, "url", GetText(app, "update_url", ""));
+            policy["update_title"] = GetText(selected, "title", GetText(app, "update_title", "工具箱更新"));
+            policy["update_button"] = GetText(selected, "button", GetText(app, "update_button", "下载最新版"));
+            policy["update_min_version"] = GetText(selected, "minVersion", GetText(app, "update_min_version", ""));
+            policy["update_force"] = BoolValue(selected, "force", BoolValue(app, "update_force", false));
+            return policy;
+        }
+
+        private static bool TryParseVersion(string value, out Version version)
+        {
+            version = null;
+            string text = (value ?? "").Trim();
+            if (text.StartsWith("v", StringComparison.OrdinalIgnoreCase)) text = text.Substring(1);
+            Match match = Regex.Match(text, @"\d+(?:\.\d+){0,3}");
+            if (!match.Success) return false;
+            string normalized = match.Value.IndexOf('.') >= 0 ? match.Value : match.Value + ".0";
+            return Version.TryParse(normalized, out version);
+        }
+
+        private static string DisplayVersion(Version version)
+        {
+            if (version == null) return "0.0";
+            if (version.Revision > 0) return version.ToString(4);
+            if (version.Build > 0) return version.ToString(3);
+            return version.ToString(2);
+        }
+
         private void DownloadFile(string url, string displayName)
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
             ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
         }
@@ -8332,6 +8932,7 @@ namespace ToolboxClient
             if (progressPanel != null) progressPanel.Visible = false;
             UpdateDownloadBadges();
             RenderActiveDownloads();
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             StartQueuedDownloads();
         }
 
@@ -8792,6 +9393,7 @@ namespace ToolboxClient
             }
             UpdateDownloadBadges();
             RenderActiveDownloads();
+            if (!studioVariant && !tunerVariant && !portalVariant) ShowDownloadRecordsPanel();
             return true;
         }
 
@@ -9082,7 +9684,6 @@ namespace ToolboxClient
                 throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
             }
 
-            EnsureDownloadDriveSpace(task, plan.TotalLength);
             DownloadFileSegmented(task, plan, attempt);
         }
 
@@ -12592,10 +13193,76 @@ namespace ToolboxClient
 
         private bool VerifyPassword(string password, string stored)
         {
+            if (stored.StartsWith("pbkdf2_sha256$", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] pbkdf2Parts = stored.Split(new char[] { '$' });
+                int rounds;
+                byte[] salt;
+                byte[] expected;
+                if (pbkdf2Parts.Length != 4 || !Int32.TryParse(pbkdf2Parts[1], out rounds) || rounds <= 0 ||
+                    !TryHexBytes(pbkdf2Parts[2], out salt) || !TryHexBytes(pbkdf2Parts[3], out expected)) return false;
+                byte[] actual = Pbkdf2Sha256(Encoding.UTF8.GetBytes(password), salt, rounds, expected.Length);
+                int difference = actual.Length ^ expected.Length;
+                for (int i = 0; i < actual.Length && i < expected.Length; i++) difference |= actual[i] ^ expected[i];
+                return difference == 0;
+            }
             if (!stored.StartsWith("sha256$", StringComparison.OrdinalIgnoreCase)) return password == stored;
             string[] parts = stored.Split(new char[] { '$' });
             if (parts.Length != 3) return false;
             return Sha256Hex(parts[1] + password).Equals(parts[2], StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryHexBytes(string value, out byte[] bytes)
+        {
+            bytes = new byte[0];
+            if (String.IsNullOrEmpty(value) || value.Length % 2 != 0) return false;
+            byte[] result = new byte[value.Length / 2];
+            for (int i = 0; i < result.Length; i++)
+            {
+                int high = HexValue(value[i * 2]);
+                int low = HexValue(value[i * 2 + 1]);
+                if (high < 0 || low < 0) return false;
+                result[i] = (byte)((high << 4) | low);
+            }
+            bytes = result;
+            return true;
+        }
+
+        private static int HexValue(char value)
+        {
+            if (value >= '0' && value <= '9') return value - '0';
+            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+            return -1;
+        }
+
+        private static byte[] Pbkdf2Sha256(byte[] password, byte[] salt, int rounds, int outputLength)
+        {
+            byte[] output = new byte[outputLength];
+            using (HMACSHA256 hmac = new HMACSHA256(password))
+            {
+                int offset = 0;
+                for (int block = 1; offset < outputLength; block++)
+                {
+                    byte[] input = new byte[salt.Length + 4];
+                    Buffer.BlockCopy(salt, 0, input, 0, salt.Length);
+                    input[salt.Length] = (byte)(block >> 24);
+                    input[salt.Length + 1] = (byte)(block >> 16);
+                    input[salt.Length + 2] = (byte)(block >> 8);
+                    input[salt.Length + 3] = (byte)block;
+                    byte[] current = hmac.ComputeHash(input);
+                    byte[] derived = (byte[])current.Clone();
+                    for (int iteration = 1; iteration < rounds; iteration++)
+                    {
+                        current = hmac.ComputeHash(current);
+                        for (int i = 0; i < derived.Length; i++) derived[i] ^= current[i];
+                    }
+                    int count = Math.Min(derived.Length, outputLength - offset);
+                    Buffer.BlockCopy(derived, 0, output, offset, count);
+                    offset += count;
+                }
+            }
+            return output;
         }
 
         private string DownloadText(string url)
@@ -14344,7 +15011,7 @@ namespace ToolboxClient
                     e.Graphics.FillPath(stripe, stripePath);
                 }
 
-                if (PortalMode && !IconTop)
+                if (PortalMode)
                 {
                     int iconSize = 28;
                     Rectangle iconRect = new Rectangle(18, 20, iconSize, iconSize);
@@ -14383,7 +15050,7 @@ namespace ToolboxClient
                     Rectangle iconRect = new Rectangle((Width - iconSize) / 2, 10, iconSize, iconSize);
                     if (IconImage != null) e.Graphics.DrawImage(IconImage, iconRect);
                     else using (SolidBrush placeholder = new SolidBrush(Color.FromArgb(28, AccentColor))) e.Graphics.FillRectangle(placeholder, iconRect);
-                    Rectangle topTitle = new Rectangle(10, iconRect.Bottom + 5, Width - 20, Math.Max(24, Height - iconRect.Bottom - 10));
+                    Rectangle topTitle = new Rectangle(12, iconRect.Bottom + 5, Width - 24, Math.Max(22, Height - iconRect.Bottom - 10));
                     TextRenderer.DrawText(e.Graphics, Title, Font, topTitle, TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
                     return;
                 }
@@ -14392,12 +15059,16 @@ namespace ToolboxClient
                 if (IconImage != null)
                 {
                     const int iconBox = 24;
-                    double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)iconBox / Math.Max(1, IconImage.Height));
+
+
+double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)iconBox / Math.Max(1, IconImage.Height));
                     scale = Math.Min(1D, scale);
                     int drawW = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
                     int drawH = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
-                    e.Graphics.DrawImage(IconImage, textX + (iconBox - drawW) / 2, (Height - drawH) / 2, drawW, drawH);
-                    textX += iconBox + 10;
+                    int iconY = (Height - drawH) / 2;
+                    int iconX = textX + (iconBox - drawW) / 2;
+                    e.Graphics.DrawImage(IconImage, iconX, iconY, drawW, drawH);
+                        textX += iconBox + 10;
                 }
 
                 Rectangle titleRect = new Rectangle(textX, 0, Width - textX - (ListMode ? 92 : 12), Height);
@@ -15290,7 +15961,7 @@ namespace ToolboxClient
             Bounds = bounds;
             BackColor = background;
             ShowInTaskbar = false;
-            TopMost = true;
+            TopMost = false;
 
             LoadingSpinnerControl spinner = new LoadingSpinnerControl
             {
@@ -15477,5 +16148,3 @@ namespace ToolboxClient
         }
     }
 }
-
-

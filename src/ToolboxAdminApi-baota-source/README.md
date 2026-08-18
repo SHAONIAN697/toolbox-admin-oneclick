@@ -1,42 +1,57 @@
 # 工具箱后台一键部署版
 
-这是一个用于管理 Windows 工具箱客户端的网页后台。后台可以配置工具箱标题、主题、按钮、下载项、系统工具、用户账号、代理邀请码、订单审批、通知、隐藏入口弹窗，并为不同用户生成专属 EXE 客户端。
+这是一个面向 Windows 工具箱客户端的网页管理后台。后台可以集中配置品牌、页面、分组、功能按钮、单文件与多文件安装包、系统工具、用户账号、邀请码和通知，并为不同用户生成专属 EXE 客户端。
 
 ## 最新功能
 
-- 多用户和代理管理：总管理员可管理用户、代理、余额、邀请码和订单。
-- 邀请码订单流程：余额不足时先创建订单，必须总管理员审批后才能生成邀请码。
-- 支付接口配置：系统设置中支持多套支付接口配置，代理端可选择余额或接口支付。
+- 多文件安装包：一个下载按钮可配置多个文件地址，适用于必须放在同一目录的 `.exe + .pak` 等安装资源。
+- 自动文件命名：客户端从 URL、重定向响应或下载响应头识别真实文件名，无需后台手动填写。
+- 主程序启动：整组文件全部成功后才运行后台选定的主程序，依赖文件不会被误打开。
+- 下载可靠性：同批任务不会因相似名称被合并，重名路径自动避让，失败时保留已完成文件。
+- 历史兼容：原有单文件 `download_url` 配置继续有效，无需迁移。
+
+- 多用户管理：总管理员可管理用户、邀请码和每个用户的工具箱配置。
+- 邀请码注册：支持批量生成邀请码、设置可用次数和使用后保留天数。
+- 支付接口配置：系统设置中支持多套支付接口配置。
 - 通知中心：支持未读状态、登录弹窗、单条删除、全部删除、邮件推送指定通知。
 - 自定义页面和按钮：支持页面位置、按钮分组、下载记录、系统工具和自定义脚本。
 - 隐藏入口弹窗：连续点击客户端左上角 Logo 可打开“联系我们 / 支持作者”弹窗，内容由后台配置。
 - 主题自适配：后台通知框、隐藏入口弹窗和客户端界面跟随当前主题，浅色深色自动适配。
 - 编译校验：后台生成的 EXE 会校验编译签名和文件哈希，防止篡改。
 - 多电脑运行：同一个正版 EXE 可发给多台电脑运行，不绑定下载电脑；旧版 EXE 需要重新下载。
-- 手机端适配：后台表单、通知、邀请码、订单和复制操作已优化移动端显示。
+- 手机端适配：后台表单、通知、邀请码和复制操作已优化移动端显示。
 
-## 一键部署 / 更新
+## 多文件下载使用方法
 
-新部署和已有服务器更新使用同一条命令。更新时会保留服务器上的账号、密码、用户、配置、订单、通知和 `data/` 数据目录。
+1. 在后台进入“按钮”，新增或编辑一个按钮。
+2. 动作选择“下载文件”，下载配置选择“多文件安装包”。
+3. 填写安装包文件夹名称，通过“添加文件”录入全部下载地址。
+4. 选择一个 `.exe` 作为“完成后运行”的文件并保存。
+5. 重新生成并下载工具箱 EXE 后测试。
+
+客户端下载时会创建独立安装包目录，把所有文件保存到同一位置。更新客户端模板后，旧 EXE 必须重新生成和分发。
+
+## 一键管理脚本
+
+首次下载或重新下载最新版管理脚本，统一使用以下命令：
 
 ```bash
-cd /www/wwwroot && rm -rf toolbox-admin-oneclick toolbox-admin-oneclick.tar.gz toolbox-admin-oneclick.tar.gz.b64 && mkdir -p toolbox-admin-oneclick && curl -L --retry 5 --retry-delay 3 -o toolbox-admin-oneclick.tar.gz.b64 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/toolbox-admin-baota-oneclick.tar.gz.b64" && if command -v base64 >/dev/null 2>&1; then base64 -d toolbox-admin-oneclick.tar.gz.b64 > toolbox-admin-oneclick.tar.gz; else python3 -c "import base64,pathlib; pathlib.Path('toolbox-admin-oneclick.tar.gz').write_bytes(base64.b64decode(pathlib.Path('toolbox-admin-oneclick.tar.gz.b64').read_text()))"; fi && ls -lh toolbox-admin-oneclick.tar.gz && tar -xzf toolbox-admin-oneclick.tar.gz -C toolbox-admin-oneclick --strip-components=1 && cd toolbox-admin-oneclick && bash install-baota.sh
+curl -fsSL --retry 3 "https://gh-proxy.com/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh && sudo bash /tmp/toolbox-admin.sh
 ```
 
-执行后按提示填写：
+下载完成后，以后在服务器任意目录输入 `toolbox-admin` 即可进入管理脚本。需要重新下载管理脚本时，再执行一次上面的命令即可。
 
-- 绑定域名：填写客户自己的域名。
-- 安装目录：首次部署可直接回车，更新时脚本会优先使用原安装目录。
-- 服务端口：默认 `5088`，已有部署会沿用原端口。
-- 管理员密码：首次部署可填写或回车自动生成，更新时保持原密码。
+选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.com/`。
+
+> 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 
 ## 数据保留
 
 更新模式会自动识别原部署目录，并保留：
 
 - 后台账号和密码
-- 用户、代理和邀请码
-- 订单、通知、余额记录
+- 用户和邀请码
+- 通知记录
 - 系统设置、邮件设置和支付接口配置
 - 每个用户的工具箱配置
 - `data/` 数据目录

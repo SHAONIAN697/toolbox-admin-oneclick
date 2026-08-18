@@ -129,7 +129,7 @@
           <label>窗口宽度<input id="appWidth" type="number"></label>
           <label>窗口高度<input id="appHeight" type="number"></label>
           <label class="toggle-line">启用工具箱密码<span><input id="appPasswordEnabled" type="checkbox"> 启用</span></label>
-          <label>工具箱密码<input id="appPassword" type="password"></label>
+          <label>工具箱密码<div class="password-field"><input id="appPassword" type="password" autocomplete="new-password"><button id="toggleAppPassword" type="button" class="secondary-btn">显示</button></div></label>
         </div>
       </div>
       <div class="stats">
@@ -314,6 +314,25 @@
     <section class="view" id="view-system">
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
+          <h2>全局内置功能</h2>
+          <div class="button-pair">
+            <button id="addBuiltinFunctionBtn" type="button">新增功能</button>
+            <button id="saveBuiltinFunctionsBtn" type="button">保存</button>
+          </div>
+        </div>
+        <div id="builtinFunctionRows" class="popup-config-list"></div>
+        <small>真实下载链接仅总管理员可见。普通用户只能选择功能名称，客户端下载由本站代理转发。</small>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>工具箱封面与介绍</h2>
+          <button id="saveClientVariantsBtn" type="button">保存</button>
+        </div>
+        <p class="note">设置对接页中各款工具箱的名称、介绍与封面。封面可使用默认预览、上传到服务器或填写图床地址。</p>
+        <div id="clientVariantSettings" class="variant-settings-grid"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
           <h2>邮箱设置</h2>
           <button id="saveMailBtn" type="button">保存</button>
         </div>
@@ -473,7 +492,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026062902"></script>
+  <script src="/admin.js?v=2026072802"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>
