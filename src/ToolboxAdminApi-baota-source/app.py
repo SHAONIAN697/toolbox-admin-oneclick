@@ -271,6 +271,63 @@ def fetch_json_url(url):
         return json.loads(response.read().decode(charset, "replace"))
 
 
+IP_LOCATION_REGIONS = (
+    ("beijing", ("\\u5317\\u4eac", "beijing")), ("shanghai", ("\\u4e0a\\u6d77", "shanghai")),
+    ("tianjin", ("\\u5929\\u6d25", "tianjin")), ("chongqing", ("\\u91cd\\u5e86", "chongqing")),
+    ("inner-mongolia", ("\\u5185\\u8499\\u53e4", "inner mongolia")),
+    ("guangxi", ("\\u5e7f\\u897f", "guangxi")), ("tibet", ("\\u897f\\u85cf", "tibet", "xizang")),
+    ("ningxia", ("\\u5b81\\u590f", "ningxia")), ("xinjiang", ("\\u65b0\\u7586", "xinjiang")),
+    ("hebei", ("\\u6cb3\\u5317", "hebei")), ("shanxi", ("\\u5c71\\u897f", "shanxi")),
+    ("liaoning", ("\\u8fbd\\u5b81", "liaoning")), ("jilin", ("\\u5409\\u6797", "jilin")),
+    ("heilongjiang", ("\\u9ed1\\u9f99\\u6c5f", "heilongjiang")),
+    ("jiangsu", ("\\u6c5f\\u82cf", "jiangsu")), ("zhejiang", ("\\u6d59\\u6c5f", "zhejiang")),
+    ("anhui", ("\\u5b89\\u5fbd", "anhui")), ("fujian", ("\\u798f\\u5efa", "fujian")),
+    ("jiangxi", ("\\u6c5f\\u897f", "jiangxi")), ("shandong", ("\\u5c71\\u4e1c", "shandong")),
+    ("henan", ("\\u6cb3\\u5357", "henan")), ("hubei", ("\\u6e56\\u5317", "hubei")),
+    ("hunan", ("\\u6e56\\u5357", "hunan")), ("guangdong", ("\\u5e7f\\u4e1c", "guangdong")),
+    ("hainan", ("\\u6d77\\u5357", "hainan")), ("sichuan", ("\\u56db\\u5ddd", "sichuan")),
+    ("guizhou", ("\\u8d35\\u5dde", "guizhou")), ("yunnan", ("\\u4e91\\u5357", "yunnan")),
+    ("shaanxi", ("\\u9655\\u897f", "shaanxi")), ("gansu", ("\\u7518\\u8083", "gansu")),
+    ("qinghai", ("\\u9752\\u6d77", "qinghai")), ("taiwan", ("\\u53f0\\u6e7e", "taiwan")),
+    ("hong-kong", ("\\u9999\\u6e2f", "hong kong")), ("macao", ("\\u6fb3\\u95e8", "macao", "macau")),
+)
+IP_PROVIDER_PRIORITY = {"amap": 0, "tencent": 1, "baidu": 2, "pconline": 3, "system": 4, "ip-api": 5, "ipapi-co": 6, "ip-sb": 7}
+
+
+def ip_location_region_key(address):
+    value = str(address or "").strip().lower()
+    for key, aliases in IP_LOCATION_REGIONS:
+        decoded_aliases = [alias.encode("ascii").decode("unicode_escape") if "\\u" in alias else alias for alias in aliases]
+        if any(alias.lower() in value for alias in decoded_aliases):
+            return key
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", value)
+
+
+def select_ip_location(results, cfg):
+    if not results:
+        return "未知位置"
+    if cfg.get("mode") == "first":
+        return results[0]["address"]
+    buckets = {}
+    for result in results:
+        key = ip_location_region_key(result.get("address"))
+        if key:
+            buckets.setdefault(key, []).append(result)
+    if not buckets:
+        return results[0]["address"]
+    threshold = max(1, int(cfg.get("threshold") or 2))
+    qualified = [items for items in buckets.values() if len(items) >= threshold]
+    candidates = qualified or list(buckets.values())
+    winning = max(candidates, key=lambda items: (
+        len(items),
+        -min(IP_PROVIDER_PRIORITY.get(item.get("provider"), 99) for item in items),
+    ))
+    return min(winning, key=lambda item: (
+        IP_PROVIDER_PRIORITY.get(item.get("provider"), 99),
+        0 if re.search(r"[\u3400-\u9fff]", str(item.get("address") or "")) else 1,
+    ))["address"]
+
+
 def locate_ip(ip, bypass_cache=False):
     if not ip or ip in ("127.0.0.1", "::1"):
         return "本机/内网"
@@ -288,8 +345,12 @@ def locate_ip(ip, bypass_cache=False):
         address = ""
         try:
             if provider == "system":
-                data = fetch_json_url("https://ipwho.is/" + quote(ip))
-                if data.get("success") is not False: address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+                try:
+                    data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                    address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+                except Exception:
+                    data = fetch_json_url("https://ipwho.is/" + quote(ip))
+                    if data.get("success") is not False: address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
             elif provider == "amap" and cfg.get("amapKey"):
                 data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
                 if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
@@ -318,10 +379,8 @@ def locate_ip(ip, bypass_cache=False):
         if address:
             results.append({"provider": provider, "address": address})
             if cfg.get("mode") == "first": break
-    address = results[0]["address"] if results else "未知位置"
+    address = select_ip_location(results, cfg)
     if cfg.get("unifiedChinese", True):
-        chinese = next((item["address"] for item in results if re.search(r"[\u3400-\u9fff]", item["address"])), "")
-        address = chinese or address
         repeated = re.fullmatch(r"(.+?)\\1", address, flags=re.I)
         if repeated: address = repeated.group(1)
         location_names = {
@@ -343,27 +402,35 @@ def read_audit_events(limit=5000):
     rows = []
     with AUDIT_LOG_PATH.open("r", encoding="utf-8") as stream:
         for line in stream:
-            try: rows.append(json.loads(line))
+            try:
+                row = json.loads(line)
+                row["eventKey"] = hashlib.sha256(line.rstrip("\r\n").encode("utf-8")).hexdigest()
+                rows.append(row)
             except Exception: continue
     users = read_users().get("users", [])
     users_by_id = {str(user.get("id") or ""): user for user in users}
     users_by_name = {str(user.get("username") or ""): user for user in users}
+    ip_cache = read_json(IP_CACHE_PATH, {})
     for row in rows:
         actor = users_by_id.get(str(row.get("actorId") or "")) or users_by_name.get(str(row.get("actor") or ""))
-        if not actor:
-            continue
-        row.setdefault("actorDisplayName", actor.get("displayName") or actor.get("username") or "")
-        row.setdefault("actorEmail", actor.get("email") or "")
+        if actor:
+            row.setdefault("actorDisplayName", actor.get("displayName") or actor.get("username") or "")
+            row.setdefault("actorEmail", actor.get("email") or "")
+        cached_ip = ip_cache.get(str(row.get("ip") or ""))
+        if isinstance(cached_ip, dict):
+            row.setdefault("ipAddress", str(cached_ip.get("address") or ""))
     return {"items": list(reversed(rows[-limit:]))}
 
 
 def audit_event(action, actor=None, target="", handler=None, details=None, success=True):
+    ip = client_ip(handler) if handler else ""
     entry = {
         "time": now_iso(), "action": action, "success": bool(success),
         "actorId": (actor or {}).get("id", ""), "actor": (actor or {}).get("username", ""),
         "actorDisplayName": (actor or {}).get("displayName", ""),
         "actorEmail": (actor or {}).get("email", ""),
-        "target": str(target or ""), "ip": client_ip(handler) if handler else "",
+        "target": str(target or ""), "ip": ip,
+        "ipAddress": locate_ip(ip) if ip else "",
         "details": details or {},
     }
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -3503,7 +3570,7 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
-                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                if method in ("POST", "PUT", "PATCH", "DELETE") and path not in ("/api/super/ip-location/test", "/api/super/audit"):
                     audit_event("backend_" + method.lower(), auth["user"], path, self)
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
@@ -3522,11 +3589,36 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权查看操作日志。"}, 403)
             return self.send_json(read_audit_events())
+        if path == "/api/super/audit" and method == "DELETE":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权清空操作日志。"}, 403)
+            body = self.read_body()
+            if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                audit_event("audit_log_clear_failed", auth["user"], handler=self, success=False)
+                return self.send_json({"error": "当前管理员密码错误。"}, 403)
+            event_keys = {str(value) for value in body.get("eventKeys", []) if str(value)}
+            filtered = body.get("filtered") is True
+            if filtered and not event_keys:
+                return self.send_json({"error": "筛选结果为空，未清理任何日志。"}, 400)
+            with SECURITY_LOCK:
+                AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                lines = AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines() if AUDIT_LOG_PATH.exists() else []
+                if event_keys:
+                    kept = [line for line in lines if hashlib.sha256(line.encode("utf-8")).hexdigest() not in event_keys]
+                else:
+                    kept = []
+                AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+            cleared = len(lines) - len(kept)
+            action = "audit_log_filtered_cleared" if filtered else "audit_log_cleared"
+            audit_event(action, auth["user"], handler=self, details={"cleared": cleared})
+            return self.send_json({"ok": True, "cleared": cleared, "filtered": filtered})
         if path == "/api/super/ip-location/test" and method == "POST":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权测试定位接口。"}, 403)
             ip = str(self.read_body().get("ip") or client_ip(self)).strip()
-            return self.send_json({"ip": ip, "address": locate_ip(ip, True)})
+            address = locate_ip(ip, True)
+            audit_event("ip_location_test", auth["user"], ip, self, {"address": address})
+            return self.send_json({"ip": ip, "address": address})
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)
