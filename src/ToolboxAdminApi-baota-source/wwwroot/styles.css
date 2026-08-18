@@ -2006,6 +2006,10 @@ tr.row-highlight {
 .audit-table th:nth-child(1) { width: 18%; } .audit-table th:nth-child(2) { width: 32%; } .audit-table th:nth-child(3) { width: 19%; } .audit-table th:nth-child(4) { width: auto; } .audit-table th:nth-child(5) { width: 92px; }
 .audit-table td:nth-child(4) { overflow-wrap: anywhere; word-break: break-all; line-height: 1.35; }
 .audit-table td:nth-child(5) { overflow: visible; white-space: nowrap; }
+.audit-user { display: grid; gap: 2px; min-width: 0; }
+.audit-user strong, .audit-user span, .audit-user small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-user span { color: var(--text); }
+.audit-user small { color: var(--muted); }
 .audit-risk { display: inline-flex; align-items: center; min-height: 24px; padding: 1px 7px; border: 1px solid; border-radius: 6px; white-space: nowrap; font-size: 11px; }
 .audit-risk.high { color: #ff6b6b; border-color: #a84949; background: rgba(168,73,73,.12); }
 .audit-risk.medium { color: #e5b84b; border-color: #8d742f; background: rgba(141,116,47,.12); }

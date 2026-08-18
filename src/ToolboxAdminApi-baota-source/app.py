@@ -345,6 +345,15 @@ def read_audit_events(limit=5000):
         for line in stream:
             try: rows.append(json.loads(line))
             except Exception: continue
+    users = read_users().get("users", [])
+    users_by_id = {str(user.get("id") or ""): user for user in users}
+    users_by_name = {str(user.get("username") or ""): user for user in users}
+    for row in rows:
+        actor = users_by_id.get(str(row.get("actorId") or "")) or users_by_name.get(str(row.get("actor") or ""))
+        if not actor:
+            continue
+        row.setdefault("actorDisplayName", actor.get("displayName") or actor.get("username") or "")
+        row.setdefault("actorEmail", actor.get("email") or "")
     return {"items": list(reversed(rows[-limit:]))}
 
 
@@ -352,6 +361,8 @@ def audit_event(action, actor=None, target="", handler=None, details=None, succe
     entry = {
         "time": now_iso(), "action": action, "success": bool(success),
         "actorId": (actor or {}).get("id", ""), "actor": (actor or {}).get("username", ""),
+        "actorDisplayName": (actor or {}).get("displayName", ""),
+        "actorEmail": (actor or {}).get("email", ""),
         "target": str(target or ""), "ip": client_ip(handler) if handler else "",
         "details": details or {},
     }

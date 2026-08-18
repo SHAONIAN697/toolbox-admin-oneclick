@@ -1318,7 +1318,7 @@ function updateAuditUserOptions() {
   options.replaceChildren(...users.map((name) => {
     const user = state.users.find((item) => item.username === name);
     const option = new Option(name, name);
-    option.label = user?.displayName && user.displayName !== name ? `${user.displayName}（${name}）` : name;
+    option.label = [user?.displayName && user.displayName !== name ? user.displayName : '', name, user?.email || ''].filter(Boolean).join(' · ');
     return option;
   }));
   options.dataset.optionsSignature = signature;
@@ -1327,7 +1327,17 @@ function updateAuditUserOptions() {
 function auditUserSearchText(item) {
   const account = auditAccount(item);
   const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
-  return `${account} ${user?.displayName || ''} ${user?.username || ''}`;
+  return `${account} ${item.actorId || ''} ${item.actorDisplayName || user?.displayName || ''} ${item.actorEmail || user?.email || ''} ${user?.username || ''}`;
+}
+
+function auditUserDetails(item) {
+  const account = auditAccount(item);
+  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
+  return {
+    account,
+    displayName: item.actorDisplayName || user?.displayName || account,
+    email: item.actorEmail || user?.email || ''
+  };
 }
 
 function auditRisk(item) {
@@ -1367,7 +1377,7 @@ function renderAuditLog() {
   });
   const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
   $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
-  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><strong>${escapeHtml(auditAccount(item))}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td>${escapeHtml(item.ip || '未记录')}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const userInfo = auditUserDetails(item); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><div class="audit-user"><strong>${escapeHtml(userInfo.displayName)}</strong><span>${escapeHtml(userInfo.account)}</span>${userInfo.email ? `<small>${escapeHtml(userInfo.email)}</small>` : ''}</div></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td>${escapeHtml(item.ip || '未记录')}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
 }
 
 function syncAuditAutoRefresh(view) {
@@ -1589,7 +1599,7 @@ function renderUsers() {
   const panel = tbody.closest('.panel');
   ensureUserBatchTools(panel);
   const userQuery = ($('userListSearch')?.value || '').trim().toLowerCase();
-  const visibleUsers = state.users.filter((user) => !userQuery || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`.toLowerCase().includes(userQuery));
+  const visibleUsers = state.users.filter((user) => !userQuery || `${user.displayName || ''} ${user.username || ''} ${user.email || ''} ${user.id || ''}`.toLowerCase().includes(userQuery));
   setPanelCounter(panel, 'userTotalCount', visibleUsers.length === state.users.length ? state.users.length : `${visibleUsers.length}/${state.users.length}`);
   let cards = $('userCards');
   if (!cards && panel) {
