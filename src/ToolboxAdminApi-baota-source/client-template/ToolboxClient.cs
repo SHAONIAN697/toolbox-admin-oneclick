@@ -2960,6 +2960,13 @@ namespace ToolboxClient
             return BoolValue(features, "delete_downloads_on_exit", false);
         }
 
+        private bool DeleteDownloadsOnExitValue(ClientSettings settings)
+        {
+            if (settings != null && settings.HasDeleteDownloadsOnExitOverride)
+                return settings.DeleteDownloadsOnExit;
+            return DeleteDownloadsOnExitEnabled();
+        }
+
         private bool SoftwareCatalogAutoWingetEnabled()
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
@@ -4595,7 +4602,7 @@ namespace ToolboxClient
                 Text = "关闭时自动删除已下载文件",
                 ForeColor = TextColor,
                 BackColor = PanelBg,
-                Checked = currentSettings.DeleteDownloadsOnExit
+                Checked = DeleteDownloadsOnExitValue(currentSettings)
             };
 
             Label parallelLabel = new Label
@@ -4658,6 +4665,7 @@ namespace ToolboxClient
             cleanOnExit.CheckedChanged += delegate
             {
                 currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
+                currentSettings.HasDeleteDownloadsOnExitOverride = true;
                 SaveClientSettings(currentSettings);
                 status.Text = cleanOnExit.Checked ? "关闭时将自动删除已下载文件" : "已关闭退出自动清理";
             };
@@ -5321,7 +5329,7 @@ namespace ToolboxClient
                 Text = PortalText("退出自动清理下载文件", "Delete downloads on exit"),
                 ForeColor = TextColor,
                 BackColor = PanelBg,
-                Checked = currentSettings.DeleteDownloadsOnExit
+                Checked = DeleteDownloadsOnExitValue(currentSettings)
             };
 
             Button save = MakeTemplateTopButton(PortalText("保存设置", "Save"), Accent, LightTheme ? Color.White : Color.FromArgb(7, 18, 24), Color.FromArgb(LightTheme ? 135 : 105, Accent), 88);
@@ -5334,6 +5342,8 @@ namespace ToolboxClient
                 if (selectedTheme != null) currentSettings.Theme = selectedTheme.Value;
                 currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
                 currentSettings.AutoStart = autoStart.Checked;
+                if (cleanOnExit.Checked != DeleteDownloadsOnExitValue(currentSettings))
+                    currentSettings.HasDeleteDownloadsOnExitOverride = true;
                 currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
                 SaveClientSettings(currentSettings);
                 SaveDownloadDirectory(pathBox.Text, currentSettings);
@@ -12426,7 +12436,7 @@ namespace ToolboxClient
                     Text = "关闭时自动删除已下载文件",
                     ForeColor = TextColor,
                     BackColor = optionCard.BackColor,
-                    Checked = currentSettings.DeleteDownloadsOnExit
+                    Checked = DeleteDownloadsOnExitValue(currentSettings)
                 };
                 optionCard.Controls.Add(autoStart);
                 optionCard.Controls.Add(cleanOnExit);
@@ -12467,6 +12477,8 @@ namespace ToolboxClient
                     currentSettings.DownloadDirectory = pathBox.Text.Trim();
                     currentSettings.MaxParallelDownloads = SelectedMaxParallelDownloads(parallelBox);
                     currentSettings.AutoStart = autoStart.Checked;
+                    if (cleanOnExit.Checked != DeleteDownloadsOnExitValue(currentSettings))
+                        currentSettings.HasDeleteDownloadsOnExitOverride = true;
                     currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
                     SaveClientSettings(currentSettings);
                     SaveDownloadDirectory(pathBox.Text, currentSettings);
@@ -12775,7 +12787,7 @@ namespace ToolboxClient
                 Text = "关闭时自动删除已下载文件",
                 ForeColor = TextColor,
                 BackColor = optionCard.BackColor,
-                Checked = currentSettings.DeleteDownloadsOnExit
+                Checked = DeleteDownloadsOnExitValue(currentSettings)
             };
 
             RoundedPanel parallelCard = new RoundedPanel
@@ -12935,6 +12947,7 @@ namespace ToolboxClient
             cleanOnExit.CheckedChanged += delegate
             {
                 currentSettings.DeleteDownloadsOnExit = cleanOnExit.Checked;
+                currentSettings.HasDeleteDownloadsOnExitOverride = true;
                 SaveClientSettings(currentSettings);
                 status.Text = cleanOnExit.Checked ? "关闭时将自动删除已下载文件" : "已关闭退出自动清理";
             };
@@ -13046,7 +13059,7 @@ namespace ToolboxClient
         private void CleanupDownloadedFilesOnExit()
         {
             ClientSettings settings = LoadClientSettings();
-            if (!DeleteDownloadsOnExitEnabled() || !settings.DeleteDownloadsOnExit) return;
+            if (!DeleteDownloadsOnExitValue(settings)) return;
             List<DownloadRecord> records = LoadDownloadRecords();
             foreach (DownloadRecord record in records) DeleteDownloadedFile(record);
             SaveDownloadRecords(new List<DownloadRecord>());
@@ -15663,6 +15676,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public int MaxParallelDownloads { get; set; }
             public bool AutoStart { get; set; }
             public bool DeleteDownloadsOnExit { get; set; }
+            public bool HasDeleteDownloadsOnExitOverride { get; set; }
         }
 
         internal sealed class ContactPopupConfig
