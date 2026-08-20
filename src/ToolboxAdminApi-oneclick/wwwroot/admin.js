@@ -1281,7 +1281,7 @@ function ensureAuditView() {
   view.id = 'view-audit';
   view.className = 'view';
   view.innerHTML = `<div class="panel audit-panel">
-    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><button id="refreshAuditBtn" type="button">刷新</button></div>
+    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><div class="audit-head-actions"><button id="refreshAuditBtn" type="button">刷新</button><button id="clearFilteredAuditBtn" type="button" class="danger">清理筛选结果</button><button id="clearAuditBtn" type="button" class="danger">清空日志</button></div></div>
     <div class="audit-filters">
       <input id="auditUserFilter" type="search" list="auditUserOptions" autocomplete="off" placeholder="搜索或选择用户"><datalist id="auditUserOptions"></datalist>
       <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址"><input id="auditKeywordFilter" type="search" placeholder="搜索全部日志信息">
@@ -1294,6 +1294,8 @@ function ensureAuditView() {
   </div>`;
   document.querySelector('main').appendChild(view);
   $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
+  $('clearAuditBtn').onclick = () => clearAuditLog().catch(error => setStatus(error.message, true));
+  $('clearFilteredAuditBtn').onclick = () => clearFilteredAuditLog().catch(error => setStatus(error.message, true));
   try {
     const filters = JSON.parse(localStorage.getItem(AUDIT_FILTER_STORAGE_KEY) || '{}');
     AUDIT_FILTER_IDS.forEach((id) => { if ($(id) && typeof filters[id] === 'string') $(id).value = filters[id]; });
@@ -1303,6 +1305,31 @@ function ensureAuditView() {
     $(id).addEventListener('input', apply); $(id).addEventListener('change', apply);
   });
   $('resetAuditFiltersBtn').onclick = () => { AUDIT_FILTER_IDS.forEach((id) => { $(id).value = ''; }); localStorage.removeItem(AUDIT_FILTER_STORAGE_KEY); renderAuditLog(); };
+}
+
+async function clearAuditLog() {
+  if (!confirm('确定清空全部操作日志吗？清空后无法恢复。')) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认清空日志：') || '';
+  if (!currentPassword) return;
+  const result = await api('/api/super/audit', { method: 'DELETE', body: JSON.stringify({ currentPassword }) });
+  await loadAuditLog();
+  setStatus(`已清理 ${Number(result.cleared || 0)} 条操作日志。`);
+}
+
+async function clearFilteredAuditLog() {
+  const hasFilter = AUDIT_FILTER_IDS.some((id) => ($(id)?.value || '').trim());
+  if (!hasFilter) { setStatus('请先设置筛选条件，再清理筛选结果。', true); return; }
+  const items = filteredAuditItems();
+  if (!items.length) { setStatus('当前筛选没有可清理的日志。', true); return; }
+  if (!confirm(`确定清理当前筛选出的 ${items.length} 条日志吗？清理后无法恢复。`)) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认清理筛选日志：') || '';
+  if (!currentPassword) return;
+  const result = await api('/api/super/audit', {
+    method: 'DELETE',
+    body: JSON.stringify({ currentPassword, filtered: true, eventKeys: items.map((item) => item.eventKey).filter(Boolean) })
+  });
+  await loadAuditLog();
+  setStatus(`已清理 ${Number(result.cleared || 0)} 条筛选日志。`);
 }
 
 async function loadAuditLog() {
@@ -1375,11 +1402,11 @@ function describeAuditEntry(item) {
   return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
 }
 
-function renderAuditLog() {
+function filteredAuditItems() {
   const user = ($('auditUserFilter')?.value || '').trim().toLowerCase(); const ip = ($('auditIpFilter')?.value || '').trim().toLowerCase();
   const keyword = ($('auditKeywordFilter')?.value || '').trim().toLowerCase(); const actionType = $('auditActionFilter')?.value || ''; const risk = $('auditRiskFilter')?.value || '';
   const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0; const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
-  const items = state.auditItems.filter((item) => {
+  return state.auditItems.filter((item) => {
     const account = auditAccount(item); const description = describeAuditEntry(item); const itemTime = new Date(item.time).getTime(); const action = String(item.action || '');
     if (user && !auditUserSearchText(item).toLowerCase().includes(user)) return false;
     if (ip && !`${item.ip || ''} ${item.ipAddress || ''}`.toLowerCase().includes(ip)) return false;
@@ -1391,6 +1418,10 @@ function renderAuditLog() {
     if (risk && auditRisk(item) !== risk) return false;
     if (start && itemTime < start) return false; if (end && itemTime > end) return false; return true;
   });
+}
+
+function renderAuditLog() {
+  const items = filteredAuditItems();
   const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
   $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
   $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><strong>${escapeHtml(auditAccount(item))}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';

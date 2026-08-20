@@ -2000,6 +2000,7 @@ tr.row-highlight {
 .audit-filters label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .audit-filters input, .audit-filters select, .audit-filters button { width: 100%; min-width: 0; }
 .audit-table-wrap { max-height: calc(100vh - 330px); min-height: 360px; overflow: auto; }
+.audit-head-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .audit-table { min-width: 880px; table-layout: fixed; font-size: 13px; }
 .audit-table th, .audit-table td { padding: 8px 10px; overflow: hidden; }
 .audit-table th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
