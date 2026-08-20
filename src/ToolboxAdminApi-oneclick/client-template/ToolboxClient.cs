@@ -517,6 +517,21 @@ namespace ToolboxClient
             }
         }
 
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            if (!audioVariant) return;
+            ActiveControl = null;
+            DeactivateNavButtons();
+        }
+
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            if (!audioVariant || String.IsNullOrWhiteSpace(currentPage)) return;
+            MarkNavButtonActive(currentPage);
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -940,6 +955,7 @@ namespace ToolboxClient
                 Cursor = Cursors.Hand
             };
             button.FlatAppearance.BorderSize = 0;
+            button.TabStop = false;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 235, 238);
             if (topToolTip == null) topToolTip = new ToolTip();
             topToolTip.SetToolTip(button, tip);
