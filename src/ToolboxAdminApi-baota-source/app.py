@@ -47,6 +47,7 @@ AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
 IP_CACHE_PATH = DATA / "ip-location-cache.json"
 BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
+MENU_ICON_DIR = WWW / "uploads" / "menu-icons"
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
@@ -135,6 +136,12 @@ CLIENT_VARIANTS = {
         "label": "调音师工具箱简约版",
         "file": "tuner",
         "description": "按本地调音师工具箱的白色标题栏、左侧导航、折叠分组和底部状态栏复刻，继续使用当前后台配置和内置下载模块。",
+    },
+    "audio": {
+        "id": "audio",
+        "label": "音频工具箱火山版",
+        "file": "audio",
+        "description": "按火山源码新增的音频工具箱界面。",
     },
     "portal": {
         "id": "portal",
@@ -674,6 +681,10 @@ def default_config():
             "allow_client_theme": True,
             "default_view_mode": "grid",
             "button_content_layout": "icon_left",
+            "button_content_layout_rules": {
+                "icon_left": {"enabled": False, "pages": []},
+                "icon_top": {"enabled": False, "pages": []},
+            },
             "bg_path": "",
             "output_dir": "",
         },
@@ -891,7 +902,7 @@ def client_variant_info(value):
 def public_client_variants():
     configured = read_system_settings().get("clientVariants") or {}
     variants = []
-    for variant_id in ("original", "studio", "tuner", "portal"):
+    for variant_id in ("original", "studio", "tuner", "audio", "portal"):
         item = dict(CLIENT_VARIANTS[variant_id])
         values = configured.get(variant_id) if isinstance(configured.get(variant_id), dict) else {}
         for key in ("name", "badge", "description", "coverMode", "coverUrl"):
@@ -980,6 +991,21 @@ def ensure_config_defaults(config):
     button_content_layout = normalize_button_content_layout(app.get("button_content_layout"))
     if app.get("button_content_layout") != button_content_layout:
         app["button_content_layout"] = button_content_layout
+        changed = True
+    rules = app.get("button_content_layout_rules")
+    if not isinstance(rules, dict):
+        rules = {}
+    normalized_rules = {}
+    for layout_id in ("icon_left", "icon_top"):
+        source = rules.get(layout_id) if isinstance(rules.get(layout_id), dict) else {}
+        pages = []
+        for page_id in source.get("pages") or []:
+            value = str(page_id or "").strip()
+            if value and value not in pages:
+                pages.append(value[:120])
+        normalized_rules[layout_id] = {"enabled": source.get("enabled") is True, "pages": pages[:100]}
+    if app.get("button_content_layout_rules") != normalized_rules:
+        app["button_content_layout_rules"] = normalized_rules
         changed = True
     if normalize_feature_settings(config):
         changed = True
@@ -1439,6 +1465,8 @@ def apply_app_patch(config, patch):
             app[key] = normalize_view_mode(value, "grid")
         elif key == "button_content_layout":
             app[key] = normalize_button_content_layout(value)
+        elif key == "button_content_layout_rules" and isinstance(value, dict):
+            app[key] = value
         else:
             app[key] = value
     ensure_config_defaults(config)
@@ -1591,6 +1619,7 @@ def default_system_settings():
             }
             for variant_id, variant in CLIENT_VARIANTS.items()
         },
+        "menuIcons": [],
         "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
             "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
@@ -1778,6 +1807,21 @@ def public_system_settings():
 
 def write_system_settings(body):
     current = read_system_settings()
+    if isinstance(body.get("menuIcons"), list):
+        rows = []
+        used = set()
+        for source in body.get("menuIcons")[:100]:
+            if not isinstance(source, dict):
+                continue
+            icon_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("icon")
+            name = str(source.get("name") or "").strip()[:80]
+            url = str(source.get("url") or "").strip()[:1000]
+            valid_url = http_url(url) or (url if url.startswith("/uploads/menu-icons/") else "")
+            if not name or not valid_url or icon_id in used:
+                continue
+            used.add(icon_id)
+            rows.append({"id": icon_id, "name": name, "url": valid_url})
+        current["menuIcons"] = rows
     if isinstance(body.get("builtinFunctions"), list):
         rows = []
         used = set()
@@ -3843,6 +3887,25 @@ class Handler(BaseHTTPRequestHandler):
             file_name = f"{variant_id}-{int(time.time())}-{random_hex(4)}.{extension}"
             (VARIANT_COVER_DIR / file_name).write_bytes(image_data)
             return self.send_json({"url": f"/uploads/variant-covers/{file_name}"})
+        if path in ("/api/super/system/menu-icon", "/api/admin/menu-icon/upload") and method == "POST":
+            if path.startswith("/api/super/") and not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以上传全局菜单图标。"}, 403)
+            body = self.read_body()
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            if not match:
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+            try:
+                image_data = base64.b64decode(match.group(2), validate=True)
+            except Exception:
+                return self.send_json({"error": "图标图片数据无效。"}, 400)
+            if not image_data or len(image_data) > 2 * 1024 * 1024:
+                return self.send_json({"error": "图标图片不能超过 2MB。"}, 400)
+            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            MENU_ICON_DIR.mkdir(parents=True, exist_ok=True)
+            owner = "global" if path.startswith("/api/super/") else re.sub(r"[^a-zA-Z0-9_-]", "", str(user_id))
+            file_name = f"{owner}-{int(time.time())}-{random_hex(4)}.{extension}"
+            (MENU_ICON_DIR / file_name).write_bytes(image_data)
+            return self.send_json({"url": f"/uploads/menu-icons/{file_name}"})
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
         if path == "/api/super/orders":
@@ -3981,6 +4044,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/variants" and method == "GET":
             return self.send_json(public_client_variants())
+        if path == "/api/admin/menu-icons" and method == "GET":
+            return self.send_json({"icons": read_system_settings().get("menuIcons") or []})
         if path == "/api/admin/client/download" and method == "GET":
             name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), request_client_variant(self))
             if not is_windows_exe(data):

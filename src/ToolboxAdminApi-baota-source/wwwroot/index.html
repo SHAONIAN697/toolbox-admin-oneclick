@@ -167,6 +167,11 @@
           <label>管理页面<select id="manageScope"></select></label>
           <label>页面新名称<input id="manageScopeName"></label>
           <label>页面位置<input id="manageScopeOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
+          <label>默认菜单图标<select id="manageScopeIconPreset"><option value="">使用内置图标</option></select></label>
+          <label>自定义图标链接<input id="manageScopeIconUrl" placeholder="https://... 或选择默认图标"></label>
+          <label>上传菜单图标<input id="manageScopeIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+          <button id="uploadScopeIconBtn" type="button">上传图标</button>
+          <button id="saveScopeIconBtn" type="button">保存菜单图标</button>
           <button id="renameScopeBtn" type="button">重命名页面</button>
           <button id="moveScopeBtn" type="button">保存位置</button>
           <button id="deleteScopeBtn" type="button">删除页面</button>
@@ -312,6 +317,17 @@
     </section>
 
     <section class="view" id="view-system">
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head"><h2>全局默认菜单图标</h2><button id="saveMenuIconsBtn" type="button">保存图标库</button></div>
+        <div class="form-grid compact">
+          <label>图标名称<input id="globalMenuIconName" placeholder="例如：系统工具"></label>
+          <label>图标链接<input id="globalMenuIconUrl" placeholder="https://..."></label>
+          <label>上传图片<input id="globalMenuIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+          <button id="addMenuIconBtn" type="button">添加到图标库</button>
+          <button id="uploadMenuIconBtn" type="button">上传并添加</button>
+        </div>
+        <div id="menuIconRows" class="popup-config-list"></div>
+      </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
           <h2>全局内置功能</h2>

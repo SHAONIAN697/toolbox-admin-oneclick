@@ -11,6 +11,7 @@
   mail: null,
   system: null,
   builtinFunctions: [],
+  menuIcons: [],
   templateMode: false,
   notices: [],
   announcements: [],
@@ -120,6 +121,13 @@ const CLIENT_VARIANTS = [
     badge: '\u7b80\u7ea6\u65b0\u7248',
     description: '\u767d\u8272\u6807\u9898\u680f\u3001\u5de6\u4fa7\u5bfc\u822a\u3001\u72ec\u7acb\u4e0b\u8f7d\u9875\u548c\u7b80\u7ea6\u7cfb\u7edf\u8bbe\u7f6e\u9875\uff0c\u9002\u5408\u8c03\u97f3\u5de5\u5177\u4e0e\u7cfb\u7edf\u7ef4\u62a4\u573a\u666f\u3002',
     preview: 'tuner'
+  },
+  {
+    id: 'audio',
+    label: '音频工具箱火山版',
+    badge: '火山源码界面',
+    description: '深色图标侧栏、红色分类标题、五列圆角按钮和底部下载状态栏，按钮与下载统一由后台配置。',
+    preview: 'audio'
   },
   {
     id: 'portal',
@@ -599,6 +607,7 @@ async function loadAll() {
     await loadAdminAnnouncementsSafe();
     await loadBuiltinFunctions();
     await loadClientVariants();
+    await loadMenuIcons();
 
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
@@ -946,7 +955,12 @@ function renderUserContext() {
   if (superMode && selector) {
     const previous = state.targetUserId || state.currentUser.id;
     selector.innerHTML = '';
-    state.users.forEach((user) => {
+    state.users.filter((user) => {
+    const query = ($('userListSearch')?.value || '').trim().toLowerCase();
+    return !query || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`
+      .toLowerCase()
+      .includes(query);
+  }).forEach((user) => {
       const opt = document.createElement('option');
       opt.value = user.id;
       opt.textContent = displayNameOf(user, user.username);
@@ -1051,6 +1065,7 @@ function renderApp() {
   $('appThemeCount').value = app.theme_count || 19;
   $('appAllowClientTheme').checked = app.allow_client_theme !== false;
   if ($('appDefaultViewMode')) $('appDefaultViewMode').value = app.default_view_mode === 'list' ? 'list' : 'grid';
+  renderButtonContentLayout(app.button_content_layout, app.button_content_layout_rules);
   $('appLogo').value = app.logo_text || '';
   $('appIcon').value = app.icon || app.icon_url || '';
   ensureExeIconField();
@@ -1266,7 +1281,7 @@ function ensureAuditView() {
   view.id = 'view-audit';
   view.className = 'view';
   view.innerHTML = `<div class="panel audit-panel">
-    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><div class="audit-head-actions"><button id="refreshAuditBtn" type="button">刷新</button><button id="clearFilteredAuditBtn" type="button" class="danger">清理筛选结果</button><button id="clearAuditBtn" type="button" class="danger">清空日志</button></div></div>
+    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><button id="refreshAuditBtn" type="button">刷新</button></div>
     <div class="audit-filters">
       <input id="auditUserFilter" type="search" list="auditUserOptions" autocomplete="off" placeholder="搜索或选择用户"><datalist id="auditUserOptions"></datalist>
       <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址"><input id="auditKeywordFilter" type="search" placeholder="搜索全部日志信息">
@@ -1279,8 +1294,6 @@ function ensureAuditView() {
   </div>`;
   document.querySelector('main').appendChild(view);
   $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
-  $('clearAuditBtn').onclick = () => clearAuditLog().catch(error => setStatus(error.message, true));
-  $('clearFilteredAuditBtn').onclick = () => clearFilteredAuditLog().catch(error => setStatus(error.message, true));
   try {
     const filters = JSON.parse(localStorage.getItem(AUDIT_FILTER_STORAGE_KEY) || '{}');
     AUDIT_FILTER_IDS.forEach((id) => { if ($(id) && typeof filters[id] === 'string') $(id).value = filters[id]; });
@@ -1290,40 +1303,6 @@ function ensureAuditView() {
     $(id).addEventListener('input', apply); $(id).addEventListener('change', apply);
   });
   $('resetAuditFiltersBtn').onclick = () => { AUDIT_FILTER_IDS.forEach((id) => { $(id).value = ''; }); localStorage.removeItem(AUDIT_FILTER_STORAGE_KEY); renderAuditLog(); };
-}
-
-async function clearAuditLog() {
-  if (!confirm('确定清空全部操作日志吗？清空后无法恢复。')) return;
-  const currentPassword = prompt('请输入当前管理员密码以确认清空日志：') || '';
-  if (!currentPassword) return;
-  const result = await api('/api/super/audit', {
-    method: 'DELETE',
-    body: JSON.stringify({ currentPassword })
-  });
-  await loadAuditLog();
-  setStatus(`已清理 ${Number(result.cleared || 0)} 条操作日志。`);
-}
-
-async function clearFilteredAuditLog() {
-  const hasFilter = AUDIT_FILTER_IDS.some((id) => ($(id)?.value || '').trim());
-  if (!hasFilter) {
-    setStatus('请先设置筛选条件，再清理筛选结果。', true);
-    return;
-  }
-  const items = filteredAuditItems();
-  if (!items.length) {
-    setStatus('当前筛选没有可清理的日志。', true);
-    return;
-  }
-  if (!confirm(`确定清理当前筛选出的 ${items.length} 条日志吗？清理后无法恢复。`)) return;
-  const currentPassword = prompt('请输入当前管理员密码以确认清理筛选日志：') || '';
-  if (!currentPassword) return;
-  const result = await api('/api/super/audit', {
-    method: 'DELETE',
-    body: JSON.stringify({ currentPassword, filtered: true, eventKeys: items.map((item) => item.eventKey).filter(Boolean) })
-  });
-  await loadAuditLog();
-  setStatus(`已清理 ${Number(result.cleared || 0)} 条筛选日志。`);
 }
 
 async function loadAuditLog() {
@@ -1341,39 +1320,40 @@ async function loadAuditLog() {
 function auditAccount(item) {
   const actor = String(item.actor || item.username || '');
   if (actor) return actor;
+
   const target = String(item.target || '');
-  return String(item.action || '').startsWith('login_') && state.users.some((user) => user.username === target) ? target : '未知用户';
+  const isRealUser = state.users.some(
+    (user) => String(user.username || '') === target
+  );
+
+  return String(item.action || '').startsWith('login_') && isRealUser
+    ? target
+    : '未知用户';
 }
 function auditPath(item) { const value = String(item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item.path || ''); }
-
 function updateAuditUserOptions() {
   const options = $('auditUserOptions');
-  const users = [...new Set(state.users.map((user) => String(user.username || '').trim()).filter(Boolean))].sort();
+  const users = [...new Set(
+    state.users
+      .map((user) => String(user.username || '').trim())
+      .filter(Boolean)
+  )].sort();
+
   const signature = JSON.stringify(users);
   if (!options || options.dataset.optionsSignature === signature) return;
-  options.replaceChildren(...users.map((name) => {
-    const user = state.users.find((item) => item.username === name);
-    const option = new Option(name, name);
-    option.label = [user?.displayName && user.displayName !== name ? user.displayName : '', name, user?.email || ''].filter(Boolean).join(' · ');
-    return option;
-  }));
+
+  options.replaceChildren(
+    ...users.map((name) => new Option(name, name))
+  );
   options.dataset.optionsSignature = signature;
 }
 
 function auditUserSearchText(item) {
   const account = auditAccount(item);
-  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
-  return `${account} ${item.actorId || ''} ${item.actorDisplayName || user?.displayName || ''} ${item.actorEmail || user?.email || ''} ${user?.username || ''}`;
-}
-
-function auditUserDetails(item) {
-  const account = auditAccount(item);
-  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
-  return {
-    account,
-    displayName: item.actorDisplayName || user?.displayName || account,
-    email: item.actorEmail || user?.email || ''
-  };
+  const user = state.users.find(
+    (entry) => entry.username === account || entry.id === item.actorId
+  );
+  return `${account} ${user?.displayName || ''} ${user?.username || ''}`;
 }
 
 function auditRisk(item) {
@@ -1386,56 +1366,23 @@ function auditRisk(item) {
 
 function describeAuditEntry(item) {
   const action = String(item.action || ''); const path = auditPath(item);
-  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置', audit_log_clear_failed: '清空操作日志失败（管理员密码错误）' };
-  if (action === 'audit_log_filtered_cleared') return `管理员清理筛选日志，共清理 ${Number(item.details?.cleared || 0)} 条`;
-  if (action === 'audit_log_cleared') return `管理员手动清空操作日志，共清理 ${Number(item.details?.cleared || 0)} 条`;
-  if (action === 'ip_location_test') {
-    const result = String(item.details?.address || '').trim();
-    return `测试 IP 定位：${item.target || '未记录'}${result ? ` → ${result}` : ''}`;
-  }
+  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置' };
   if (fixed[action]) return fixed[action];
   const method = action.replace(/^backend_/, '').toUpperCase();
   const methods = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
-  const precise = [
-    [/\/ip-location\/test$/, { POST: '测试 IP 定位' }],
-    [/\/mail\/test$/, { POST: '发送测试邮件' }],
-    [/\/system\/variant-cover$/, { POST: '上传工具箱封面' }],
-    [/\/system\/popup\/upload$/, { POST: '上传弹窗图片' }],
-    [/\/client\/build$/, { POST: '生成工具箱客户端' }],
-    [/\/config\/share$/, { POST: '创建配置分享链接' }],
-    [/\/config\/import$/, { POST: '导入后台配置' }],
-    [/\/notices\/mail$/, { POST: '发送通知邮件' }],
-    [/\/announcements\/read-all$/, { POST: '全部标记更新公告已读' }],
-    [/\/users\/batch$/, { POST: '批量管理用户' }],
-    [/\/invites\/quote$/, { POST: '计算邀请码价格' }],
-    [/\/template\/app$/, { PATCH: '修改用户模板基础信息' }],
-    [/\/template\/popup$/, { PATCH: '修改用户模板弹窗' }],
-    [/\/template\/buttons$/, { POST: '新增用户模板按钮', PATCH: '修改用户模板按钮', DELETE: '删除用户模板按钮' }],
-    [/\/buttons$/, { POST: '新增按钮', PATCH: '修改按钮', DELETE: '删除按钮' }],
-    [/\/announcements$/, { POST: '发布更新公告', PATCH: '修改更新公告', DELETE: '删除更新公告' }],
-    [/\/invites$/, { POST: '新增邀请码', PATCH: '修改邀请码', DELETE: '删除邀请码' }],
-    [/\/users$/, { POST: '新增用户', PATCH: '修改用户', DELETE: '删除用户' }],
-    [/\/mail$/, { PATCH: '保存邮箱设置', PUT: '保存邮箱设置', POST: '保存邮箱设置' }],
-    [/\/system$/, { PATCH: '保存系统设置', PUT: '保存系统设置' }],
-    [/\/app$/, { PATCH: '修改基础信息' }],
-    [/\/popup$/, { PATCH: '修改弹窗设置' }],
-    [/\/config$/, { PATCH: '保存后台配置', PUT: '保存后台配置' }]
-  ];
-  const preciseAction = precise.find(([pattern, labels]) => pattern.test(path) && labels[method])?.[1]?.[method];
-  if (preciseAction) return `${preciseAction}${item.success === false ? '失败' : '成功'}`;
   const targets = [[/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '弹窗设置'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
   const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
   return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
 }
 
-function filteredAuditItems() {
+function renderAuditLog() {
   const user = ($('auditUserFilter')?.value || '').trim().toLowerCase(); const ip = ($('auditIpFilter')?.value || '').trim().toLowerCase();
   const keyword = ($('auditKeywordFilter')?.value || '').trim().toLowerCase(); const actionType = $('auditActionFilter')?.value || ''; const risk = $('auditRiskFilter')?.value || '';
   const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0; const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
   const items = state.auditItems.filter((item) => {
     const account = auditAccount(item); const description = describeAuditEntry(item); const itemTime = new Date(item.time).getTime(); const action = String(item.action || '');
     if (user && !auditUserSearchText(item).toLowerCase().includes(user)) return false;
-    if (ip && !`${item.ip || ''} ${item.ipAddress || ''}`.toLowerCase().includes(ip)) return false;
+    if (ip && !String(item.ip || '').toLowerCase().includes(ip)) return false;
     const riskLabel = { high: '高风险', medium: '需关注', low: '无风险' }[auditRisk(item)];
     const searchable = `${auditUserSearchText(item)} ${description} ${action} ${auditPath(item)} ${item.ip || ''} ${formatDateTime(item.time)} ${riskLabel} ${JSON.stringify(item)}`;
     if (keyword && !searchable.toLowerCase().includes(keyword)) return false;
@@ -1444,14 +1391,9 @@ function filteredAuditItems() {
     if (risk && auditRisk(item) !== risk) return false;
     if (start && itemTime < start) return false; if (end && itemTime > end) return false; return true;
   });
-  return items;
-}
-
-function renderAuditLog() {
-  const items = filteredAuditItems();
   const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
   $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
-  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const userInfo = auditUserDetails(item); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><div class="audit-user"><strong>${escapeHtml(userInfo.displayName)}</strong><span>${escapeHtml(userInfo.account)}</span>${userInfo.email ? `<small>${escapeHtml(userInfo.email)}</small>` : ''}</div></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div class="audit-ip"><span>${escapeHtml(item.ip || '未记录')}</span>${item.ipAddress ? `<small>${escapeHtml(item.ipAddress)}</small>` : ''}</div></td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><strong>${escapeHtml(auditAccount(item))}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td>${escapeHtml(item.ip || '未记录')}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
 }
 
 function syncAuditAutoRefresh(view) {
@@ -1672,9 +1614,7 @@ function renderUsers() {
   }
   const panel = tbody.closest('.panel');
   ensureUserBatchTools(panel);
-  const userQuery = ($('userListSearch')?.value || '').trim().toLowerCase();
-  const visibleUsers = state.users.filter((user) => !userQuery || `${user.displayName || ''} ${user.username || ''} ${user.email || ''} ${user.id || ''}`.toLowerCase().includes(userQuery));
-  setPanelCounter(panel, 'userTotalCount', visibleUsers.length === state.users.length ? state.users.length : `${visibleUsers.length}/${state.users.length}`);
+  setPanelCounter(panel, 'userTotalCount', state.users.length);
   let cards = $('userCards');
   if (!cards && panel) {
     cards = document.createElement('div');
@@ -1687,7 +1627,7 @@ function renderUsers() {
   cards.hidden = !!panel?.classList.contains('is-collapsed');
   cards.innerHTML = '';
 
-  visibleUsers.forEach((user) => {
+  state.users.forEach((user) => {
     const endpoint = `${location.origin}/api/toolbox/config?key=${encodeURIComponent(user.apiKey || '')}`;
     const card = document.createElement('div');
     card.className = 'user-card';
@@ -1801,7 +1741,8 @@ function ensureUserBatchTools(panel) {
   bar.id = 'userBatchBar';
   bar.className = 'batch-bar collapsible-body';
   bar.innerHTML = `
-    <input id="userListSearch" type="search" autocomplete="off" placeholder="搜索昵称、用户名或邮箱">
+    <input id="userListSearch" type="search" autocomplete="off"
+      placeholder="搜索昵称、用户名或邮箱">
     <label class="checkline"><input id="userSelectAll" type="checkbox"> 全选</label>
     <button data-user-batch="enable">批量启用</button>
     <button data-user-batch="disable">批量停用</button>
@@ -2066,6 +2007,50 @@ function renderSystemSettings() {
   renderClientVariantSettings();
   renderOrders();
   renderBuiltinFunctions();
+  renderMenuIcons();
+}
+
+async function loadMenuIcons() {
+  const result = await api('/api/admin/menu-icons');
+  state.menuIcons = result.icons || [];
+  if (isSuper() && state.system) state.system.menuIcons = state.menuIcons;
+}
+
+function renderMenuIcons() {
+  const root = $('menuIconRows');
+  if (!root || !isSuper()) return;
+  root.innerHTML = state.menuIcons.length ? state.menuIcons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无默认菜单图标。</p>';
+  root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { state.menuIcons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
+}
+
+function addMenuIcon() {
+  const name = $('globalMenuIconName').value.trim();
+  const url = $('globalMenuIconUrl').value.trim();
+  if (!name || !url) throw new Error('请填写图标名称和图标链接。');
+  state.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url });
+  $('globalMenuIconName').value = ''; $('globalMenuIconUrl').value = ''; renderMenuIcons();
+}
+
+async function uploadImage(input, endpoint) {
+  const file = input?.files?.[0];
+  if (!file) throw new Error('请先选择图片。');
+  if (file.size > 2 * 1024 * 1024) throw new Error('图标图片不能超过 2MB。');
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  return api(endpoint, { method: 'POST', body: JSON.stringify({ dataUrl }) });
+}
+
+async function uploadGlobalMenuIcon() {
+  const name = $('globalMenuIconName').value.trim();
+  if (!name) throw new Error('请先填写图标名称。');
+  const result = await uploadImage($('globalMenuIconFile'), '/api/super/system/menu-icon');
+  state.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url: result.url });
+  renderMenuIcons(); setStatus('图标已上传，请点击保存图标库。');
+}
+
+async function saveMenuIcons() {
+  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = state.menuIcons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: state.menuIcons }) });
+  await loadMenuIcons(); renderAll(); setStatus('全局默认菜单图标已保存。');
 }
 
 function renderBuiltinFunctions() {
@@ -2461,6 +2446,28 @@ function clientPreviewMarkup(type) {
             <div class="original-button-grid">
               ${Array.from({ length: 12 }).map((_, index) => `<span>${['控制面板', '设备管理', '系统清理', '运行命令'][index % 4]}</span>`).join('')}
             </div>
+          </main>
+        </div>
+      </div>`;
+  }
+  if (type === 'audio') {
+    return `
+      <div class="client-preview tuner-preview">
+        <div class="preview-window-bar tuner-window-bar"><span>音频工具箱火山版</span><i></i><i></i><i></i></div>
+        <div class="tuner-preview-body">
+          <aside style="max-width:52px;background:#232b31">
+            <div class="tuner-brand"><b>Y</b></div>
+            <em class="active">⚙</em><em>◉</em><em>▦</em><em>✣</em>
+          </aside>
+          <main>
+            <section class="tuner-section">
+              <h4 style="color:#f00">宿主插件类:</h4>
+              <div class="tuner-buttons"><span>插件列表</span><span>Waves 清理</span><span>插件残留清理</span><span>扫描重置</span><span>效果备份</span></div>
+            </section>
+            <section class="tuner-section">
+              <h4 style="color:#f00">系统优化类:</h4>
+              <div class="tuner-buttons"><span>系统工具箱</span><span>系统激活</span><span>系统更新设置</span><span>系统防护开关</span><span>电源高性能</span></div>
+            </section>
           </main>
         </div>
       </div>`;
@@ -3073,6 +3080,16 @@ function renderManagedSections() {
 
   $('manageScopeName').value = pos.name || '';
   if ($('manageScopeOrder')) $('manageScopeOrder').value = Number(pos.orderIndex || 0) + 1;
+  const sidebarItem = pos.scope === 'page' ? (state.config.sidebar || []).find(item => item.id === pos.pageId) : null;
+  const iconUrl = sidebarItem?.icon || '';
+  const preset = $('manageScopeIconPreset');
+  if (preset) {
+    preset.innerHTML = '<option value="">使用内置图标</option>' + state.menuIcons.map(item => `<option value="${escapeAttr(item.url)}">${escapeHtml(item.name)}</option>`).join('');
+    preset.value = state.menuIcons.some(item => item.url === iconUrl) ? iconUrl : '';
+    preset.disabled = pos.scope !== 'page';
+    preset.onchange = () => { if (preset.value) $('manageScopeIconUrl').value = preset.value; };
+  }
+  if ($('manageScopeIconUrl')) { $('manageScopeIconUrl').value = iconUrl; $('manageScopeIconUrl').disabled = pos.scope !== 'page'; }
   const previous = sectionSelect.value;
   const sections = ensureSections(pos.container);
   sectionSelect.innerHTML = '';
@@ -3634,6 +3651,118 @@ function ensureIpLocationPanel() {
   $('testIpLocationBtn').onclick = async () => { const result = await api('/api/super/ip-location/test', { method: 'POST', body: JSON.stringify({ ip: $('ipLocationTestInput').value.trim() }) }); $('ipLocationTestResult').textContent = `${result.ip} · ${result.address}`; };
 }
 
+function normalizeButtonContentLayout(value) {
+  return value === 'icon_top' ? 'icon_top' : 'icon_left';
+}
+
+function buttonLayoutPages() {
+  const rows = [];
+  const seen = new Set();
+  (state.config?.sidebar || []).forEach((item) => {
+    if (!item?.id || item.id === 'settings' || seen.has(item.id)) return;
+    seen.add(item.id);
+    rows.push({ id: item.id, name: item.name || state.config?.pages?.[item.id]?.title || item.id });
+  });
+  Object.entries(state.config?.pages || {}).forEach(([id, page]) => {
+    if (!id || id === 'settings' || seen.has(id)) return;
+    seen.add(id);
+    rows.push({ id, name: page?.title || page?.name || id });
+  });
+  return rows;
+}
+
+function normalizedButtonLayoutRules(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return Object.fromEntries(['icon_left', 'icon_top'].map((id) => [id, {
+    enabled: source[id]?.enabled === true,
+    pages: Array.isArray(source[id]?.pages) ? [...new Set(source[id].pages.filter(Boolean).map(String))] : []
+  }]));
+}
+
+function canEditOwnButtonLayout() {
+  return !isTemplateMode() && (!state.targetUserId || state.targetUserId === state.currentUser?.id);
+}
+
+function renderButtonContentLayout(value, rulesValue = state.config?.app?.button_content_layout_rules) {
+  const normalized = normalizeButtonContentLayout(value);
+  const rules = normalizedButtonLayoutRules(rulesValue);
+  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
+    input.checked = input.value === normalized;
+    input.disabled = !canEditOwnButtonLayout();
+    const option = input.closest('.button-layout-option');
+    if (!option) return;
+    let picker = option.querySelector('.button-layout-page-picker');
+    if (!picker) {
+      picker = document.createElement('div');
+      picker.className = 'button-layout-page-picker';
+      option.appendChild(picker);
+    }
+    const rule = rules[input.value];
+    const pages = buttonLayoutPages();
+    const disabled = !canEditOwnButtonLayout();
+    const selectedNames = pages.filter((page) => rule.pages.includes(page.id)).map((page) => page.name);
+    picker.innerHTML = `<label class="button-layout-scope-toggle"><input data-layout-scope-enabled type="checkbox" ${rule.enabled ? 'checked' : ''} ${disabled ? 'disabled' : ''}> 仅指定页面</label>
+      <details class="button-layout-page-dropdown" ${rule.enabled && rule.pages.length ? 'open' : ''}>
+        <summary>${selectedNames.length ? `已选择 ${selectedNames.length} 个页面` : '选择页面（未选择默认全部）'}</summary>
+        <div class="button-layout-page-options">${pages.map((page) => `<label><input data-layout-page type="checkbox" value="${escapeAttr(page.id)}" ${rule.pages.includes(page.id) ? 'checked' : ''} ${disabled || !rule.enabled ? 'disabled' : ''}> ${escapeHtml(page.name)}</label>`).join('') || '<small>暂无可选页面</small>'}</div>
+      </details>`;
+    picker.onclick = (event) => event.stopPropagation();
+    picker.querySelector('[data-layout-scope-enabled]').onchange = () => saveButtonLayoutRule(input.value, picker).catch((error) => setStatus(error.message, true));
+    picker.querySelectorAll('[data-layout-page]').forEach((box) => box.onchange = () => saveButtonLayoutRule(input.value, picker).catch((error) => setStatus(error.message, true)));
+  });
+}
+
+async function saveButtonLayoutRule(layoutId, picker) {
+  if (!canEditOwnButtonLayout()) throw new Error('按钮排列只能由每个用户修改自己的配置，不能修改全局模板或其他用户。');
+  const rules = normalizedButtonLayoutRules(state.config?.app?.button_content_layout_rules);
+  rules[layoutId] = {
+    enabled: picker.querySelector('[data-layout-scope-enabled]').checked,
+    pages: [...picker.querySelectorAll('[data-layout-page]:checked')].map((box) => box.value)
+  };
+  const saved = await api(appApiPath(), { method: 'PATCH', body: JSON.stringify({ button_content_layout_rules: rules }) });
+  state.config = saved;
+  renderButtonContentLayout(saved.app?.button_content_layout, saved.app?.button_content_layout_rules);
+  setStatus(rules[layoutId].enabled && rules[layoutId].pages.length ? '按钮排列页面范围已保存。' : '未限定页面，将对全部页面生效。');
+}
+
+let savingButtonContentLayout = false;
+async function saveButtonContentLayout(nextValue) {
+  if (savingButtonContentLayout) return;
+  if (!canEditOwnButtonLayout()) {
+    renderButtonContentLayout(state.config.app?.button_content_layout, state.config.app?.button_content_layout_rules);
+    setStatus('按钮排列只能由每个用户修改自己的配置，不能修改全局模板或其他用户。', true);
+    return;
+  }
+  const previous = normalizeButtonContentLayout(state.config.app?.button_content_layout);
+  const next = normalizeButtonContentLayout(nextValue);
+  if (next === previous) return;
+  const status = $('buttonContentLayoutStatus');
+  savingButtonContentLayout = true;
+  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = true; });
+  if (status) {
+    status.classList.remove('error', 'success');
+    status.textContent = '正在保存按钮布局……';
+  }
+  try {
+    const saved = await api(appApiPath(), { method: 'PATCH', body: JSON.stringify({ button_content_layout: next }) });
+    state.config = saved;
+    renderButtonContentLayout(saved.app?.button_content_layout, saved.app?.button_content_layout_rules);
+    if (status) {
+      status.classList.add('success');
+      status.textContent = '按钮布局已保存，工具箱将在 5 秒内同步。';
+    }
+  } catch (error) {
+    renderButtonContentLayout(previous);
+    if (status) {
+      status.classList.add('error');
+      status.textContent = `按钮布局保存失败：${error.message}`;
+    }
+  } finally {
+    savingButtonContentLayout = false;
+    document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = !canEditOwnButtonLayout(); });
+  }
+}
+
 async function saveAppLoginSettings() {
   if (state.currentUser?.role !== 'super') {
     setStatus('只有总管理员可以保存登录页设置。', true);
@@ -3753,6 +3882,21 @@ async function renamePosition() {
   }
 
   await saveWholeConfig('位置名称已保存。');
+}
+
+async function savePositionIcon() {
+  const pos = parsePositionValue($('manageScope').value);
+  if (!pos || pos.scope !== 'page') throw new Error('工具箱标签不使用左侧菜单图标。');
+  const sidebarItem = (state.config.sidebar || []).find(item => item.id === pos.pageId);
+  if (!sidebarItem) throw new Error('当前页面不在左侧菜单中。');
+  sidebarItem.icon = $('manageScopeIconUrl').value.trim();
+  await saveWholeConfig('菜单图标已保存。');
+}
+
+async function uploadPositionIcon() {
+  const result = await uploadImage($('manageScopeIconFile'), '/api/admin/menu-icon/upload');
+  $('manageScopeIconUrl').value = result.url;
+  await savePositionIcon();
 }
 
 function ensureSidebarOrder() {
@@ -5521,6 +5665,8 @@ document.addEventListener('click', (event) => {
 });
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));
+if ($('saveScopeIconBtn')) $('saveScopeIconBtn').onclick = () => savePositionIcon().catch((error) => setStatus(error.message, true));
+if ($('uploadScopeIconBtn')) $('uploadScopeIconBtn').onclick = () => uploadPositionIcon().catch((error) => setStatus(error.message, true));
 $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(error.message, true));
 $('deleteScopeBtn').onclick = () => deletePosition().catch((error) => setStatus(error.message, true));
 $('addSectionBtn').onclick = () => addSection().catch((error) => setStatus(error.message, true));
@@ -5573,6 +5719,9 @@ if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => s
 if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
 if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
+if ($('addMenuIconBtn')) $('addMenuIconBtn').onclick = () => { try { addMenuIcon(); } catch (error) { setStatus(error.message, true); } };
+if ($('uploadMenuIconBtn')) $('uploadMenuIconBtn').onclick = () => uploadGlobalMenuIcon().catch((error) => setStatus(error.message, true));
+if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
 if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));
@@ -5581,9 +5730,11 @@ if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMod
 if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () => copyCurrentToTemplate().catch((error) => setStatus(error.message, true));
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
 if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
+document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
+  input.addEventListener('change', () => {
+    if (input.checked) saveButtonContentLayout(input.value);
+  });
+});
 
 loadAll().catch((error) => handleLoadFailure(error, isAuthFailure(error)));
 updateAddTargetState();
-
-
-
