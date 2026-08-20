@@ -981,7 +981,9 @@ def ensure_config_defaults(config):
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
         changed = True
-    button_content_layout = "icon_top" if str(app.get("button_content_layout") or "").strip().lower() == "icon_top" else "icon_left"
+    button_content_layout = str(app.get("button_content_layout") or "").strip().lower()
+    if button_content_layout not in ("none", "icon_left", "icon_top"):
+        button_content_layout = "icon_left"
     if app.get("button_content_layout") != button_content_layout:
         app["button_content_layout"] = button_content_layout
         changed = True
@@ -1457,7 +1459,8 @@ def apply_app_patch(config, patch):
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
         elif key == "button_content_layout":
-            app[key] = "icon_top" if str(value or "").strip().lower() == "icon_top" else "icon_left"
+            normalized = str(value or "").strip().lower()
+            app[key] = normalized if normalized in ("none", "icon_left", "icon_top") else "icon_left"
         elif key == "button_content_layout_rules" and isinstance(value, dict):
             app[key] = value
         else:

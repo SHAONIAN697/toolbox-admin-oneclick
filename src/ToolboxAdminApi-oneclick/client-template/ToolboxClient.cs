@@ -8456,12 +8456,13 @@ namespace ToolboxClient
 
         private static string NormalizeButtonContentLayout(string value)
         {
-            return String.Equals((value ?? "").Trim(), "icon_top", StringComparison.OrdinalIgnoreCase) ? "icon_top" : "icon_left";
+            string normalized = (value ?? "").Trim().ToLowerInvariant();
+            return normalized == "none" || normalized == "icon_top" ? normalized : "icon_left";
         }
 
         private bool ButtonContentLayoutAppliesToCurrentPage()
         {
-            return !buttonContentLayoutScopeEnabled || buttonContentLayoutPages.Count == 0 || buttonContentLayoutPages.Contains(currentPage ?? "");
+            return buttonContentLayout != "none" && (!buttonContentLayoutScopeEnabled || buttonContentLayoutPages.Count == 0 || buttonContentLayoutPages.Contains(currentPage ?? ""));
         }
 
         private void ApplyBusinessButtonLayout(Control control, bool hasConfiguredIcon)

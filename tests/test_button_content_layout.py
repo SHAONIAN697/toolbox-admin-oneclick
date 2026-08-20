@@ -37,7 +37,7 @@ class ButtonContentLayoutBackendTests(unittest.TestCase):
 
     def test_valid_values_save_and_invalid_value_normalizes(self):
         cfg = self.app.default_config()
-        for value in ("icon_left", "icon_top"):
+        for value in ("none", "icon_left", "icon_top"):
             self.app.apply_app_patch(cfg, {"button_content_layout": value})
             self.assertEqual(value, cfg["app"]["button_content_layout"])
         self.app.apply_app_patch(cfg, {"button_content_layout": "other"})

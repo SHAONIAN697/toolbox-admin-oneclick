@@ -724,7 +724,8 @@ def normalize_view_mode(value, default="grid"):
 
 
 def normalize_button_content_layout(value):
-    return "icon_top" if str(value or "").strip().lower() == "icon_top" else "icon_left"
+    value = str(value or "").strip().lower()
+    return value if value in ("none", "icon_left", "icon_top") else "icon_left"
 
 
 def normalize_feature_settings(config):

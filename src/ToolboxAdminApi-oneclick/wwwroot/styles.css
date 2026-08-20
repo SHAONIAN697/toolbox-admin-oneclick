@@ -3622,6 +3622,7 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
 .button-layout-setting legend { margin-bottom: 8px; color: var(--text); font-weight: 700; }
 .button-layout-options { display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr)); gap: 10px; }
 .button-layout-option { display: grid; grid-template-columns: auto 116px minmax(0, 1fr); gap: 10px; align-items: center; min-height: 76px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; }
+.button-layout-option.layout-none { grid-column: 1 / -1; min-height: 62px; }
 .button-layout-option:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .button-layout-option input { width: 16px; height: 16px; margin: 0; }
 .button-layout-option strong { line-height: 1.45; }

@@ -3683,7 +3683,7 @@ function ensureIpLocationPanel() {
 }
 
 function normalizeButtonContentLayout(value) {
-  return value === 'icon_top' ? 'icon_top' : 'icon_left';
+  return value === 'none' ? 'none' : (value === 'icon_top' ? 'icon_top' : 'icon_left');
 }
 
 function buttonLayoutPages() {
@@ -3722,6 +3722,7 @@ function renderButtonContentLayout(value, rulesValue = state.config?.app?.button
     input.disabled = !canEditOwnButtonLayout();
     const option = input.closest('.button-layout-option');
     if (!option) return;
+    if (input.value === 'none') return;
     let picker = option.querySelector('.button-layout-page-picker');
     if (!picker) {
       picker = document.createElement('div');
