@@ -68,6 +68,11 @@ class MenuIconLibraryTests(unittest.TestCase):
             self.assertNotIn('id="uploadScopeIconBtn"', markup)
             self.assertIn("function renderScopeIconPicker", script)
             self.assertNotIn("function uploadPositionIcon", script)
+            config_load = script.index("state.config = await api(configApiPath())")
+            deferred_icons = script.index("loadMenuIcons().then", config_load)
+            self.assertGreater(deferred_icons, config_load)
+            failure_body = script.split("function handleLoadFailure", 1)[1].split("function showLogin", 1)[0]
+            self.assertIn("if (!silent)", failure_body)
             self.assertIn("$('manageScopeIconUrl').value = '';", script)
             self.assertIn("const icons = Array.isArray(state.system?.menuIcons)", script)
             self.assertNotIn("state.system.menuIcons = state.menuIcons", script)

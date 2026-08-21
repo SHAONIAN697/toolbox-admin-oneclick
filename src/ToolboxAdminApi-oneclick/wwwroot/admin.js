@@ -608,8 +608,6 @@ async function loadAll() {
     await loadAdminAnnouncementsSafe();
     await loadBuiltinFunctions();
     await loadClientVariants();
-    await loadMenuIcons();
-
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
     renderAll();
@@ -617,12 +615,26 @@ async function loadAll() {
     showUnreadNoticePopup();
     showAdminAnnouncementPopup();
     showToast('配置读取成功。', 'success');
+    loadMenuIcons().then(() => {
+      renderMenuIcons();
+      if (state.activeView === 'buttons') renderManagedSections();
+    }).catch((error) => {
+      state.menuIcons = [];
+      state.menuIconLibraryError = error.message || '图标库读取失败。';
+      renderMenuIcons();
+    });
   } catch (error) {
     handleLoadFailure(error, isAuthFailure(error));
   }
 }
 
 function handleLoadFailure(error, silent = false) {
+  if (!silent) {
+    const message = error?.message || '配置读取失败，请刷新后重试。';
+    setStatus(message, true);
+    showToast(message, 'error');
+    return;
+  }
   const status = $('status');
   if (status) status.textContent = '';
   state.token = '';
