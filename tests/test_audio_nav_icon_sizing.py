@@ -25,7 +25,7 @@ class AudioNavIconSizingTests(unittest.TestCase):
     def test_client_config_sync_is_fast_and_does_not_stack_requests(self):
         for source_dir in ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick"):
             source = (ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
-            self.assertIn("refreshTimer.Interval = 15000;", source)
+            self.assertIn("refreshTimer.Interval = 5000;", source)
             self.assertIn("refreshTimer.Tick += delegate { LoadConfigAsync(false); };", source)
             self.assertIn("DownloadConfigText(WithRuntimeToken(configUrl", source)
             self.assertIn("return DownloadText(url, 4000);", source)

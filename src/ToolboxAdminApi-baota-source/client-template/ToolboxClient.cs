@@ -342,7 +342,7 @@ namespace ToolboxClient
             BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 15000;
+            refreshTimer.Interval = 5000;
             refreshTimer.Tick += delegate { LoadConfigAsync(false); };
             Shown += delegate
             {
