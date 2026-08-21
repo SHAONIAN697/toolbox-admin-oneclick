@@ -9384,6 +9384,13 @@ namespace ToolboxClient
                 result.Download = ResolveDownloadRequest(originalUrl);
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
+                    if (IsServerDownloadEndpoint(result.Download.Url) && !IsUsefulDownloadFileName(result.Download.FileName))
+                    {
+                        string fallbackName = SafeDownloadFileName(result.DisplayName);
+                        if (String.IsNullOrWhiteSpace(fallbackName)) fallbackName = "download";
+                        if (!Path.HasExtension(fallbackName)) fallbackName += ".exe";
+                        result.Download.FileName = fallbackName;
+                    }
                     result.FileName = SafeDownloadFileName(result.Download.FileName);
                     string dir = EnsureWritableDownloadDirectory();
                     result.Path = Path.Combine(dir, result.FileName);
@@ -9516,9 +9523,17 @@ namespace ToolboxClient
             return request;
         }
 
+        private static bool IsServerDownloadEndpoint(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return false;
+            return uri.AbsolutePath.Equals("/api/toolbox/builtin-download", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool ShouldFastStartDownload(DownloadRequest request)
         {
             if (request == null || request.BrowserOnly) return false;
+            if (IsServerDownloadEndpoint(request.Url)) return true;
 
             string directName = DirectDownloadFileNameFromText(request.Url);
             if (String.IsNullOrWhiteSpace(directName)) directName = DirectDownloadFileNameFromText(request.OriginalUrl);
@@ -13070,6 +13085,7 @@ namespace ToolboxClient
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
+                content.AutoScrollPosition = Point.Empty;
 
                 int available = TunerContentWidth();
                 ClientSettings currentSettings = LoadClientSettings();
@@ -13184,7 +13200,8 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
+                content.Visible = true;
+                content.AutoScrollPosition = Point.Empty;
                 EndContentRender();
             }
         }
