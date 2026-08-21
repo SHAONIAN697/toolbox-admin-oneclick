@@ -777,8 +777,9 @@ namespace ToolboxClient
             FormBorderStyle = FormBorderStyle.None;
             BackColor = Color.FromArgb(248, 249, 250);
             ForeColor = Color.FromArgb(28, 28, 28);
-            MinimumSize = new Size(700, 500);
-            Size = new Size(700, 500);
+            MinimumSize = new Size(760, 560);
+            Rectangle audioWorkArea = Screen.FromControl(this).WorkingArea;
+            Size = new Size(Math.Min(860, Math.Max(760, audioWorkArea.Width - 24)), Math.Min(640, Math.Max(560, audioWorkArea.Height - 24)));
 
             TableLayoutPanel root = new TableLayoutPanel
             {
@@ -2460,8 +2461,9 @@ namespace ToolboxClient
             int height = IntValue(app, "window_height", Height);
             if (!initialSizeApplied && audioVariant)
             {
-                MinimumSize = new Size(700, 500);
-                Size = new Size(700, 500);
+                MinimumSize = new Size(760, 560);
+                Rectangle audioWorkArea = Screen.FromControl(this).WorkingArea;
+                Size = new Size(Math.Min(860, Math.Max(760, audioWorkArea.Width - 24)), Math.Min(640, Math.Max(560, audioWorkArea.Height - 24)));
                 initialSizeApplied = true;
             }
             else if (!initialSizeApplied && tunerVariant)
