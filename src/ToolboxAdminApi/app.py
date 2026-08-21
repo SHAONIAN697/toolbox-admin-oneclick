@@ -1,9 +1,12 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import hashlib
 import hmac
+import base64
+import ipaddress
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import smtplib
@@ -12,12 +15,14 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 ROOT = Path(__file__).resolve().parent
 WWW = ROOT / "wwwroot"
@@ -29,8 +34,6 @@ NOTICES_PATH = DATA / "notices.json"
 ADMIN_ANNOUNCEMENTS_PATH = DATA / "admin-announcements.json"
 ADMIN_ANNOUNCEMENT_READS_PATH = DATA / "admin-announcement-reads.json"
 ORDERS_PATH = DATA / "orders.json"
-AGENT_APPLICATIONS_PATH = DATA / "agent-applications.json"
-AGENT_LOGS_PATH = DATA / "agent-logs.json"
 SESSIONS_PATH = DATA / "sessions.json"
 USER_TEMPLATE_PATH = DATA / "user-template.json"
 USER_DATA = DATA / "users"
@@ -41,6 +44,15 @@ CLIENT_ICON = ROOT / "assets" / "toolbox-default.ico"
 CLIENT_CACHE = DATA / "client-cache"
 CLIENT_JOBS = DATA / "client-jobs"
 CLIENT_INTEGRITY_PATH = DATA / "client-integrity.json"
+CLIENT_DOWNLOAD_STATS_PATH = DATA / "client-download-stats.json"
+AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
+IP_CACHE_PATH = DATA / "ip-location-cache.json"
+BACKUP_DIR = DATA / "security-backups"
+VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
+MENU_ICON_DIR = WWW / "uploads" / "menu-icons"
+MENU_ICON_LIBRARY_DIR = WWW / "uploads" / "menu-icon-library"
+MENU_ICON_LIBRARY_TOKEN_CACHE = {}
+MENU_ICON_LIBRARY_LOGIN_LOCK = threading.Lock()
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
@@ -95,12 +107,21 @@ def ensure_studio_overview_page(config):
             first["buttons"] = []
             changed = True
     return changed
-ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "dev-token")
+ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "").strip()
 SESSIONS = {}
+SECURITY_LOCK = threading.RLock()
+LOGIN_ATTEMPTS = {}
+SESSION_TTL_SECONDS = max(900, int(os.environ.get("TOOLBOX_SESSION_TTL_SECONDS", "43200")))
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES = 8
 CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
 ADMIN_ANNOUNCEMENT_LOCK = threading.RLock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
+RESET_CODES = {}
+RESET_CODE_REQUESTS = {}
+RESET_VERIFY_ATTEMPTS = {}
+RESET_CODE_COOLDOWN_SECONDS = 60
 DEFAULT_CLIENT_VARIANT = "original"
 CLIENT_VARIANTS = {
     "original": {
@@ -120,6 +141,12 @@ CLIENT_VARIANTS = {
         "label": "调音师工具箱简约版",
         "file": "tuner",
         "description": "按本地调音师工具箱的白色标题栏、左侧导航、折叠分组和底部状态栏复刻，继续使用当前后台配置和内置下载模块。",
+    },
+    "audio": {
+        "id": "audio",
+        "label": "音频工具箱火山版",
+        "file": "audio",
+        "description": "按火山源码新增的音频工具箱界面。",
     },
     "portal": {
         "id": "portal",
@@ -171,6 +198,24 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("empty datetime")
+    native_parser = getattr(datetime, "fromisoformat", None)
+    if native_parser:
+        return native_parser(text.replace("Z", "+00:00"))
+    normalized = text.replace("Z", "+0000")
+    if re.search(r"[+-]\d\d:\d\d$", normalized):
+        normalized = normalized[:-3] + normalized[-2:]
+    for pattern in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(normalized, pattern)
+        except ValueError:
+            pass
+    raise ValueError("invalid datetime")
+
+
 def random_hex(n=24):
     return secrets.token_hex(n)
 
@@ -192,16 +237,239 @@ def sha256_hex(text):
 
 
 def stored_password(password):
-    salt = random_hex(16)
-    return f"sha256${salt}${sha256_hex(salt + password)}"
+    salt = secrets.token_bytes(16)
+    rounds = 310000
+    digest = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${salt.hex()}${digest.hex()}"
 
 
 def check_password(password, stored):
+    if str(stored or "").startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt, digest = stored.split("$", 3)
+            actual = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), bytes.fromhex(salt), int(rounds))
+            return hmac.compare_digest(actual, bytes.fromhex(digest))
+        except (TypeError, ValueError):
+            return False
     try:
         kind, salt, digest = stored.split("$", 2)
     except ValueError:
         return False
     return kind == "sha256" and sha256_hex(salt + password) == digest
+
+
+def client_ip(handler):
+    peer = str(handler.client_address[0] or "").strip()
+    try:
+        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted_proxy = False
+    if trusted_proxy or os.environ.get("TOOLBOX_TRUST_PROXY", "").lower() in ("1", "true", "yes"):
+        forwarded = (handler.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        real_ip = (handler.headers.get("X-Real-IP") or "").strip()
+        for candidate in (forwarded, real_ip):
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate[:64]
+            except ValueError:
+                continue
+    return peer[:64]
+
+
+def fetch_json_url(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ToolboxAdmin/1.0"})
+    with urllib.request.urlopen(req, timeout=4) as response:
+        charset = response.headers.get_content_charset() or ("gbk" if "pconline" in url else "utf-8")
+        return json.loads(response.read().decode(charset, "replace"))
+
+
+IP_LOCATION_REGIONS = (
+    ("beijing", ("\\u5317\\u4eac", "beijing")), ("shanghai", ("\\u4e0a\\u6d77", "shanghai")),
+    ("tianjin", ("\\u5929\\u6d25", "tianjin")), ("chongqing", ("\\u91cd\\u5e86", "chongqing")),
+    ("inner-mongolia", ("\\u5185\\u8499\\u53e4", "inner mongolia")),
+    ("guangxi", ("\\u5e7f\\u897f", "guangxi")), ("tibet", ("\\u897f\\u85cf", "tibet", "xizang")),
+    ("ningxia", ("\\u5b81\\u590f", "ningxia")), ("xinjiang", ("\\u65b0\\u7586", "xinjiang")),
+    ("hebei", ("\\u6cb3\\u5317", "hebei")), ("shanxi", ("\\u5c71\\u897f", "shanxi")),
+    ("liaoning", ("\\u8fbd\\u5b81", "liaoning")), ("jilin", ("\\u5409\\u6797", "jilin")),
+    ("heilongjiang", ("\\u9ed1\\u9f99\\u6c5f", "heilongjiang")),
+    ("jiangsu", ("\\u6c5f\\u82cf", "jiangsu")), ("zhejiang", ("\\u6d59\\u6c5f", "zhejiang")),
+    ("anhui", ("\\u5b89\\u5fbd", "anhui")), ("fujian", ("\\u798f\\u5efa", "fujian")),
+    ("jiangxi", ("\\u6c5f\\u897f", "jiangxi")), ("shandong", ("\\u5c71\\u4e1c", "shandong")),
+    ("henan", ("\\u6cb3\\u5357", "henan")), ("hubei", ("\\u6e56\\u5317", "hubei")),
+    ("hunan", ("\\u6e56\\u5357", "hunan")), ("guangdong", ("\\u5e7f\\u4e1c", "guangdong")),
+    ("hainan", ("\\u6d77\\u5357", "hainan")), ("sichuan", ("\\u56db\\u5ddd", "sichuan")),
+    ("guizhou", ("\\u8d35\\u5dde", "guizhou")), ("yunnan", ("\\u4e91\\u5357", "yunnan")),
+    ("shaanxi", ("\\u9655\\u897f", "shaanxi")), ("gansu", ("\\u7518\\u8083", "gansu")),
+    ("qinghai", ("\\u9752\\u6d77", "qinghai")), ("taiwan", ("\\u53f0\\u6e7e", "taiwan")),
+    ("hong-kong", ("\\u9999\\u6e2f", "hong kong")), ("macao", ("\\u6fb3\\u95e8", "macao", "macau")),
+)
+IP_PROVIDER_PRIORITY = {"amap": 0, "tencent": 1, "baidu": 2, "pconline": 3, "system": 4, "ip-api": 5, "ipapi-co": 6, "ip-sb": 7}
+
+
+def ip_location_region_key(address):
+    value = str(address or "").strip().lower()
+    for key, aliases in IP_LOCATION_REGIONS:
+        decoded_aliases = [alias.encode("ascii").decode("unicode_escape") if "\\u" in alias else alias for alias in aliases]
+        if any(alias.lower() in value for alias in decoded_aliases):
+            return key
+    return re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", value)
+
+
+def select_ip_location(results, cfg):
+    if not results:
+        return "未知位置"
+    if cfg.get("mode") == "first":
+        return results[0]["address"]
+    buckets = {}
+    for result in results:
+        key = ip_location_region_key(result.get("address"))
+        if key:
+            buckets.setdefault(key, []).append(result)
+    if not buckets:
+        return results[0]["address"]
+    threshold = max(1, int(cfg.get("threshold") or 2))
+    qualified = [items for items in buckets.values() if len(items) >= threshold]
+    candidates = qualified or list(buckets.values())
+    winning = max(candidates, key=lambda items: (
+        len(items),
+        -min(IP_PROVIDER_PRIORITY.get(item.get("provider"), 99) for item in items),
+    ))
+    return min(winning, key=lambda item: (
+        IP_PROVIDER_PRIORITY.get(item.get("provider"), 99),
+        0 if re.search(r"[\u3400-\u9fff]", str(item.get("address") or "")) else 1,
+    ))["address"]
+
+
+def locate_ip(ip, bypass_cache=False):
+    if not ip or ip in ("127.0.0.1", "::1"):
+        return "本机/内网"
+    cache = read_json(IP_CACHE_PATH, {})
+    cfg = read_system_settings().get("ipLocation") or {}
+    cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
+    if not bypass_cache and time.time() - cached.get("time", 0) < 86400 * 30:
+        cached_address = str(cached.get("address") or "")
+        if not cfg.get("unifiedChinese", True) or re.search(r"[\u3400-\u9fff]", cached_address):
+            return cached_address
+    providers = cfg.get("providers") or ["system"]
+    if cfg.get("mode") == "system": providers = ["system"]
+    results = []
+    for provider in providers:
+        address = ""
+        try:
+            if provider == "system":
+                try:
+                    data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                    address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+                except Exception:
+                    data = fetch_json_url("https://ipwho.is/" + quote(ip))
+                    if data.get("success") is not False: address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "amap" and cfg.get("amapKey"):
+                data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
+                if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
+            elif provider == "baidu" and cfg.get("baiduKey"):
+                data = fetch_json_url("https://api.map.baidu.com/location/ip?coor=bd09ll&ip=%s&ak=%s" % (quote(ip), quote(cfg["baiduKey"])))
+                detail = (data.get("content") or {}).get("address_detail") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("province", "city", "district", "street", "street_number"))
+            elif provider == "tencent" and cfg.get("tencentKey"):
+                data = fetch_json_url("https://apis.map.qq.com/ws/location/v1/ip?ip=%s&key=%s" % (quote(ip), quote(cfg["tencentKey"])))
+                detail = (data.get("result") or {}).get("ad_info") or {}
+                if data.get("status") == 0: address = "".join(str(detail.get(k) or "") for k in ("nation", "province", "city", "district"))
+            elif provider == "ip-api":
+                data = fetch_json_url("http://ip-api.com/json/%s?lang=zh-CN" % quote(ip))
+                if data.get("status") == "success": address = "".join(str(data.get(k) or "") for k in ("country", "regionName", "city", "district"))
+            elif provider == "ipapi-co":
+                data = fetch_json_url("https://ipapi.co/%s/json/" % quote(ip))
+                if not data.get("error"): address = "".join(str(data.get(k) or "") for k in ("country_name", "region", "city"))
+            elif provider == "ip-sb":
+                data = fetch_json_url("https://api.ip.sb/geoip/%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+            elif provider == "pconline":
+                data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
+                address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+        except Exception:
+            continue
+        if address:
+            results.append({"provider": provider, "address": address})
+            if cfg.get("mode") == "first": break
+    address = select_ip_location(results, cfg)
+    if cfg.get("unifiedChinese", True):
+        repeated = re.fullmatch(r"(.+?)\\1", address, flags=re.I)
+        if repeated: address = repeated.group(1)
+        location_names = {
+            "Autonomous Region": "",
+            "Hulun Buir": "呼伦贝尔市",
+            "Hulunbuir": "呼伦贝尔市","Beijing": "北京市", "Shanghai": "上海市", "Tianjin": "天津市", "Chongqing": "重庆市", "Hebei": "河北省", "Shanxi": "山西省", "Liaoning": "辽宁省", "Jilin": "吉林省", "Heilongjiang": "黑龙江省", "Jiangsu": "江苏省", "Zhejiang": "浙江省", "Anhui": "安徽省", "Fujian": "福建省", "Jiangxi": "江西省", "Shandong": "山东省", "Henan": "河南省", "Hubei": "湖北省", "Hunan": "湖南省", "Guangdong": "广东省", "Hainan": "海南省", "Sichuan": "四川省", "Guizhou": "贵州省", "Yunnan": "云南省", "Shaanxi": "陕西省", "Gansu": "甘肃省", "Qinghai": "青海省", "Taiwan": "台湾省", "Inner Mongolia": "内蒙古自治区", "Guangxi": "广西壮族自治区", "Tibet": "西藏自治区", "Ningxia": "宁夏回族自治区", "Xinjiang": "新疆维吾尔自治区", "Hong Kong": "香港特别行政区", "Macao": "澳门特别行政区", "Macau": "澳门特别行政区"}
+        for english in sorted(location_names, key=len, reverse=True):
+            address = re.sub(re.escape(english), location_names[english], address, flags=re.I)
+        if re.search(r"[\u3400-\u9fff]", address):
+            address = re.sub(r"[A-Za-z][A-Za-z ._-]*", "", address).strip()
+        address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
+    cache[ip] = {"address": address, "time": time.time()}
+    write_json(IP_CACHE_PATH, cache)
+    return address
+
+
+def read_audit_events(limit=5000):
+    if not AUDIT_LOG_PATH.exists(): return {"items": []}
+    rows = []
+    with AUDIT_LOG_PATH.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+                row["eventKey"] = hashlib.sha256(line.rstrip("\r\n").encode("utf-8")).hexdigest()
+                rows.append(row)
+            except Exception: continue
+    users = read_users().get("users", [])
+    users_by_id = {str(user.get("id") or ""): user for user in users}
+    users_by_name = {str(user.get("username") or ""): user for user in users}
+    ip_cache = read_json(IP_CACHE_PATH, {})
+    for row in rows:
+        actor = users_by_id.get(str(row.get("actorId") or "")) or users_by_name.get(str(row.get("actor") or ""))
+        if actor:
+            row.setdefault("actorDisplayName", actor.get("displayName") or actor.get("username") or "")
+            row.setdefault("actorEmail", actor.get("email") or "")
+        cached_ip = ip_cache.get(str(row.get("ip") or ""))
+        if isinstance(cached_ip, dict):
+            row.setdefault("ipAddress", str(cached_ip.get("address") or ""))
+    return {"items": list(reversed(rows[-limit:]))}
+
+
+def audit_event(action, actor=None, target="", handler=None, details=None, success=True):
+    ip = client_ip(handler) if handler else ""
+    entry = {
+        "time": now_iso(), "action": action, "success": bool(success),
+        "actorId": (actor or {}).get("id", ""), "actor": (actor or {}).get("username", ""),
+        "actorDisplayName": (actor or {}).get("displayName", ""),
+        "actorEmail": (actor or {}).get("email", ""),
+        "target": str(target or ""), "ip": ip,
+        "ipAddress": locate_ip(ip) if ip else "",
+        "details": details or {},
+    }
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SECURITY_LOCK, AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def security_backup(label, paths):
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination = BACKUP_DIR / f"{stamp}-{safe_id(label)}"
+    destination.mkdir(parents=True, exist_ok=False)
+    for path in paths:
+        path = Path(path)
+        if path.exists() and path.is_file():
+            shutil.copy2(path, destination / path.name)
+    return destination
+
+
+def revoke_user_sessions(user_id, keep_token=""):
+    with SECURITY_LOCK:
+        expired = [token for token, row in SESSIONS.items()
+                   if row.get("userId") == user_id and token != keep_token]
+        for token in expired:
+            SESSIONS.pop(token, None)
+        if expired:
+            save_sessions()
+    return len(expired)
 
 
 def hmac_sha256_hex(secret, text):
@@ -287,14 +555,14 @@ def announcement_is_available(item):
     publish_time = str(item.get("publish_time") or "").strip()
     if publish_time:
         try:
-            if datetime.fromisoformat(publish_time.replace("Z", "+00:00")) > datetime.now(timezone.utc):
+            if parse_iso_datetime(publish_time) > datetime.now(timezone.utc):
                 return False
         except Exception:
             pass
     expires = str(item.get("expire_time") or "").strip()
     if expires:
         try:
-            if datetime.fromisoformat(expires.replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+            if parse_iso_datetime(expires) <= datetime.now(timezone.utc):
                 return False
         except Exception:
             pass
@@ -417,6 +685,11 @@ def default_config():
             "theme_count": 19,
             "allow_client_theme": True,
             "default_view_mode": "grid",
+            "button_content_layout": "icon_left",
+            "button_content_layout_rules": {
+                "icon_left": {"enabled": False, "pages": []},
+                "icon_top": {"enabled": False, "pages": []},
+            },
             "bg_path": "",
             "output_dir": "",
         },
@@ -453,6 +726,11 @@ def normalize_view_mode(value, default="grid"):
     if text in ("grid", "宫格", "gongge", "gridmode", "grid_mode"):
         return "grid"
     return default
+
+
+def normalize_button_content_layout(value):
+    value = str(value or "").strip().lower()
+    return value if value in ("none", "icon_left", "icon_top") else "icon_left"
 
 
 def normalize_feature_settings(config):
@@ -499,7 +777,8 @@ def normalize_page_locks(config):
             lock["enabled"] = enabled
             changed = True
         password = str(lock.get("password") or "").strip()
-        if password and not password.startswith("sha256$"):
+        if password and not password.startswith(("sha256$", "pbkdf2_sha256$")):
+            lock["password_plain"] = password
             password = stored_password(password)
         if lock.get("password") != password:
             lock["password"] = password
@@ -534,7 +813,8 @@ def normalize_page_lock_groups(config):
             groups[group_id] = group
             changed = True
         password = str(group.get("password") or "").strip()
-        if password and not password.startswith("sha256$"):
+        if password and not password.startswith(("sha256$", "pbkdf2_sha256$")):
+            group["password_plain"] = password
             password = stored_password(password)
         if group.get("password") != password:
             group["password"] = password
@@ -626,7 +906,48 @@ def client_variant_info(value):
 
 
 def public_client_variants():
-    return {"variants": [dict(CLIENT_VARIANTS[key]) for key in ("original", "studio", "tuner", "portal")]}
+    configured = read_system_settings().get("clientVariants") or {}
+    counts = read_client_download_counts()
+    variants = []
+    for variant_id in ("original", "studio", "tuner", "audio", "portal"):
+        item = dict(CLIENT_VARIANTS[variant_id])
+        values = configured.get(variant_id) if isinstance(configured.get(variant_id), dict) else {}
+        for key in ("name", "badge", "description", "coverMode", "coverUrl"):
+            if key in values:
+                item[key] = values[key]
+        item["downloadCount"] = counts.get(variant_id, 0)
+        variants.append(item)
+    return {"variants": variants}
+
+
+def read_client_download_counts():
+    data = read_json(CLIENT_DOWNLOAD_STATS_PATH, {})
+    return {
+        variant_id: max(0, int(data.get(variant_id) or 0))
+        for variant_id in CLIENT_VARIANTS
+    } if isinstance(data, dict) else {variant_id: 0 for variant_id in CLIENT_VARIANTS}
+
+
+def record_client_download(variant):
+    variant = normalize_client_variant(variant)
+    with SECURITY_LOCK:
+        counts = read_client_download_counts()
+        counts[variant] = counts.get(variant, 0) + 1
+        write_json(CLIENT_DOWNLOAD_STATS_PATH, counts)
+        return counts[variant]
+
+
+def record_client_build_download(job_id, actor):
+    if is_super(actor):
+        return False
+    with CLIENT_BUILD_LOCK:
+        job = CLIENT_BUILD_JOBS.get(job_id)
+        if not job or job.get("downloadCounted"):
+            return False
+        job["downloadCounted"] = True
+        variant = job.get("variant")
+    record_client_download(variant)
+    return True
 
 
 def request_client_variant(handler, body=None):
@@ -704,6 +1025,25 @@ def ensure_config_defaults(config):
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
+        changed = True
+    button_content_layout = normalize_button_content_layout(app.get("button_content_layout"))
+    if app.get("button_content_layout") != button_content_layout:
+        app["button_content_layout"] = button_content_layout
+        changed = True
+    rules = app.get("button_content_layout_rules")
+    if not isinstance(rules, dict):
+        rules = {}
+    normalized_rules = {}
+    for layout_id in ("icon_left", "icon_top"):
+        source = rules.get(layout_id) if isinstance(rules.get(layout_id), dict) else {}
+        pages = []
+        for page_id in source.get("pages") or []:
+            value = str(page_id or "").strip()
+            if value and value not in pages:
+                pages.append(value[:120])
+        normalized_rules[layout_id] = {"enabled": source.get("enabled") is True, "pages": pages[:100]}
+    if app.get("button_content_layout_rules") != normalized_rules:
+        app["button_content_layout_rules"] = normalized_rules
         changed = True
     if normalize_feature_settings(config):
         changed = True
@@ -784,6 +1124,9 @@ def should_sync_default_config(actor, user_id):
 
 
 def write_config_for_actor(config, user_id, actor):
+    path = user_config_path(user_id)
+    if path.exists():
+        security_backup(f"config-{user_id}", [path])
     write_config(config, user_id)
 
 
@@ -964,9 +1307,13 @@ def public_toolbox_config(user_id):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
     app.pop("password_plain", None)
+    for lock in (cfg.get("page_locks") or {}).values():
+        if isinstance(lock, dict): lock.pop("password_plain", None)
+    for group in (cfg.get("page_lock_groups") or {}).values():
+        if isinstance(group, dict): group.pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
-    normalize_client_config(cfg)
+    normalize_client_config(cfg, user_id=user_id)
     path = user_config_path(user_id)
     meta = dict(cfg.get("_sync") or {})
     meta["userId"] = user_id
@@ -975,9 +1322,77 @@ def public_toolbox_config(user_id):
     return cfg
 
 
-def normalize_client_config(cfg):
-    inject_update_entry(cfg)
+GLOBAL_BUILTIN_PREFIX = "builtin:"
 
+
+def builtin_function_rows(include_urls=False):
+    rows = []
+    configured = {
+        str(item.get("id")): item
+        for item in read_system_settings().get("builtinFunctions") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    for function_id, label in SCRIPT_LABELS.items():
+        item = configured.pop(function_id, {})
+        row = {"id": function_id, "name": str(item.get("name") or label),
+               "enabled": item.get("enabled", True) is not False, "builtIn": True,
+               "action": str(item.get("action") or "script")}
+        if not include_urls and not row["enabled"]:
+            continue
+        if include_urls:
+            row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
+            row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+        rows.append(row)
+    for function_id, item in configured.items():
+        if item.get("enabled", True) is False:
+            continue
+        row = {"id": function_id, "name": str(item.get("name") or "未命名功能"), "enabled": True,
+               "builtIn": False, "action": str(item.get("action") or "download")}
+        if include_urls:
+            row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
+            row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+        rows.append(row)
+    return rows
+
+
+def find_builtin_function(function_id):
+    return next((item for item in builtin_function_rows(True) if item.get("id") == function_id), None)
+
+
+def proxy_builtin_download(handler):
+    api_key = (handler.query.get("key", [""])[0] or handler.headers.get("X-Client-Api-Key", "")).strip()
+    if not find_user_by_api_key(api_key):
+        return handler.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
+    item = find_builtin_function((handler.query.get("id", [""])[0] or "").strip())
+    if not item:
+        return handler.send_json({"error": "内置功能不存在或已停用。"}, 404)
+    headers = {"User-Agent": "ToolboxClient/1.0"}
+    if handler.headers.get("Range"):
+        headers["Range"] = handler.headers.get("Range")
+    request = urllib.request.Request(item.get("target") or item.get("downloadUrl"), headers=headers)
+    try:
+        upstream = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        upstream = exc
+    status = getattr(upstream, "status", None) or upstream.getcode()
+    if status >= 400:
+        upstream.close()
+        return handler.send_json({"error": "下载源暂时不可用。"}, 502)
+    handler.send_response(status)
+    for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition", "ETag", "Last-Modified"):
+        value = upstream.headers.get(header)
+        if value:
+            handler.send_header(header, value)
+    if not upstream.headers.get("Content-Type"):
+        handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Cache-Control", "private, no-store")
+    handler.end_headers()
+    if handler.command.upper() != "HEAD":
+        shutil.copyfileobj(upstream, handler.wfile, length=1024 * 256)
+    upstream.close()
+
+
+def normalize_client_config(cfg, user_id=""):
     def visible_buttons(buttons):
         return [button for button in buttons or [] if (button or {}).get("enabled", True) is not False]
 
@@ -987,10 +1402,35 @@ def normalize_client_config(cfg):
         action = button.get("action", "link")
         target = get_target(button)
         if action == "download":
+            files = normalize_download_files(button.get("files"))
+            if files:
+                button["files"] = files
+                button["download_mode"] = "multiple" if len(files) > 1 or button.get("download_mode") == "multiple" else "single"
             button["download_url"] = target
             button.setdefault("url", target)
             button.setdefault("target", target)
         elif action == "script":
+            if str(target).startswith(GLOBAL_BUILTIN_PREFIX) or str(target) in SCRIPT_LABELS:
+                function_id = str(target)[len(GLOBAL_BUILTIN_PREFIX):] if str(target).startswith(GLOBAL_BUILTIN_PREFIX) else str(target)
+                item = find_builtin_function(function_id)
+                if item and item.get("action") == "download" and (item.get("target") or item.get("downloadUrl")):
+                    user = find_user_by_id(user_id) if user_id else None
+                    api_key = (user or {}).get("apiKey") or ""
+                    button["action"] = "download"
+                    button["download_url"] = "/api/toolbox/builtin-download?id=" + quote(function_id) + "&key=" + quote(api_key)
+                    button["url"] = button["download_url"]
+                    button["target"] = button["download_url"]
+                    button["name"] = button.get("name") or item.get("name")
+                    return
+                if item and item.get("action") not in ("", "script") and item.get("target"):
+                    global_action = item.get("action")
+                    global_target = item.get("target")
+                    button["action"] = global_action
+                    button["target"] = global_target
+                    if global_action == "link": button["url"] = global_target
+                    elif global_action == "cmd": button["command"] = global_target
+                    elif global_action == "winget": button["package_id"] = global_target
+                    return
             button["script_id"] = target
             button.setdefault("script", target)
             if target not in SCRIPT_LABELS:
@@ -1022,32 +1462,8 @@ def normalize_client_config(cfg):
 
 
 def inject_update_entry(cfg):
-    app = cfg.get("app") or {}
-    update_url = (app.get("update_url") or app.get("client_update_url") or "").strip()
-    if not update_url:
-        return
-    title = (app.get("update_title") or "工具箱更新").strip() or "工具箱更新"
-    button_name = (app.get("update_button") or "下载最新版").strip() or "下载最新版"
-    page_id = "__client_update"
-    sidebar = cfg.setdefault("sidebar", [])
-    sidebar[:] = [item for item in sidebar if item.get("id") != page_id]
-    sidebar.insert(0, {"id": page_id, "name": title})
-    pages = cfg.setdefault("pages", {})
-    pages[page_id] = {
-        "title": title,
-        "sections": [{
-            "title": "",
-            "buttons": [{
-                "id": "client_update_download",
-                "name": button_name,
-                "action": "download",
-                "download_url": update_url,
-                "url": update_url,
-                "target": update_url,
-                "description": "下载并安装最新版工具箱"
-            }]
-        }]
-    }
+    # 更新由客户端启动时的版本弹窗处理，不再向侧栏注入独立更新页面。
+    return
 
 
 def public_brand_config():
@@ -1079,12 +1495,16 @@ def apply_app_patch(config, patch):
             app["password_enabled"] = False
         elif key == "password_enabled":
             app["password_enabled"] = True
-        elif key == "password" and value:
-            plain = str(value)
-            app["password"] = stored_password(plain)
+        elif key == "password":
+            plain = str(value or "")
+            app["password"] = stored_password(plain) if plain else ""
             app["password_plain"] = plain
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
+        elif key == "button_content_layout":
+            app[key] = normalize_button_content_layout(value)
+        elif key == "button_content_layout_rules" and isinstance(value, dict):
+            app[key] = value
         else:
             app[key] = value
     ensure_config_defaults(config)
@@ -1098,8 +1518,32 @@ def read_users():
     store.setdefault("users", [])
     store.setdefault("inviteCodes", [])
     store.setdefault("settings", {})
+    changed = False
+    for user in store["users"]:
+        if (user.get("id") == "admin" and check_password("dev-token", user.get("passwordHash", ""))
+                and len(ADMIN_TOKEN) >= 12 and ADMIN_TOKEN.lower() != "dev-token"):
+            user["passwordHash"] = stored_password(ADMIN_TOKEN)
+            changed = True
+            audit_event("default_admin_password_migrated", actor=user)
+        if user.get("role") == "agent":
+            user["role"] = "user"
+            changed = True
+        for key in ("parentAgentId", "parentAgentName", "balance"):
+            if key in user:
+                user.pop(key, None)
+                changed = True
+    for invite in store["inviteCodes"]:
+        for key in ("ownerAgentId", "ownerAgentName", "boundAgentId", "boundAgentName", "isAgentInvite", "price", "chargedAmount"):
+            if key in invite:
+                invite.pop(key, None)
+                changed = True
+        if invite.get("registerRole") == "agent":
+            invite["registerRole"] = "user"
+            changed = True
     cleanup_invites(store)
     if not store["users"]:
+        if len(ADMIN_TOKEN) < 12 or ADMIN_TOKEN.lower() in ("dev-token", "password", "admin"):
+            raise RuntimeError("首次启动必须通过 TOOLBOX_ADMIN_TOKEN 设置至少 12 位的管理员密码。")
         admin = {
             "id": "admin",
             "username": "admin",
@@ -1114,6 +1558,8 @@ def read_users():
         store["users"] = [admin]
         write_json(USERS_PATH, store)
         write_config(read_config(""), "admin")
+    elif changed:
+        write_json(USERS_PATH, store)
     return store
 
 
@@ -1130,15 +1576,15 @@ def is_super(user):
 
 
 def is_agent(user):
-    return user.get("role") == "agent"
+    return False
 
 
 def can_manage_users(user):
-    return is_super(user) or is_agent(user)
+    return is_super(user)
 
 
 def role_label(role):
-    return {"super": "总管理员", "agent": "代理", "user": "普通用户"}.get(role, "普通用户")
+    return {"super": "总管理员", "user": "普通用户"}.get(role, "普通用户")
 
 
 def is_login_api_path(path):
@@ -1148,18 +1594,31 @@ def is_login_api_path(path):
 
 def handle_desktop_login(handler):
     body = handler.read_body()
-    user = find_user_by_username((body.get("username") or "").strip())
+    username = (body.get("username") or "").strip()
+    key = f"{client_ip(handler)}:{username.lower()}"
+    now = time.time()
+    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_MAX_FAILURES:
+        audit_event("login_blocked", target=username, handler=handler, success=False)
+        return handler.send_json({"error": "登录尝试过多，请 15 分钟后重试。"}, 429)
+    user = find_user_by_username(username)
     if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
+        attempts.append(now)
+        LOGIN_ATTEMPTS[key] = attempts
+        audit_event("login_failed", target=username, handler=handler, success=False)
         return handler.send_json({"error": "用户名或密码错误。"}, 401)
+    LOGIN_ATTEMPTS.pop(key, None)
     token = random_hex(32)
-    user = mark_user_login(user["id"])
-    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
+    user = mark_user_login(user["id"], handler)
+    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso(), "lastSeenAt": now_iso()}
     save_sessions()
+    audit_event("login_success", actor=user, handler=handler)
     return handler.send_json({"token": token, "user": public_user(user)})
 
 
 def default_system_settings():
     return {
+        "builtinFunctions": [],
         "locations": {
             "noticeAreaTitle": "全部未读",
             "adminSystemName": "系统管理",
@@ -1171,10 +1630,6 @@ def default_system_settings():
             "currency": "CNY",
             "allowNegativeBalance": False,
             "orderCooldownMinutes": 30,
-            "allowApply": False,
-            "applyReviewMode": "manual",
-            "defaultBalance": 0,
-            "applyDescription": "",
         },
         "pay": {
             "wechatChannel": "disabled",
@@ -1192,6 +1647,23 @@ def default_system_settings():
             "cleanupIntervalMinutes": 360,
             "maxCacheEntries": 30,
         },
+        "clientVariants": {
+            variant_id: {
+                "name": variant.get("label", ""),
+                "badge": "",
+                "description": variant.get("description", ""),
+                "coverMode": "default",
+                "coverUrl": "",
+            }
+            for variant_id, variant in CLIENT_VARIANTS.items()
+        },
+        "menuIcons": [],
+        "menuIconLibraryUrl": "",
+        "menuIconLibraryToken": "",
+        "menuIconLibraryUsername": "",
+        "menuIconLibraryPassword": "",
+        "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
+            "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
             "enabled": True,
             "secret": "",
@@ -1368,16 +1840,261 @@ def public_system_settings():
     data = read_system_settings()
     public = json.loads(json.dumps(data, ensure_ascii=False))
     public.pop("popup", None)
-    public.setdefault("agent", {})["pendingApplyCount"] = agent_pending_application_count()
+    public["builtinFunctions"] = builtin_function_rows(True)
     if isinstance(public.get("integrity"), dict):
         public["integrity"]["secret"] = ""
         public["integrity"]["secretConfigured"] = True
     return public
 
 
+def cache_library_icon(source_url, token=""):
+    digest = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+    parsed = urlparse(source_url)
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp"):
+        suffix = ".png"
+    target = MENU_ICON_LIBRARY_DIR / (digest + suffix)
+    if target.exists() and target.stat().st_size:
+        return "/uploads/menu-icon-library/" + target.name
+    headers = {"User-Agent": "ToolboxAdmin/1.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(source_url, headers=headers)
+    with urllib.request.urlopen(request, timeout=12) as response:
+        raw = response.read(5 * 1024 * 1024 + 1)
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+    if len(raw) > 5 * 1024 * 1024 or not raw or (content_type and "image/" not in content_type):
+        raise ValueError("图标文件格式无效或超过 5MB")
+    MENU_ICON_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + "." + secrets.token_hex(4) + ".tmp")
+    temporary.write_bytes(raw)
+    os.replace(str(temporary), str(target))
+    return "/uploads/menu-icon-library/" + target.name
+
+
+def openlist_icon_sources(library_url, token):
+    parsed = urlparse(library_url)
+    path = unquote(parsed.path or "/")
+    if path.startswith("/d/"):
+        path = path[2:]
+    elif path == "/d":
+        path = "/"
+    api_url = parsed.scheme + "://" + parsed.netloc + "/api/fs/list"
+    body = json.dumps({"path": path, "password": "", "page": 1, "per_page": 500, "refresh": False}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "ToolboxAdmin/1.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(api_url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8-sig"))
+    if int(payload.get("code") or 0) != 200:
+        message = str(payload.get("message") or "目录接口拒绝访问")
+        if "guest user is disabled" in message.lower():
+            message = "目录禁止游客访问，请填写图标库登录账号和密码或访问令牌"
+        raise ValueError(message)
+    content = ((payload.get("data") or {}).get("content") or [])
+    rows = []
+    image_suffixes = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp")
+    for item in content:
+        name = str(item.get("name") or "").strip()
+        if item.get("is_dir") or not name.lower().endswith(image_suffixes):
+            continue
+        raw_url = str(item.get("raw_url") or "").strip()
+        if not raw_url:
+            raw_url = parsed.scheme + "://" + parsed.netloc + "/d" + quote(path.rstrip("/") + "/" + name, safe="/")
+        rows.append({"name": Path(name).stem, "url": raw_url})
+    return rows
+
+
+def openlist_login(library_url, username, password):
+    parsed = urlparse(library_url)
+    api_url = parsed.scheme + "://" + parsed.netloc + "/api/auth/login"
+    body = json.dumps({"username": username, "password": password, "otp_code": ""}).encode("utf-8")
+    request = urllib.request.Request(api_url, data=body, headers={"Content-Type": "application/json", "User-Agent": "ToolboxAdmin/1.0"}, method="POST")
+    with urllib.request.urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read(1024 * 1024).decode("utf-8-sig"))
+    if int(payload.get("code") or 0) != 200:
+        raise ValueError(payload.get("message") or "图标库账号或密码错误")
+    token = str((payload.get("data") or {}).get("token") or "").strip()
+    if not token:
+        raise ValueError("图标库登录成功但未返回访问令牌")
+    return token
+
+
+def cached_openlist_token(library_url, username, password, force=False):
+    parsed = urlparse(library_url)
+    key = (parsed.scheme.lower(), parsed.netloc.lower(), str(username))
+    with MENU_ICON_LIBRARY_LOGIN_LOCK:
+        cached = MENU_ICON_LIBRARY_TOKEN_CACHE.get(key) or {}
+        if not force and cached.get("token") and time.time() - float(cached.get("created") or 0) < 1800:
+            return cached["token"]
+        token = openlist_login(library_url, username, password)
+        MENU_ICON_LIBRARY_TOKEN_CACHE[key] = {"token": token, "created": time.time()}
+        return token
+
+
+def read_remote_menu_icons(library_url, token="", username="", password=""):
+    library_url = str(library_url or "").strip()
+    if not library_url:
+        return [], ""
+    try:
+        token = str(token or "").strip()
+        account_login = not token and bool(username and password)
+        if account_login:
+            token = cached_openlist_token(library_url, str(username), str(password))
+        headers = {
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
+            "User-Agent": "ToolboxAdmin/1.0",
+        }
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        request = urllib.request.Request(library_url, headers=headers)
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read(1024 * 1024 + 1)
+            final_url = response.geturl()
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+        if len(raw) > 1024 * 1024:
+            raise ValueError("图标库清单不能超过 1MB")
+        text = raw.decode("utf-8-sig", errors="replace").strip()
+        sources = None
+        if "text/html" in content_type or text[:100].lower().startswith(("<!doctype html", "<html")):
+            try:
+                sources = openlist_icon_sources(library_url, token)
+            except ValueError as exc:
+                if account_login and "token is invalidated" in str(exc).lower():
+                    token = cached_openlist_token(library_url, str(username), str(password), force=True)
+                    sources = openlist_icon_sources(library_url, token)
+                else:
+                    raise
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                payload = payload.get("icons", payload.get("files", []))
+            if isinstance(payload, list):
+                sources = payload
+        except json.JSONDecodeError:
+            pass
+        if sources is None:
+            if "<html" in text[:500].lower() or "<!doctype" in text[:100].lower():
+                raise ValueError("该地址是网页而不是图标清单，请填写访问令牌后重试")
+            sources = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "|" in line:
+                    name, icon_url = line.split("|", 1)
+                    sources.append({"name": name.strip(), "url": icon_url.strip()})
+                else:
+                    sources.append(line)
+
+        icons = []
+        used = set()
+        candidates = []
+        for source in sources[:500]:
+            if isinstance(source, str):
+                icon_url = source.strip()
+                name = Path(urlparse(icon_url).path).stem
+            elif isinstance(source, dict):
+                icon_url = str(source.get("url") or source.get("downloadUrl") or source.get("link") or "").strip()
+                name = str(source.get("name") or source.get("title") or "").strip()
+            else:
+                continue
+            icon_url = urljoin(final_url, icon_url)
+            if not http_url(icon_url) or icon_url in used:
+                continue
+            used.add(icon_url)
+            candidates.append((icon_url, (name or Path(urlparse(icon_url).path).stem or "图标")[:80]))
+        if not candidates:
+            directory = unquote(urlparse(library_url).path or "/")
+            raise ValueError("目录读取成功，但未发现图片文件，当前目录：" + directory)
+
+        def build_icon(candidate):
+            icon_url, icon_name = candidate
+            cached_url = cache_library_icon(icon_url, token)
+            return {
+                "id": "library_" + hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:16],
+                "name": icon_name,
+                "url": cached_url,
+                "library": True,
+            }
+
+        failures = []
+        with ThreadPoolExecutor(max_workers=min(12, len(candidates))) as executor:
+            futures = {executor.submit(build_icon, candidate): candidate for candidate in candidates}
+            for future in as_completed(futures):
+                try:
+                    icons.append(future.result())
+                except Exception as exc:
+                    failures.append(str(exc))
+        icons.sort(key=lambda item: item.get("name", "").lower())
+        if not icons:
+            raise ValueError("目录中发现图片，但缓存全部失败：" + (failures[0] if failures else "未知错误"))
+        return icons, ""
+    except Exception as exc:
+        return [], "图标库读取失败：" + str(exc)[:160]
+
+
 def write_system_settings(body):
     current = read_system_settings()
-    for section in ("locations", "agent", "pay", "integrity", "clientBuild"):
+    if "menuIconLibraryUrl" in body:
+        library_url = str(body.get("menuIconLibraryUrl") or "").strip()[:1000]
+        if library_url and not http_url(library_url):
+            raise ValueError("图标库清单地址必须是 HTTP/HTTPS 地址。")
+        current["menuIconLibraryUrl"] = library_url
+    if "menuIconLibraryToken" in body:
+        current["menuIconLibraryToken"] = str(body.get("menuIconLibraryToken") or "").strip()[:4000]
+    if "menuIconLibraryUsername" in body:
+        current["menuIconLibraryUsername"] = str(body.get("menuIconLibraryUsername") or "").strip()[:200]
+    if "menuIconLibraryPassword" in body:
+        current["menuIconLibraryPassword"] = str(body.get("menuIconLibraryPassword") or "")[:500]
+    if isinstance(body.get("menuIcons"), list):
+        current["menuIconLibraryUrl"] = ""
+        current["menuIconLibraryToken"] = ""
+        current["menuIconLibraryUsername"] = ""
+        current["menuIconLibraryPassword"] = ""
+        rows = []
+        used = set()
+        for source in body.get("menuIcons")[:500]:
+            if not isinstance(source, dict):
+                continue
+            icon_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("icon")
+            name = str(source.get("name") or "").strip()[:80]
+            url = str(source.get("url") or "").strip()[:1000]
+            valid_url = http_url(url) or (url if url.startswith("/uploads/menu-icons/") else "")
+            if not name or not valid_url or icon_id in used:
+                continue
+            used.add(icon_id)
+            rows.append({"id": icon_id, "name": name, "url": valid_url})
+        current["menuIcons"] = rows
+    if isinstance(body.get("builtinFunctions"), list):
+        rows = []
+        used = set()
+        for source in body.get("builtinFunctions"):
+            if not isinstance(source, dict):
+                continue
+            function_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("builtin")
+            if function_id in used:
+                raise ValueError("内置功能 ID 不能重复。")
+            name = str(source.get("name") or "").strip()
+            action = str(source.get("action") or ("script" if function_id in SCRIPT_LABELS else "download"))
+            if action not in ("link", "download", "cmd", "script", "winget"):
+                raise ValueError("不支持的内置功能动作。")
+            target = str(source.get("target") or source.get("downloadUrl") or "").strip()
+            if action in ("link", "download") and target and not http_url(target):
+                raise ValueError("网页和下载动作必须填写 HTTP/HTTPS 地址。")
+            if not name:
+                raise ValueError("内置功能名称不能为空。")
+            if action != "script" and not target:
+                raise ValueError("内置功能的目标内容不能为空。")
+            if action == "script" and function_id not in SCRIPT_LABELS and not target:
+                raise ValueError("自定义内置功能请选择或填写要执行的内置功能。")
+            used.add(function_id)
+            rows.append({"id": function_id, "name": name, "action": action, "target": target,
+                         "downloadUrl": target if action == "download" else "",
+                         "enabled": source.get("enabled", True) is not False})
+        current["builtinFunctions"] = rows
+    for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants", "ipLocation"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -1418,28 +2135,33 @@ def write_system_settings(body):
                 except Exception:
                     current["clientBuild"]["maxCacheEntries"] = 30
             continue
+        if section == "clientVariants":
+            variants = current.setdefault("clientVariants", {})
+            for variant_id, values in patch.items():
+                if variant_id not in CLIENT_VARIANTS or not isinstance(values, dict):
+                    continue
+                existing = variants.setdefault(variant_id, {})
+                mode = str(values.get("coverMode") or existing.get("coverMode") or "default").strip()
+                cover_url = str(values.get("coverUrl") or "").strip()
+                if mode not in ("default", "upload", "url"):
+                    mode = "default"
+                if mode == "url" and not http_url(cover_url):
+                    cover_url = ""
+                if mode == "upload" and not cover_url.startswith("/uploads/variant-covers/"):
+                    cover_url = ""
+                variants[variant_id] = {
+                    "name": str(values.get("name") or CLIENT_VARIANTS[variant_id].get("label") or "").strip()[:80],
+                    "badge": str(values.get("badge") or "").strip()[:80],
+                    "description": str(values.get("description") or "").strip()[:500],
+                    "coverMode": mode,
+                    "coverUrl": cover_url,
+                }
+            continue
         for key, value in patch.items():
             if isinstance(current.get(section, {}).get(key), dict) and isinstance(value, dict):
                 current[section][key].update(value)
             else:
                 current.setdefault(section, {})[key] = value
-    try:
-        current["agent"]["invitePrice"] = max(0, float(current.get("agent", {}).get("invitePrice") or 0))
-    except Exception:
-        current["agent"]["invitePrice"] = 0
-    try:
-        current["agent"]["orderCooldownMinutes"] = max(0, int(current.get("agent", {}).get("orderCooldownMinutes") or 0))
-    except Exception:
-        current["agent"]["orderCooldownMinutes"] = 30
-    current.setdefault("agent", {})
-    current["agent"]["allowApply"] = current["agent"].get("allowApply") is True
-    current["agent"]["applyReviewMode"] = "auto" if current["agent"].get("applyReviewMode") == "auto" else "manual"
-    try:
-        current["agent"]["defaultBalance"] = max(0, float(current["agent"].get("defaultBalance") or 0))
-    except Exception:
-        current["agent"]["defaultBalance"] = 0
-    current["agent"]["applyDescription"] = str(current["agent"].get("applyDescription") or "").strip()
-    current["agent"]["currency"] = str(current["agent"].get("currency") or "CNY").strip()[:12] or "CNY"
     pay = current.setdefault("pay", {})
     for selected_key in (pay.get("wechatChannel"), pay.get("alipayChannel")):
         if selected_key and selected_key != "disabled" and isinstance(pay.get(selected_key), dict):
@@ -1472,245 +2194,19 @@ def write_orders(data):
     write_json(ORDERS_PATH, data)
 
 
-def read_agent_applications():
-    data = read_json(AGENT_APPLICATIONS_PATH, {"applications": []})
-    data.setdefault("applications", [])
-    return data
-
-
-def write_agent_applications(data):
-    data.setdefault("applications", [])
-    write_json(AGENT_APPLICATIONS_PATH, data)
-
-
-def read_agent_logs():
-    data = read_json(AGENT_LOGS_PATH, {"logs": []})
-    data.setdefault("logs", [])
-    return data
-
-
-def write_agent_logs(data):
-    data.setdefault("logs", [])
-    write_json(AGENT_LOGS_PATH, data)
-
-
-def log_agent_action(action, user, actor=None, detail=""):
-    try:
-        data = read_agent_logs()
-        data["logs"].insert(0, {
-            "id": new_id("agentlog"),
-            "action": action,
-            "userId": user.get("id") if user else "",
-            "username": user.get("username") if user else "",
-            "displayName": user_display_name(user),
-            "actorId": actor.get("id") if actor else "system",
-            "actorName": user_display_name(actor) if actor else "系统",
-            "detail": detail,
-            "createdAt": now_iso(),
-        })
-        data["logs"] = data["logs"][:1000]
-        write_agent_logs(data)
-    except Exception:
-        pass
-
-
-def agent_application_status_label(status):
-    return {"pending": "待审核", "approved": "已通过", "rejected": "已拒绝"}.get(status, "待审核")
-
-
-def public_agent_application(row):
-    user = find_user_by_id(row.get("userId", "")) if row.get("userId") else None
-    reviewer = find_user_by_id(row.get("reviewerId", "")) if row.get("reviewerId") else None
-    return {
-        "id": row.get("id"),
-        "userId": row.get("userId", ""),
-        "username": row.get("username") or (user or {}).get("username", ""),
-        "displayName": row.get("displayName") or user_display_name(user),
-        "contact": row.get("contact", ""),
-        "reason": row.get("reason", ""),
-        "status": row.get("status", "pending"),
-        "statusLabel": agent_application_status_label(row.get("status", "pending")),
-        "rejectReason": row.get("rejectReason", ""),
-        "reviewerId": row.get("reviewerId", ""),
-        "reviewerName": row.get("reviewerName") or user_display_name(reviewer),
-        "reviewedAt": row.get("reviewedAt", ""),
-        "createdAt": row.get("createdAt", ""),
-        "updatedAt": row.get("updatedAt", ""),
-    }
-
-
-def agent_pending_application_count():
-    try:
-        return sum(1 for row in read_agent_applications().get("applications", []) if row.get("status") == "pending")
-    except Exception:
-        return 0
-
-
-def latest_agent_application_for_user(user_id):
-    rows = [
-        row for row in read_agent_applications().get("applications", [])
-        if row.get("userId") == user_id
-    ]
-    rows.sort(key=lambda item: item.get("createdAt", ""), reverse=True)
-    return rows[0] if rows else None
-
-
-def agent_stats_from_store(store, agent_id):
-    invites = store.get("inviteCodes", [])
-    users = store.get("users", [])
-    return {
-        "agentInviteCount": sum(1 for invite in invites if invite.get("ownerAgentId") == agent_id or invite.get("boundAgentId") == agent_id),
-        "promotedUserCount": sum(1 for user in users if user.get("parentAgentId") == agent_id),
-    }
-
-
-def promote_user_to_agent(user_id, actor=None, use_default_balance=True, balance=None, detail=""):
-    store = read_users()
-    user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
-    if not user:
-        raise ValueError("用户不存在。")
-    if user.get("role") == "super":
-        raise ValueError("总管理员不需要设置为代理。")
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    user["role"] = "agent"
-    user["parentAgentId"] = ""
-    if balance is not None:
-        user["balance"] = float(balance or 0)
-    elif use_default_balance:
-        user["balance"] = float(agent_settings.get("defaultBalance") or 0)
-    else:
-        user["balance"] = float(user.get("balance") or 0)
-    user["updatedAt"] = now_iso()
-    write_users(store)
-    log_agent_action("promote", user, actor, detail or "设置为代理")
-    return user
-
-
-def cancel_user_agent(user_id, actor=None, detail=""):
-    store = read_users()
-    user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
-    if not user:
-        raise ValueError("用户不存在。")
-    if user.get("role") != "agent":
-        raise ValueError("该用户当前不是代理。")
-    user["role"] = "user"
-    user["updatedAt"] = now_iso()
-    write_users(store)
-    log_agent_action("cancel", user, actor, detail or "取消代理身份")
-    return user
-
-
-def public_agent_apply_state(user):
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    latest = latest_agent_application_for_user(user.get("id"))
-    return {
-        "allowApply": agent_settings.get("allowApply") is True,
-        "reviewMode": agent_settings.get("applyReviewMode") or "manual",
-        "description": agent_settings.get("applyDescription") or "",
-        "defaultBalance": agent_settings.get("defaultBalance") or 0,
-        "currency": agent_settings.get("currency") or "CNY",
-        "isAgent": is_agent(user),
-        "balance": user.get("balance", 0),
-        "application": public_agent_application(latest) if latest else None,
-    }
-
-
-def submit_agent_application(user, body):
-    if is_super(user):
-        raise ValueError("总管理员不需要申请代理。")
-    if is_agent(user):
-        raise ValueError("你已经是代理，不能重复申请。")
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    if agent_settings.get("allowApply") is not True:
-        raise ValueError("当前未开放代理申请。")
-    latest = latest_agent_application_for_user(user.get("id"))
-    if latest and latest.get("status") == "pending":
-        raise ValueError("已有待审核申请，请等待审核。")
-    contact = str(body.get("contact") or "").strip()
-    reason = str(body.get("reason") or "").strip()
-    if not contact:
-        raise ValueError("请填写联系方式。")
-    if not reason:
-        raise ValueError("请填写申请理由。")
-
-    data = read_agent_applications()
-    row = {
-        "id": new_id("agentapply"),
-        "userId": user.get("id"),
-        "username": user.get("username"),
-        "displayName": user_display_name(user),
-        "contact": contact,
-        "reason": reason,
-        "status": "pending",
-        "rejectReason": "",
-        "reviewerId": "",
-        "reviewerName": "",
-        "reviewedAt": "",
-        "createdAt": now_iso(),
-        "updatedAt": now_iso(),
-    }
-
-    if agent_settings.get("applyReviewMode") == "auto":
-        promoted = promote_user_to_agent(user.get("id"), None, True, None, "代理申请自动通过")
-        row["status"] = "approved"
-        row["reviewerId"] = "system"
-        row["reviewerName"] = "系统"
-        row["reviewedAt"] = now_iso()
-        row["updatedAt"] = row["reviewedAt"]
-        data["applications"].insert(0, row)
-        write_agent_applications(data)
-        return public_agent_application(row), public_user(promoted), True
-
-    data["applications"].insert(0, row)
-    write_agent_applications(data)
-    try:
-        send_admin_event_email("代理申请待审核", f"用户 {user_display_name(user)} 提交了代理申请。联系方式：{contact}\n申请理由：{reason}")
-    except Exception:
-        pass
-    return public_agent_application(row), public_user(user), False
-
-
-def review_agent_application(application_id, status, reviewer, reject_reason=""):
-    if status not in ("approved", "rejected"):
-        raise ValueError("不支持的审核状态。")
-    data = read_agent_applications()
-    row = next((x for x in data.get("applications", []) if x.get("id") == application_id), None)
-    if not row:
-        raise ValueError("代理申请不存在。")
-    if row.get("status") != "pending":
-        raise ValueError("该申请已经审核过，不能重复审核。")
-    user = find_user_by_id(row.get("userId"))
-    if not user:
-        raise ValueError("申请用户不存在。")
-    row["status"] = status
-    row["reviewerId"] = reviewer.get("id")
-    row["reviewerName"] = user_display_name(reviewer)
-    row["reviewedAt"] = now_iso()
-    row["updatedAt"] = row["reviewedAt"]
-    if status == "rejected":
-        row["rejectReason"] = str(reject_reason or "").strip()
-    else:
-        promoted = promote_user_to_agent(user.get("id"), reviewer, True, None, f"通过代理申请 {application_id}")
-        row["username"] = promoted.get("username")
-        row["displayName"] = user_display_name(promoted)
-    write_agent_applications(data)
-    close_agent_application_notice(application_id)
-    return public_agent_application(row)
-
-
 def public_order(order):
+    user_id = order.get("userId") or order.get("agentId", "")
+    username = order.get("username") or order.get("agentUsername", "")
+    display_name = order.get("displayName") or order.get("agentDisplayName") or find_user_display_name(user_id, username)
     return {
         "id": order.get("id"),
         "status": order.get("status", "pending"),
         "action": order.get("action", ""),
         "amount": order.get("amount", 0),
         "currency": order.get("currency", "CNY"),
-        "agentId": order.get("agentId", ""),
-        "agentUsername": order.get("agentUsername", ""),
-        "agentDisplayName": order.get("agentDisplayName") or find_user_display_name(order.get("agentId", ""), order.get("agentUsername", "")),
+        "userId": user_id,
+        "username": username,
+        "displayName": display_name,
         "detail": localized_order_detail(order),
         "request": order.get("request") or {},
         "paymentMethod": order.get("paymentMethod", ""),
@@ -1740,9 +2236,9 @@ def localized_order_detail(order):
 
 def localized_notice_title(title):
     mapping = {
-        "Agent order pending": "代理订单待处理",
-        "Agent invite order fulfilled": "代理邀请码订单已通过",
-        "Agent invite created": "代理邀请码已生成",
+        "Agent order pending": "订单待处理",
+        "Agent invite order fulfilled": "邀请码订单已通过",
+        "Agent invite created": "邀请码已生成",
     }
     return mapping.get(title, title)
 
@@ -1755,9 +2251,9 @@ def localized_notice_content(content):
             rest = text.split(" created order ", 1)[1]
             order_id = rest.split(":", 1)[0]
             amount = rest.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"代理 {username} 提交了订单 {order_id}，金额：{amount}。"
+            return f"用户 {username} 提交了订单 {order_id}，金额：{amount}。"
         except Exception:
-            return "代理提交了新订单。"
+            return "用户提交了新订单。"
     if text.startswith("Super admin ") and " approved order " in text:
         try:
             approver = text.split("Super admin ", 1)[1].split(" approved order ", 1)[0]
@@ -1766,17 +2262,17 @@ def localized_notice_content(content):
             agent = rest.split(" for agent ", 1)[1].split(";", 1)[0]
             created = rest.split("created ", 1)[1].split(" invite", 1)[0]
             amount = rest.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"总管理员 {approver} 已通过代理 {agent} 的订单 {order_id}，生成 {created} 个邀请码，金额：{amount}。"
+            return f"总管理员 {approver} 已通过用户 {agent} 的订单 {order_id}，生成 {created} 个邀请码，金额：{amount}。"
         except Exception:
-            return "总管理员已通过代理订单并生成邀请码。"
+            return "总管理员已通过订单并生成邀请码。"
     if text.startswith("Agent ") and " invite code(s). Amount: " in text:
         try:
             username = text.split("Agent ", 1)[1].split(" created ", 1)[0]
             count = text.split(" created ", 1)[1].split(" invite", 1)[0]
             amount = text.split("Amount:", 1)[1].strip().rstrip(".")
-            return f"代理 {username} 已生成 {count} 个邀请码，金额：{amount}。"
+            return f"用户 {username} 已生成 {count} 个邀请码，金额：{amount}。"
         except Exception:
-            return "代理已生成邀请码。"
+            return "已生成邀请码。"
     return text
 
 
@@ -1825,29 +2321,10 @@ def add_system_notice(title, content, level="info", target_role="", ref_type="",
     return notice
 
 
-def close_agent_application_notice(application_id):
-    if not application_id:
-        return
-    try:
-        data = read_notices()
-        changed = False
-        for notice in data.get("notices", []):
-            if notice.get("refType") == "agentApplication" and notice.get("refId") == application_id and notice.get("title") == "代理申请待审核":
-                notice["active"] = False
-                changed = True
-        if changed:
-            write_notices(data)
-    except Exception:
-        pass
-
-
 def scoped_users(store, actor):
     users = store.get("users", [])
     if is_super(actor):
         return users
-    if is_agent(actor):
-        own = actor.get("id")
-        return [u for u in users if u.get("id") == own or u.get("parentAgentId") == own]
     return [actor]
 
 
@@ -1857,8 +2334,6 @@ def assert_user_scope(actor, target_id):
     target = find_user_by_id(target_id)
     if not target:
         raise ValueError("用户不存在。")
-    if is_agent(actor) and target.get("parentAgentId") == actor.get("id"):
-        return
     if target.get("id") == actor.get("id"):
         return
     raise PermissionError("没有权限管理这个用户。")
@@ -1939,21 +2414,12 @@ def public_user(user, store=None):
         "roleLabel": role_label(user.get("role")),
         "active": user.get("active", True),
         "canViewJson": user.get("canViewJson", user.get("role") == "super"),
-        "parentAgentId": user.get("parentAgentId", ""),
-        "balance": user.get("balance", 0),
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
+        "lastLoginIp": (user.get("loginIpHistory") or [{}])[0],
+        "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
     }
-    if user.get("parentAgentId"):
-        parent = find_user_by_id(user.get("parentAgentId"))
-        data["parentAgentName"] = user.get("parentAgentName") or user_display_name(parent)
-    if user.get("role") == "agent":
-        stats = agent_stats_from_store(store or read_users(), user.get("id"))
-        data.update(stats)
-    latest_apply = latest_agent_application_for_user(user.get("id"))
-    if latest_apply:
-        data["agentApplication"] = public_agent_application(latest_apply)
     return data
 
 
@@ -1965,21 +2431,20 @@ def find_user_by_username(username):
     return next((u for u in read_users()["users"] if u.get("username") == username), None)
 
 
-def mark_user_login(user_id):
+def mark_user_login(user_id, handler=None):
     store = read_users()
     login_at = now_iso()
     for row in store["users"]:
         if row.get("id") == user_id:
             row["lastLoginAt"] = login_at
+            if handler:
+                ip = client_ip(handler)
+                history = [x for x in row.get("loginIpHistory", []) if isinstance(x, dict)]
+                history.insert(0, {"ip": ip, "address": locate_ip(ip), "time": login_at})
+                row["loginIpHistory"] = history[:3]
             write_users(store)
             return row
     return find_user_by_id(user_id)
-
-
-def find_user_by_api_key(key):
-    if not key:
-        return None
-    return next((u for u in read_users()["users"] if u.get("apiKey") == key and u.get("active", True) is not False), None)
 
 
 def find_user_by_email(email):
@@ -1989,11 +2454,17 @@ def find_user_by_email(email):
     return next((u for u in read_users()["users"] if (u.get("email") or "").strip().lower() == email), None)
 
 
+def find_user_by_api_key(key):
+    if not key:
+        return None
+    return next((u for u in read_users()["users"] if u.get("apiKey") == key and u.get("active", True) is not False), None)
+
+
 def normalize_role(role):
-    return role if role in ("super", "agent", "user") else "user"
+    return role if role in ("super", "user") else "user"
 
 
-def create_user(username, password, display_name="", role="user", template_user=None, email="", parent_agent_id="", balance=0):
+def create_user(username, password, display_name="", role="user", template_user=None, email=""):
     username = (username or "").strip()
     email = (email or "").strip().lower()
     password = password or ""
@@ -2001,6 +2472,8 @@ def create_user(username, password, display_name="", role="user", template_user=
     role = normalize_role(role)
     if not username or not password:
         raise ValueError("用户名和密码不能为空。")
+    if len(password) < 10:
+        raise ValueError("密码至少 10 位。")
     if find_user_by_username(username):
         raise ValueError("用户名已存在。")
     if email and find_user_by_email(email):
@@ -2009,7 +2482,6 @@ def create_user(username, password, display_name="", role="user", template_user=
     user_id = base
     while find_user_by_id(user_id):
         user_id = f"{base}-{int(time.time() * 1000)}"
-    parent_agent = find_user_by_id(parent_agent_id) if parent_agent_id and role == "user" else None
     user = {
         "id": user_id,
         "username": username,
@@ -2018,9 +2490,6 @@ def create_user(username, password, display_name="", role="user", template_user=
         "role": role,
         "active": True,
         "canViewJson": role == "super",
-        "parentAgentId": parent_agent_id if role == "user" else "",
-        "parentAgentName": user_display_name(parent_agent) if parent_agent else "",
-        "balance": float(balance or 0) if role == "agent" else 0,
         "passwordHash": stored_password(password),
         "apiKey": random_hex(20),
         "createdAt": now_iso(),
@@ -2168,14 +2637,15 @@ def public_payment_channels(settings):
     return [{"key": key, "label": PAYMENT_CHANNEL_LABELS.get(key, key)} for key in configured_payment_channels(settings)]
 
 
-def recent_pending_order(agent_id, action, cooldown_minutes, data=None):
+def recent_pending_order(user_id, action, cooldown_minutes, data=None):
     if cooldown_minutes <= 0:
         return None
     try:
         cutoff = time.time() - cooldown_minutes * 60
         data = data or read_orders()
         for order in data.get("orders", []):
-            if order.get("agentId") != agent_id or order.get("action") != action or order.get("status") != "pending":
+            order_user_id = order.get("userId") or order.get("agentId")
+            if order_user_id != user_id or order.get("action") != action or order.get("status") != "pending":
                 continue
             try:
                 created = time.mktime(time.strptime((order.get("createdAt") or "")[:19], "%Y-%m-%dT%H:%M:%S"))
@@ -2188,11 +2658,9 @@ def recent_pending_order(agent_id, action, cooldown_minutes, data=None):
     return None
 
 
-def create_admin_order(agent, action, amount, currency, detail, request=None, payment_method="", payment_channel=""):
-    settings = read_system_settings()
-    cooldown = int((settings.get("agent") or {}).get("orderCooldownMinutes") or 0)
+def create_admin_order(user, action, amount, currency, detail, request=None, payment_method="", payment_channel=""):
     data = read_orders()
-    existing = recent_pending_order(agent.get("id"), action, cooldown, data)
+    existing = recent_pending_order(user.get("id"), action, 0, data)
     if existing:
         existing["amount"] = round(float(amount or 0), 2)
         existing["currency"] = currency or "CNY"
@@ -2200,7 +2668,7 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
         existing["request"] = request or {}
         existing["paymentMethod"] = payment_method
         existing["paymentChannel"] = payment_channel
-        existing["agentDisplayName"] = user_display_name(agent)
+        existing["displayName"] = user_display_name(user)
         existing["updatedAt"] = now_iso()
         write_orders(data)
         return existing, False
@@ -2210,9 +2678,9 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
         "action": action,
         "amount": round(float(amount or 0), 2),
         "currency": currency or "CNY",
-        "agentId": agent.get("id"),
-        "agentUsername": agent.get("username"),
-        "agentDisplayName": user_display_name(agent),
+        "userId": user.get("id"),
+        "username": user.get("username"),
+        "displayName": user_display_name(user),
         "detail": detail,
         "request": request or {},
         "paymentMethod": payment_method,
@@ -2221,8 +2689,8 @@ def create_admin_order(agent, action, amount, currency, detail, request=None, pa
     }
     data["orders"].insert(0, order)
     write_orders(data)
-    title = "代理订单待处理"
-    content = f"代理 {user_display_name(agent)} 提交了订单 {order['id']}：{detail}。金额：{order['amount']} {order['currency']}。"
+    title = "订单待处理"
+    content = f"用户 {user_display_name(user)} 提交了订单 {order['id']}：{detail}。金额：{order['amount']} {order['currency']}。"
     add_system_notice(title, content, "warn", "super")
     try:
         send_admin_event_email(title, content)
@@ -2236,7 +2704,6 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
     user = next((u for u in store["users"] if u.get("id") == user_id), None)
     if not user:
         raise ValueError("用户不存在。")
-    old_role = user.get("role")
     username = (body.get("username") or user.get("username") or "").strip()
     email = (body.get("email") or user.get("email") or "").strip().lower()
     if not username:
@@ -2248,33 +2715,26 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
             raise ValueError("用户名已存在。")
         if email and (other.get("email") or "").strip().lower() == email:
             raise ValueError("邮箱已存在。")
+    sensitive_change = bool(body.get("password")) or email != (user.get("email") or "").strip().lower()
+    if sensitive_change:
+        security_backup(f"account-{user_id}", [USERS_PATH, SESSIONS_PATH, user_config_path(user_id)])
     user["username"] = username
     user["email"] = email
     if "displayName" in body:
         user["displayName"] = (body.get("displayName") or username).strip() or username
     if super_edit and "role" in body:
         user["role"] = normalize_role(body.get("role"))
-        if user["role"] != "user":
-            user["parentAgentId"] = ""
     if super_edit and "active" in body:
         user["active"] = bool(body.get("active"))
     if super_edit and "canViewJson" in body:
         user["canViewJson"] = bool(body.get("canViewJson")) or user.get("role") == "super"
-    if super_edit and "balance" in body and user.get("role") == "agent":
-        try:
-            user["balance"] = float(body.get("balance") or 0)
-        except Exception:
-            raise ValueError("代理余额必须是合法数字。")
     if body.get("password"):
         user["passwordHash"] = stored_password(body.get("password"))
     if super_edit and body.get("resetApiKey"):
         user["apiKey"] = random_hex(20)
     write_users(store)
-    if super_edit and old_role != user.get("role"):
-        if user.get("role") == "agent":
-            log_agent_action("promote", user, actor, "用户管理修改角色")
-        elif old_role == "agent":
-            log_agent_action("cancel", user, actor, "用户管理修改角色")
+    if sensitive_change:
+        revoke_user_sessions(user_id)
     return user
 
 
@@ -2287,12 +2747,20 @@ def get_auth(handler):
         token = handler.query.get("token", [""])[0]
     session = SESSIONS.get(token)
     if session:
+        try:
+            last_seen = parse_iso_datetime(session.get("lastSeenAt") or session.get("createdAt") or "")
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            expired = (datetime.now(timezone.utc) - last_seen).total_seconds() > SESSION_TTL_SECONDS
+        except (TypeError, ValueError):
+            expired = True
+        if expired:
+            SESSIONS.pop(token, None)
+            save_sessions()
+            return None
         user = find_user_by_id(session["userId"])
         if user and user.get("active", True) is not False:
-            return {"token": token, "user": user}
-    if token == ADMIN_TOKEN:
-        user = find_user_by_id("admin")
-        if user:
+            session["lastSeenAt"] = now_iso()
             return {"token": token, "user": user}
     return None
 
@@ -2308,64 +2776,31 @@ def target_user_id(auth, handler):
 
 
 def invite_request_from_body(store, body):
-    register_role = normalize_role(body.get("registerRole") or "user")
-    if register_role not in ("user", "agent"):
-        register_role = "user"
     return {
         "prefix": clean_invite_prefix(body.get("prefix") or body.get("code") or "YQ"),
         "count": max(1, min(200, int(body.get("count") or 1))),
         "maxUses": max(1, int(body.get("maxUses") or 1)),
         "retentionDays": max(0, int(body.get("retentionDays") or (store.get("settings") or {}).get("inviteRetentionDays") or 7)),
-        "registerRole": register_role,
-        "boundAgentId": str(body.get("boundAgentId") or "").strip(),
     }
 
 
 def invite_quote_for_actor(store, actor, body):
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    price = float(agent_settings.get("invitePrice") or 0)
     request = normalize_invite_request_for_actor(store, actor, invite_request_from_body(store, body))
-    count = request["count"]
-    total = count * price
-    balance = float(actor.get("balance") or 0)
-    allow_negative = bool(agent_settings.get("allowNegativeBalance"))
-    currency = agent_settings.get("currency") or "CNY"
     return {
         "request": request,
-        "price": round(price, 2),
-        "total": round(total, 2),
-        "currency": currency,
-        "balance": round(balance, 2),
-        "balanceEnough": balance >= total,
-        "allowNegativeBalance": allow_negative,
-        "channels": public_payment_channels(settings),
+        "price": 0,
+        "total": 0,
+        "currency": "CNY",
+        "balance": 0,
+        "balanceEnough": True,
+        "allowNegativeBalance": False,
+        "channels": [],
     }
 
 
 def normalize_invite_request_for_actor(store, actor, request):
     normalized = dict(request or {})
-    normalized["registerRole"] = normalized.get("registerRole") if normalized.get("registerRole") in ("user", "agent") else "user"
-    if not is_super(actor):
-        if normalized.get("registerRole") == "agent":
-            raise ValueError("只有总管理员可以生成注册后为代理的邀请码。")
-        requested_bound = str(normalized.get("boundAgentId") or "").strip()
-        if requested_bound and requested_bound != actor.get("id"):
-            raise ValueError("代理只能生成绑定自己的邀请码。")
-        normalized["registerRole"] = "user"
-        normalized["boundAgentId"] = actor.get("id") if is_agent(actor) else ""
-    bound_agent_id = str(normalized.get("boundAgentId") or "").strip()
-    bound_agent = None
-    if bound_agent_id:
-        bound_agent = next((
-            u for u in store.get("users", [])
-            if u.get("id") == bound_agent_id and u.get("role") == "agent" and u.get("active", True) is not False
-        ), None)
-        if not bound_agent:
-            raise ValueError("绑定代理不存在或不是有效代理。")
-    normalized["boundAgentId"] = bound_agent.get("id") if bound_agent else ""
-    normalized["boundAgentName"] = user_display_name(bound_agent) if bound_agent else ""
-    normalized["isAgentInvite"] = normalized.get("registerRole") == "agent"
+    normalized["registerRole"] = "user"
     return normalized
 
 
@@ -2375,9 +2810,6 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
     count = request["count"]
     max_uses = request["maxUses"]
     retention_days = request["retentionDays"]
-    register_role = request.get("registerRole") or "user"
-    bound_agent_id = request.get("boundAgentId") or ""
-    bound_agent_name = request.get("boundAgentName") or ""
     existing = {x.get("code") for x in store["inviteCodes"]}
     created = []
     for _ in range(count):
@@ -2386,91 +2818,19 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
         invite = {"code": code, "active": True, "maxUses": max_uses,
                   "usedCount": 0, "usedBy": [], "retentionDays": retention_days,
                   "createdAt": now_iso(), "createdBy": actor.get("username"),
-                  "createdById": actor.get("id"), "ownerAgentId": actor.get("id") if is_agent(actor) else "",
-                  "ownerAgentName": user_display_name(actor) if is_agent(actor) else "",
-                  "registerRole": register_role,
-                  "boundAgentId": bound_agent_id,
-                  "boundAgentName": bound_agent_name,
-                  "isAgentInvite": register_role == "agent",
-                  "price": price if is_agent(actor) else 0, "chargedAmount": charged_amount if is_agent(actor) else 0}
+                  "createdById": actor.get("id"), "registerRole": "user"}
         created.append(invite)
     store["inviteCodes"][0:0] = created
     return created
 
 
 def order_detail_for_invites(request):
-    role_text = "代理" if request.get("registerRole") == "agent" else "普通用户"
-    bound_text = f"，绑定代理 {request.get('boundAgentName')}" if request.get("boundAgentName") else ""
-    return f"生成 {request.get('count')} 个邀请码，可用次数 {request.get('maxUses')}，使用后保留 {request.get('retentionDays')} 天，注册后角色 {role_text}{bound_text}"
+    return f"生成 {request.get('count')} 个邀请码，可用次数 {request.get('maxUses')}，使用后保留 {request.get('retentionDays')} 天"
 
 
 def create_invites_for_actor(store, actor, body):
-    quote = invite_quote_for_actor(store, actor, body)
-    request = quote["request"]
-    price = float(quote["price"] or 0)
-    total = float(quote["total"] or 0)
-    currency = quote["currency"]
-    if is_agent(actor):
-        payment_method = (body.get("paymentMethod") or "").strip()
-        payment_channel = (body.get("paymentChannel") or "").strip()
-        channels = [x.get("key") for x in quote.get("channels") or []]
-        if not payment_method:
-            payment_method = "manual"
-        if payment_method == "interface" and payment_channel not in channels:
-            raise ValueError("支付接口未配置或不可用，请选择提交总管理审核。")
-        if payment_method not in ("balance", "manual", "interface"):
-            raise ValueError("不支持的付款方式。")
-        order, fresh = create_admin_order(
-            actor,
-            "create_invites",
-            total,
-            currency,
-            order_detail_for_invites(request),
-            request=request,
-            payment_method=payment_method,
-            payment_channel=payment_channel,
-        )
-        suffix = "已创建订单并通知总管理" if fresh else "已有待处理订单，已更新并发送到总管理后台"
-        return {"order": public_order(order), "created": False, "message": f"{suffix}，管理通过后才会生成邀请码。订单号：{order.get('id')}。"}
-    created = generate_invites_for_actor(store, actor, request, price, total)
-    return {"invites": created, "created": True, "balance": actor.get("balance", 0)}
-
-
-def fulfill_invite_order(order, approver):
-    if order.get("action") != "create_invites" or order.get("fulfilledAt"):
-        return []
-    store = read_users()
-    agent = next((u for u in store.get("users", []) if u.get("id") == order.get("agentId")), None)
-    if not agent:
-        raise ValueError("订单对应的代理不存在。")
-    request = order.get("request") or {}
-    if not request:
-        raise ValueError("订单缺少邀请码生成参数。")
-    settings = read_system_settings()
-    agent_settings = settings.get("agent") or {}
-    price = float(agent_settings.get("invitePrice") or 0)
-    amount = float(order.get("amount") or 0)
-    payment_method = order.get("paymentMethod") or "manual"
-    if payment_method == "balance":
-        balance = float(agent.get("balance") or 0)
-        allow_negative = bool(agent_settings.get("allowNegativeBalance"))
-        if balance < amount and not allow_negative:
-            raise ValueError(f"代理余额不足，不能通过余额支付订单。当前余额 {balance:.2f}，订单金额 {amount:.2f}。")
-        agent["balance"] = balance - amount
-    created = generate_invites_for_actor(store, agent, request, price, amount)
-    write_users(store)
-    order["fulfilledAt"] = now_iso()
-    order["fulfilledBy"] = approver.get("username")
-    order["fulfilledByName"] = user_display_name(approver)
-    order["agentDisplayName"] = user_display_name(agent)
-    order["fulfilledInviteCodes"] = [x.get("code") for x in created]
-    content = f"总管理员 {user_display_name(approver)} 已通过代理 {user_display_name(agent)} 的订单 {order.get('id')}，生成 {len(created)} 个邀请码，金额：{amount:.2f} {order.get('currency', 'CNY')}。"
-    add_system_notice("代理邀请码订单已通过", content, "info", "super")
-    try:
-        send_admin_event_email("代理邀请码订单已通过", content)
-    except Exception:
-        pass
-    return created
+    created = generate_invites_for_actor(store, actor, body, 0, 0)
+    return {"invites": created, "created": True, "balance": 0}
 
 def get_target(button):
     action = button.get("action", "link")
@@ -2483,6 +2843,28 @@ def get_target(button):
     if action == "winget":
         return button.get("package_id") or button.get("target") or ""
     return button.get("url") or button.get("target") or ""
+
+
+def normalize_download_files(value):
+    files = []
+    if not isinstance(value, list):
+        return files
+    for raw in value[:50]:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or raw.get("download_url") or "").strip()
+        name = Path(str(raw.get("name") or raw.get("filename") or "").strip()).name
+        if url:
+            files.append({"name": name, "url": url, "primary": raw.get("primary") is True})
+    if files and not any(item["primary"] for item in files):
+        files[0]["primary"] = True
+    primary_seen = False
+    for item in files:
+        if item["primary"] and not primary_seen:
+            primary_seen = True
+        elif item["primary"]:
+            item["primary"] = False
+    return files
 
 
 def new_button(body):
@@ -2501,6 +2883,12 @@ def new_button(body):
         item["description"] = body.get("description") or body.get("intro") or body.get("remark")
     if action == "download":
         item["download_url"] = target
+        files = normalize_download_files(body.get("files"))
+        if (body.get("download_mode") == "multiple" or len(files) > 1) and files:
+            item["download_mode"] = "multiple"
+            item["package_name"] = str(body.get("package_name") or body.get("name") or "").strip()
+            item["files"] = files
+            item["download_url"] = files[0]["url"]
     elif action == "cmd":
         item["command"] = target
     elif action == "script":
@@ -2597,6 +2985,46 @@ def find_button_slot(config, body):
     container = get_container(config, body)
     section = container["sections"][int(body["sectionIndex"])]
     return section, int(body["buttonIndex"])
+
+
+def target_button_section(config, body):
+    target_scope = body.get("targetScope") or body.get("scope")
+    if target_scope == "toolbox":
+        tab_index = body.get("targetTabIndex")
+        if tab_index in (None, ""):
+            tab_index = body.get("tabIndex", 0)
+        container = config["toolbox_tabs"][int(tab_index)]
+    else:
+        page_id = body.get("targetPageId") or body.get("pageId")
+        container = config["pages"][page_id]
+
+    section_index = body.get("targetSectionIndex")
+    if section_index in (None, ""):
+        section_index = body.get("sectionIndex", 0)
+    section_index = max(0, int(section_index))
+    sections = container.setdefault("sections", [])
+    while len(sections) <= section_index:
+        sections.append({"title": "默认分组", "buttons": []})
+    return sections[section_index]
+
+
+def update_button(config, body):
+    source_section, button_index = find_button_slot(config, body)
+    source_buttons = source_section.setdefault("buttons", [])
+    old_button = source_buttons[button_index]
+    old_id = old_button.get("id") or body.get("id")
+    payload = dict(body.get("button") or body)
+    if old_id:
+        payload["id"] = old_id
+    updated_button = new_button(payload)
+    target_section = target_button_section(config, body)
+
+    if target_section is source_section:
+        source_buttons[button_index] = updated_button
+    else:
+        del source_buttons[button_index]
+        target_section.setdefault("buttons", []).append(updated_button)
+    return updated_button
 
 
 def clean_invite_prefix(value):
@@ -3140,6 +3568,10 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EMBEDDED_CONFIG_JSON__"', csharp_literal(embedded_config_json))
     source = source.replace('"__CLIENT_VARIANT__"', csharp_literal(variant))
     source = source.replace('"__CLIENT_VARIANT_LABEL__"', csharp_literal(variant_label))
+    update_variants = app_config.get("update_variants") if isinstance(app_config.get("update_variants"), dict) else {}
+    variant_update = update_variants.get(variant) if isinstance(update_variants.get(variant), dict) else {}
+    client_app_version = variant_update.get("version") or app_config.get("version") or "1.0"
+    source = source.replace('"__CLIENT_APP_VERSION__"', csharp_literal(client_app_version))
     source = source.replace('"__BUILD_ID__"', csharp_literal(build_id))
     source = source.replace('"__BUILD_STAMP__"', csharp_literal(build_stamp))
     build_signature = sign_client_build(user.get("id"), api_key, build_id, build_stamp, integrity_seed, base_url, "")
@@ -3154,6 +3586,13 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EXE_FILE_VERSION__"', csharp_literal(exe_version))
     with tempfile.TemporaryDirectory() as td:
         icon_file = custom_client_icon(app_config, td)
+        embedded_brand_icon = base64.b64encode(
+            icon_file.read_bytes()
+        ).decode("ascii")
+        source = source.replace(
+            '"__EMBEDDED_BRAND_ICON_BASE64__"',
+            csharp_literal(embedded_brand_icon)
+        )
         src = Path(td) / "ToolboxClient.cs"
         exe = Path(td) / file_name
         src.write_text(source, encoding="utf-8")
@@ -3256,7 +3695,15 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if not length:
             return {}
+        if length > 2 * 1024 * 1024:
+            raise ValueError("请求内容过大。")
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def send_security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
 
     def send_json(self, value, status=200):
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -3265,6 +3712,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_security_headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -3275,6 +3723,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        self.send_security_headers()
         if filename:
             fallback = ascii_download_fallback(filename)
             encoded = quote(str(filename), safe="")
@@ -3288,6 +3737,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        self.dispatch()
+
+    def do_HEAD(self):
         self.dispatch()
 
     def do_POST(self):
@@ -3324,8 +3776,79 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
+            if path == "/api/toolbox/builtin-download" and method in ("GET", "HEAD"):
+                return proxy_builtin_download(self)
             if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
+            if path == "/api/register" and method == "POST":
+                body = self.read_body()
+                code = (body.get("inviteCode") or "").strip()
+                store = read_users()
+                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
+                if not invite or invite.get("active") is False:
+                    raise ValueError("邀请码无效。")
+                used = int(invite.get("usedCount") or 0)
+                max_uses = int(invite.get("maxUses") or 1)
+                if max_uses > 0 and used >= max_uses:
+                    raise ValueError("邀请码已被使用。")
+                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"))
+                store = read_users()
+                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
+                invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
+                invite["usedCount"] = used + 1
+                if max_uses > 0 and invite["usedCount"] >= max_uses:
+                    invite["active"] = False
+                write_users(store)
+                token = random_hex(32)
+                user = mark_user_login(user["id"], self)
+                SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
+                save_sessions()
+                return self.send_json({"token": token, "user": public_user(user)})
+            if path == "/api/password/forgot" and method == "POST":
+                body = self.read_body()
+                email = (body.get("email") or "").strip().lower()
+                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    return self.send_json({"error": "请输入正确的邮箱地址。"}, 400)
+                now = time.time()
+                retry_after = max(0, int(RESET_CODE_REQUESTS.get(email, 0) + RESET_CODE_COOLDOWN_SECONDS - now + 0.999))
+                if retry_after > 0:
+                    return self.send_json({"error": f"请在 {retry_after} 秒后重新发送验证码。", "retryAfter": retry_after}, 429)
+                RESET_CODE_REQUESTS[email] = now
+                user = find_user_by_email(email)
+                if not user or user.get("active", True) is False:
+                    return self.send_json({"ok": True, "message": "如果邮箱存在，验证码会发送到邮箱。"})
+                code = str(secrets.randbelow(900000) + 100000)
+                RESET_CODES[email] = {"code": code, "userId": user["id"], "expires": time.time() + 600}
+                sent = send_reset_email(email, code)
+                if not sent:
+                    RESET_CODES.pop(email, None)
+                    audit_event("password_reset_mail_unavailable", target=user.get("id"), handler=self, success=False)
+                    return self.send_json({"error": "密码找回邮件服务暂不可用，请联系管理员。"}, 503)
+                audit_event("password_reset_requested", target=user.get("id"), handler=self)
+                return self.send_json({"ok": True, "message": "验证码已发送，请查看邮箱。"})
+            if path == "/api/password/reset" and method == "POST":
+                body = self.read_body()
+                email = (body.get("email") or "").strip().lower()
+                code = (body.get("code") or "").strip()
+                password = body.get("password") or ""
+                verify_key = f"{client_ip(self)}:{email}"
+                now = time.time()
+                attempts = [stamp for stamp in RESET_VERIFY_ATTEMPTS.get(verify_key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+                if len(attempts) >= LOGIN_MAX_FAILURES:
+                    audit_event("password_reset_blocked", target=email, handler=self, success=False)
+                    return self.send_json({"error": "验证尝试过多，请 15 分钟后重试。"}, 429)
+                record = RESET_CODES.get(email)
+                if not record or record.get("code") != code or record.get("expires", 0) < time.time():
+                    attempts.append(now)
+                    RESET_VERIFY_ATTEMPTS[verify_key] = attempts
+                    return self.send_json({"error": "验证码无效或已过期。"}, 400)
+                if len(password) < 10:
+                    return self.send_json({"error": "密码至少 10 位。"}, 400)
+                update_user_account(record["userId"], {"password": password})
+                RESET_CODES.pop(email, None)
+                RESET_VERIFY_ATTEMPTS.pop(verify_key, None)
+                audit_event("password_reset_completed", target=record["userId"], handler=self)
+                return self.send_json({"ok": True})
             if path in ("/api/toolbox/config", "/api/config"):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
                 if not user:
@@ -3336,6 +3859,8 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                if method in ("POST", "PUT", "PATCH", "DELETE") and path not in ("/api/super/ip-location/test", "/api/super/audit"):
+                    audit_event("backend_" + method.lower(), auth["user"], path, self)
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
                 if path.startswith("/api/admin"):
@@ -3349,6 +3874,40 @@ class Handler(BaseHTTPRequestHandler):
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
+        if path == "/api/super/audit" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权查看操作日志。"}, 403)
+            return self.send_json(read_audit_events())
+        if path == "/api/super/audit" and method == "DELETE":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权清空操作日志。"}, 403)
+            body = self.read_body()
+            if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                audit_event("audit_log_clear_failed", auth["user"], handler=self, success=False)
+                return self.send_json({"error": "当前管理员密码错误。"}, 403)
+            event_keys = {str(value) for value in body.get("eventKeys", []) if str(value)}
+            filtered = body.get("filtered") is True
+            if filtered and not event_keys:
+                return self.send_json({"error": "筛选结果为空，未清理任何日志。"}, 400)
+            with SECURITY_LOCK:
+                AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                lines = AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines() if AUDIT_LOG_PATH.exists() else []
+                if event_keys:
+                    kept = [line for line in lines if hashlib.sha256(line.encode("utf-8")).hexdigest() not in event_keys]
+                else:
+                    kept = []
+                AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+            cleared = len(lines) - len(kept)
+            action = "audit_log_filtered_cleared" if filtered else "audit_log_cleared"
+            audit_event(action, auth["user"], handler=self, details={"cleared": cleared})
+            return self.send_json({"ok": True, "cleared": cleared, "filtered": filtered})
+        if path == "/api/super/ip-location/test" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权测试定位接口。"}, 403)
+            ip = str(self.read_body().get("ip") or client_ip(self)).strip()
+            address = locate_ip(ip, True)
+            audit_event("ip_location_test", auth["user"], ip, self, {"address": address})
+            return self.send_json({"ip": ip, "address": address})
         if path.startswith("/api/super/template"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作新用户模板。"}, 403)
@@ -3395,14 +3954,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = dict(body.get("button") or body)
                     sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
                 elif method == "PATCH":
-                    section, button_index = find_button_slot(cfg, body)
-                    button = section["buttons"][button_index]
-                    old_id = button.get("id") or body.get("id")
-                    payload = dict(body.get("button") or body)
-                    if old_id:
-                        payload["id"] = old_id
-                    button.clear()
-                    button.update(new_button(payload))
+                    update_button(cfg, body)
                 elif method == "DELETE":
                     section, button_index = find_button_slot(cfg, body)
                     if (section["buttons"][button_index] or {}).get("action") == "script":
@@ -3418,14 +3970,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "接口不存在"}, 404)
         if path == "/api/super/users/batch" and method == "POST":
             if not is_super(auth["user"]):
-                return self.send_json({"error": "代理不能批量管理账号。"}, 403)
+                return self.send_json({"error": "只有总管理员可以批量管理账号。"}, 403)
             b = self.read_body()
             ids = set(b.get("ids") or [])
             action = b.get("action")
+            if action == "delete" and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                audit_event("users_batch_delete_reauth_failed", auth["user"], ",".join(sorted(ids)), self, success=False)
+                return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
             if "admin" in ids and action in ("delete", "disable"):
                 raise ValueError("默认总管理员不能删除或停用。")
             changed = 0
             if action == "delete":
+                security_backup("users-batch-delete", [USERS_PATH, SESSIONS_PATH])
                 before = len(store["users"])
                 store["users"] = [u for u in store["users"] if u.get("id") not in ids]
                 changed = before - len(store["users"])
@@ -3442,50 +3998,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("不支持的批量操作。")
             write_users(store)
+            if action in ("delete", "disable"):
+                for user_id in ids:
+                    revoke_user_sessions(user_id)
+            audit_event(f"users_batch_{action}", auth["user"], ",".join(sorted(ids)), self,
+                        {"changed": changed})
             return self.send_json({"ok": True, "changed": changed})
-        if path == "/api/super/users/agent" and method == "POST":
-            if not is_super(auth["user"]):
-                return self.send_json({"error": "只有总管理员可以设置代理身份。"}, 403)
-            body = self.read_body()
-            user_id = (body.get("id") or "").strip()
-            action = (body.get("action") or "").strip()
-            if action == "promote":
-                balance = None
-                if body.get("useDefaultBalance") is not True and "balance" in body:
-                    try:
-                        balance = float(body.get("balance") or 0)
-                    except Exception:
-                        raise ValueError("代理余额必须是合法数字。")
-                user = promote_user_to_agent(user_id, auth["user"], body.get("useDefaultBalance") is True, balance, "用户管理设为代理")
-                return self.send_json(public_user(user, read_users()))
-            if action == "cancel":
-                user = cancel_user_agent(user_id, auth["user"], "用户管理取消代理")
-                return self.send_json(public_user(user, read_users()))
-            if action == "balance":
-                try:
-                    balance = float(body.get("balance") or 0)
-                except Exception:
-                    raise ValueError("代理余额必须是合法数字。")
-                store = read_users()
-                user = next((u for u in store.get("users", []) if u.get("id") == user_id), None)
-                if not user:
-                    raise ValueError("用户不存在。")
-                if user.get("role") != "agent":
-                    raise ValueError("只有代理用户才能调整代理余额。")
-                user["balance"] = balance
-                user["updatedAt"] = now_iso()
-                write_users(store)
-                log_agent_action("balance", user, auth["user"], f"调整代理余额为 {balance:.2f}")
-                return self.send_json(public_user(user, store))
-            raise ValueError("不支持的代理操作。")
         if path == "/api/super/users":
             if method == "GET":
                 return self.send_json({"users": [public_user(u, store) for u in scoped_users(store, auth["user"])]})
             if method == "POST":
                 if not is_super(auth["user"]):
-                    return self.send_json({"error": "代理不能直接创建账号，请使用邀请码。"}, 403)
+                    return self.send_json({"error": "只有总管理员可以创建账号。"}, 403)
                 b = self.read_body()
-                return self.send_json(public_user(create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"), auth["user"], b.get("email"), "", b.get("balance") or 0)))
+                return self.send_json(public_user(create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"), auth["user"], b.get("email"))))
             if method == "PATCH":
                 b = self.read_body()
                 if not is_super(auth["user"]):
@@ -3494,25 +4020,36 @@ class Handler(BaseHTTPRequestHandler):
                     if "active" in b:
                         allowed["active"] = bool(b.get("active"))
                     b = allowed
+                target = next((u for u in store["users"] if u.get("id") == b.get("id")), None)
+                sensitive = bool(b.get("password") or b.get("resetApiKey"))
+                sensitive = sensitive or (target and "email" in b and (b.get("email") or "").strip().lower() != (target.get("email") or "").strip().lower())
+                if sensitive and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    audit_event("account_admin_reauth_failed", auth["user"], b.get("id"), self, success=False)
+                    return self.send_json({"error": "修改敏感账号资料前必须验证当前管理员密码。"}, 403)
                 user = update_user_account(b.get("id"), b, True, auth["user"])
+                audit_event("account_admin_update", auth["user"], user.get("id"), self,
+                            {"fields": sorted(k for k in b if k not in ("password", "currentPassword"))})
                 return self.send_json(public_user(user))
             if method == "DELETE":
                 if not is_super(auth["user"]):
-                    return self.send_json({"error": "代理不能删除账号。"}, 403)
+                    return self.send_json({"error": "只有总管理员可以删除账号。"}, 403)
                 b = self.read_body()
                 if b.get("id") == "admin":
                     raise ValueError("不能删除默认总管理员。")
+                if not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    audit_event("user_delete_reauth_failed", auth["user"], b.get("id"), self, success=False)
+                    return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
+                security_backup(f"user-delete-{b.get('id')}", [USERS_PATH, SESSIONS_PATH, user_config_path(b.get("id"))])
                 store["users"] = [u for u in store["users"] if u.get("id") != b.get("id")]
                 write_users(store)
+                revoke_user_sessions(b.get("id"))
+                audit_event("user_delete", auth["user"], b.get("id"), self)
                 return self.send_json({"ok": True})
         if path == "/api/super/invites/quote" and method == "POST":
             return self.send_json(invite_quote_for_actor(store, auth["user"], self.read_body()))
         if path == "/api/super/invites":
             if method == "GET":
-                invites = store["inviteCodes"]
-                if is_agent(auth["user"]):
-                    invites = [x for x in invites if x.get("ownerAgentId") == auth["user"].get("id")]
-                return self.send_json({"invites": invites})
+                return self.send_json({"invites": store["inviteCodes"]})
             if method == "POST":
                 b = self.read_body()
                 result = create_invites_for_actor(store, auth["user"], b)
@@ -3524,8 +4061,6 @@ class Handler(BaseHTTPRequestHandler):
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == b.get("code")), None)
                 if not invite:
                     raise ValueError("邀请码不存在。")
-                if is_agent(auth["user"]) and invite.get("ownerAgentId") != auth["user"].get("id"):
-                    return self.send_json({"error": "代理不能管理别人的邀请码。"}, 403)
                 if "active" in b:
                     invite["active"] = bool(b.get("active"))
                 if "maxUses" in b:
@@ -3539,8 +4074,6 @@ class Handler(BaseHTTPRequestHandler):
                 codes = set(b.get("codes") or [])
                 if not codes and b.get("code"):
                     codes.add(b.get("code"))
-                if is_agent(auth["user"]):
-                    codes = {code for code in codes if any(x.get("code") == code and x.get("ownerAgentId") == auth["user"].get("id") for x in store["inviteCodes"])}
                 store["inviteCodes"] = [x for x in store["inviteCodes"] if x.get("code") not in codes]
                 write_users(store)
                 return self.send_json({"ok": True})
@@ -3570,22 +4103,56 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_system_settings())
             if method == "PATCH":
                 return self.send_json(write_system_settings(self.read_body()))
+        if path == "/api/super/system/variant-cover" and method == "POST":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有超级管理员可以上传工具箱封面。"}, 403)
+            body = self.read_body()
+            variant_id = str(body.get("variantId") or "").strip()
+            if variant_id not in CLIENT_VARIANTS:
+                return self.send_json({"error": "工具箱版本不存在。"}, 400)
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            if not match:
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+            try:
+                image_data = base64.b64decode(match.group(2), validate=True)
+            except Exception:
+                return self.send_json({"error": "封面图片数据无效。"}, 400)
+            if not image_data or len(image_data) > 5 * 1024 * 1024:
+                return self.send_json({"error": "封面图片不能超过 5MB。"}, 400)
+            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            signatures = {
+                "png": image_data.startswith(b"\x89PNG\r\n\x1a\n"),
+                "jpg": image_data.startswith(b"\xff\xd8\xff"),
+                "webp": image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP",
+                "gif": image_data.startswith((b"GIF87a", b"GIF89a")),
+            }
+            if not signatures.get(extension, False):
+                return self.send_json({"error": "图片内容与文件格式不匹配。"}, 400)
+            VARIANT_COVER_DIR.mkdir(parents=True, exist_ok=True)
+            file_name = f"{variant_id}-{int(time.time())}-{random_hex(4)}.{extension}"
+            (VARIANT_COVER_DIR / file_name).write_bytes(image_data)
+            return self.send_json({"url": f"/uploads/variant-covers/{file_name}"})
+        if path in ("/api/super/system/menu-icon", "/api/admin/menu-icon/upload") and method == "POST":
+            if path.startswith("/api/super/") and not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以上传全局菜单图标。"}, 403)
+            body = self.read_body()
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            if not match:
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+            try:
+                image_data = base64.b64decode(match.group(2), validate=True)
+            except Exception:
+                return self.send_json({"error": "图标图片数据无效。"}, 400)
+            if not image_data or len(image_data) > 2 * 1024 * 1024:
+                return self.send_json({"error": "图标图片不能超过 2MB。"}, 400)
+            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            MENU_ICON_DIR.mkdir(parents=True, exist_ok=True)
+            owner = "global" if path.startswith("/api/super/") else re.sub(r"[^a-zA-Z0-9_-]", "", str(user_id))
+            file_name = f"{owner}-{int(time.time())}-{random_hex(4)}.{extension}"
+            (MENU_ICON_DIR / file_name).write_bytes(image_data)
+            return self.send_json({"url": f"/uploads/menu-icons/{file_name}"})
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
-        if path == "/api/super/agent-applications":
-            if not is_super(auth["user"]):
-                return self.send_json({"error": "只有总管理员可以审核代理申请。"}, 403)
-            data = read_agent_applications()
-            if method == "GET":
-                status = (self.query.get("status", ["all"])[0] or "all").strip()
-                rows = data.get("applications", [])
-                if status in ("pending", "approved", "rejected"):
-                    rows = [row for row in rows if row.get("status") == status]
-                return self.send_json({"applications": [public_agent_application(row) for row in rows[:500]], "pendingCount": agent_pending_application_count()})
-            if method == "PATCH":
-                body = self.read_body()
-                reviewed = review_agent_application((body.get("id") or "").strip(), (body.get("status") or body.get("action") or "").strip(), auth["user"], body.get("rejectReason") or "")
-                return self.send_json(reviewed)
         if path == "/api/super/orders":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作。"}, 403)
@@ -3602,8 +4169,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("不支持的订单状态。")
                 order["status"] = status
                 order["updatedAt"] = now_iso()
-                if status in ("paid", "done"):
-                    fulfill_invite_order(order, auth["user"])
                 write_orders(data)
                 return self.send_json(public_order(order))
             if method == "DELETE":
@@ -3629,28 +4194,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_admin_announcements(path, method, auth)
         if path == "/api/admin/me" and method == "GET":
             return self.send_json({"user": public_user(auth["user"]), "targetUser": public_user(find_user_by_id(user_id))})
-        if path == "/api/admin/agent-application":
-            if method == "GET":
-                return self.send_json(public_agent_apply_state(auth["user"]))
-            if method == "POST":
-                application, user, auto_approved = submit_agent_application(auth["user"], self.read_body())
-                return self.send_json({
-                    "application": application,
-                    "user": user,
-                    "autoApproved": auto_approved,
-                    "message": "申请已通过，你已成为代理。" if auto_approved else "申请已提交，请等待审核。",
-                })
-        if path == "/api/admin/agent-orders" and method == "GET":
-            if not is_agent(auth["user"]):
-                return self.send_json({"orders": []})
-            data = read_orders()
-            orders = [order for order in data.get("orders", []) if order.get("agentId") == auth["user"].get("id")]
-            return self.send_json({"orders": [public_order(order) for order in orders[:100]]})
         if path == "/api/admin/notices":
             data = read_notices()
             if method == "GET":
                 notices = [n for n in data.get("notices", []) if notice_visible_to_user(n, auth["user"])]
-                return self.send_json({"notices": [public_notice(n, auth["user"]["id"]) for n in notices[:80]], "agentPendingCount": agent_pending_application_count() if is_super(auth["user"]) else 0})
+                return self.send_json({"notices": [public_notice(n, auth["user"]["id"]) for n in notices[:80]]})
             if method == "POST":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "只有总管理员可以发送通知。"}, 403)
@@ -3724,9 +4272,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "message": message})
         if path == "/api/admin/account" and method == "PATCH":
             b = self.read_body()
-            if b.get("password") and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+            old_email = (auth["user"].get("email") or "").strip().lower()
+            new_email = (b.get("email") or old_email).strip().lower()
+            if (b.get("password") or new_email != old_email) and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                 return self.send_json({"error": "当前密码不正确。"}, 400)
             user = update_user_account(auth["user"]["id"], b, False)
+            audit_event("account_self_update", auth["user"], auth["user"]["id"], self,
+                        {"emailChanged": new_email != old_email, "passwordChanged": bool(b.get("password"))})
             return self.send_json({"user": public_user(user)})
         if path == "/api/admin/desktop/download" and method == "GET":
             if not is_super(auth["user"]):
@@ -3737,10 +4289,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/variants" and method == "GET":
             return self.send_json(public_client_variants())
+        if path == "/api/admin/menu-icons" and method == "GET":
+            settings = read_system_settings()
+            icons = list(settings.get("menuIcons") or [])
+            return self.send_json({"icons": icons, "libraryError": ""})
         if path == "/api/admin/client/download" and method == "GET":
-            name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), request_client_variant(self))
+            variant = request_client_variant(self)
+            name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)
             if not is_windows_exe(data):
                 return self.send_json({"error": "EXE 生成结果无效，请清理缓存后重试。"}, 500)
+            if not is_super(auth["user"]):
+                record_client_download(variant)
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/build" and method == "POST":
             body = self.read_body()
@@ -3769,6 +4328,7 @@ class Handler(BaseHTTPRequestHandler):
             data = file_path.read_bytes()
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
+            record_client_build_download(job_id, auth["user"])
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
             user = find_user_by_id(user_id) or auth["user"]
@@ -3833,14 +4393,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = dict(body.get("button") or body)
                 sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
             elif method == "PATCH":
-                section, button_index = find_button_slot(cfg, body)
-                button = section["buttons"][button_index]
-                old_id = button.get("id") or body.get("id")
-                payload = dict(body.get("button") or body)
-                if old_id:
-                    payload["id"] = old_id
-                button.clear()
-                button.update(new_button(payload))
+                update_button(cfg, body)
             elif method == "DELETE":
                 section, button_index = find_button_slot(cfg, body)
                 if (section["buttons"][button_index] or {}).get("action") == "script":
@@ -3851,6 +4404,8 @@ class Handler(BaseHTTPRequestHandler):
             if changed:
                 write_config_for_actor(cfg, user_id, auth["user"])
             return self.send_json(rows)
+        if path == "/api/admin/builtin-functions" and method == "GET":
+            return self.send_json({"functions": builtin_function_rows(is_super(auth["user"]))})
         return self.send_json({"error": "接口不存在"}, 404)
 
     def handle_admin_announcements(self, path, method, auth):

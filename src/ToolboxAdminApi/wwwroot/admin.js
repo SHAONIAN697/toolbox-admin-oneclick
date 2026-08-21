@@ -10,6 +10,9 @@
   agentOrders: [],
   mail: null,
   system: null,
+  builtinFunctions: [],
+  menuIcons: [],
+  menuIconLibraryError: '',
   templateMode: false,
   notices: [],
   announcements: [],
@@ -26,7 +29,10 @@
   clientBuildStartedAt: 0,
   inviteRefreshTimer: null,
   inviteRefreshBusy: false,
-  inviteSnapshot: ''
+  inviteSnapshot: '',
+  auditRefreshTimer: null,
+  auditRefreshBusy: false,
+  auditItems: []
 };
 
 function applyDesktopTokenFromUrl() {
@@ -118,6 +124,13 @@ const CLIENT_VARIANTS = [
     preview: 'tuner'
   },
   {
+    id: 'audio',
+    label: '音频工具箱火山版',
+    badge: '火山源码界面',
+    description: '深色图标侧栏、红色分类标题、五列圆角按钮和底部下载状态栏，按钮与下载统一由后台配置。',
+    preview: 'audio'
+  },
+  {
     id: 'portal',
     label: '导航首页版',
     badge: '推荐资源中心',
@@ -186,6 +199,7 @@ const NAV_ICONS = {
   mail: '✉',
   buttons: '▦',
   users: '♙',
+  audit: '▧',
   system: '⚙',
   json: '▤',
   exchange: '⇄',
@@ -198,6 +212,7 @@ const VIEW_TITLES = {
   account: ['账号资料', '修改当前账号的基础信息和登录密码。'],
   buttons: ['按钮管理', '配置工具箱里的页面、分组、按钮和动作。'],
   users: ['用户管理', '管理账号、邀请码和用户专属对接地址。'],
+  audit: ['操作日志', '查看所有账号的后台登录和操作记录。'],
   system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
   exchange: ['配置交换', '导出、导入配置文件，或生成云端链接分享给别人。'],
@@ -217,6 +232,15 @@ function setupSidebar() {
   toggle.setAttribute('aria-label', '展开/收起菜单');
   toggle.textContent = '☰';
   sidebar.insertBefore(toggle, brand);
+  const systemNav = sidebar.querySelector('.nav[data-view="system"]');
+  if (systemNav && !sidebar.querySelector('.nav[data-view="audit"]')) {
+    const auditNav = document.createElement('button');
+    auditNav.className = 'nav super-only';
+    auditNav.dataset.view = 'audit';
+    auditNav.type = 'button';
+    auditNav.textContent = '操作日志';
+    systemNav.insertAdjacentElement('afterend', auditNav);
+  }
 
   sidebar.querySelectorAll('.nav').forEach((button) => {
     const view = button.dataset.view || '';
@@ -541,6 +565,7 @@ function isAuthFailure(error) {
   const message = String(error?.message || '');
   return /请先登录|Please log in first|Unauthorized|HTTP 401|HTTP 403/i.test(message);
 }
+
 function setLoginMessage(message, type = 'error') {
   $('loginError').textContent = message || '';
   if (message) showToast(message, type);
@@ -552,7 +577,7 @@ async function loadAll() {
     return;
   }
 
-  const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
+    const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
   let me;
   try {
     me = await api('/api/admin/me');
@@ -580,8 +605,9 @@ async function loadAll() {
       state.users = [];
     }
     await loadNotices();
-
     await loadAdminAnnouncementsSafe();
+    await loadBuiltinFunctions();
+    await loadClientVariants();
     state.config = await api(configApiPath());
     state.buttons = await api(buttonsApiPath());
     renderAll();
@@ -589,12 +615,26 @@ async function loadAll() {
     showUnreadNoticePopup();
     showAdminAnnouncementPopup();
     showToast('配置读取成功。', 'success');
+    loadMenuIcons().then(() => {
+      renderMenuIcons();
+      if (state.activeView === 'buttons') renderManagedSections();
+    }).catch((error) => {
+      state.menuIcons = [];
+      state.menuIconLibraryError = error.message || '图标库读取失败。';
+      renderMenuIcons();
+    });
   } catch (error) {
     handleLoadFailure(error, isAuthFailure(error));
   }
 }
 
 function handleLoadFailure(error, silent = false) {
+  if (!silent) {
+    const message = error?.message || '配置读取失败，请刷新后重试。';
+    setStatus(message, true);
+    showToast(message, 'error');
+    return;
+  }
   const status = $('status');
   if (status) status.textContent = '';
   state.token = '';
@@ -612,7 +652,7 @@ function handleLoadFailure(error, silent = false) {
   localStorage.removeItem('toolbox_target_user');
   localStorage.removeItem('toolbox_active_view');
   showLogin();
-  if (!silent) if (!silent) showToast(`读取配置失败：${error.message}`, 'error');
+  if (!silent) showToast(`读取配置失败：${error.message}`, 'error');
 }
 
 function showLogin() {
@@ -708,30 +748,14 @@ async function register() {
 const RESET_CODE_COOLDOWN_SECONDS = 60;
 const RESET_CODE_COOLDOWN_KEY = 'toolbox_reset_code_cooldown_until';
 let resetCodeCountdownTimer = null;
-
 function updateResetCodeCountdown() {
-  const button = $('sendResetCodeBtn');
-  const cooldownUntil = Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0);
-  const secondsLeft = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
-  if (secondsLeft > 0) {
-    button.disabled = true;
-    button.textContent = `${secondsLeft}秒后重新发送`;
-    return;
-  }
-  localStorage.removeItem(RESET_CODE_COOLDOWN_KEY);
-  button.disabled = false;
-  button.textContent = '重新发送验证码';
-  if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer);
-  resetCodeCountdownTimer = null;
+  const button = $('sendResetCodeBtn'); const secondsLeft = Math.max(0, Math.ceil((Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0) - Date.now()) / 1000));
+  if (secondsLeft > 0) { button.disabled = true; button.textContent = `${secondsLeft}秒后重新发送`; return; }
+  localStorage.removeItem(RESET_CODE_COOLDOWN_KEY); button.disabled = false; button.textContent = '重新发送验证码'; if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer); resetCodeCountdownTimer = null;
 }
-
 function startResetCodeCountdown(seconds = RESET_CODE_COOLDOWN_SECONDS) {
-  localStorage.setItem(RESET_CODE_COOLDOWN_KEY, String(Date.now() + seconds * 1000));
-  updateResetCodeCountdown();
-  if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer);
-  resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
+  localStorage.setItem(RESET_CODE_COOLDOWN_KEY, String(Date.now() + seconds * 1000)); updateResetCodeCountdown(); if (resetCodeCountdownTimer) clearInterval(resetCodeCountdownTimer); resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
 }
-
 async function sendResetCode() {
   const email = $('forgotEmail').value.trim();
   const button = $('sendResetCodeBtn');
@@ -740,22 +764,11 @@ async function sendResetCode() {
     setLoginMessage('请先输入邮箱。');
     return;
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    setLoginMessage('请输入正确的邮箱地址。');
-    return;
-  }
-  button.disabled = true;
-  button.textContent = '发送中...';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setLoginMessage('请输入正确的邮箱地址。'); return; }
+  button.disabled = true; button.textContent = '发送中...';
   try {
-    const result = await api('/api/password/forgot', { method: 'POST', body: JSON.stringify({ email }) });
-    setLoginMessage(result.debugCode ? `${result.message} 验证码：${result.debugCode}` : result.message, result.debugCode ? 'warn' : 'success');
-    startResetCodeCountdown();
-  } catch (error) {
-    const retryAfter = Number(String(error.message || '').match(/(\d+)\s*秒后/)?.[1] || 0);
-    if (retryAfter > 0) startResetCodeCountdown(retryAfter);
-    else { button.disabled = false; button.textContent = '发送验证码'; }
-    throw error;
-  }
+    const result = await api('/api/password/forgot', { method: 'POST', body: JSON.stringify({ email }) }); setLoginMessage(result.debugCode ? `${result.message} 验证码：${result.debugCode}` : result.message, result.debugCode ? 'warn' : 'success'); startResetCodeCountdown();
+  } catch (error) { const retryAfter = Number(String(error.message || '').match(/(\d+)\s*秒后/)?.[1] || 0); if (retryAfter > 0) startResetCodeCountdown(retryAfter); else { button.disabled = false; button.textContent = '发送验证码'; } throw error; }
 }
 
 async function resetPassword() {
@@ -955,7 +968,12 @@ function renderUserContext() {
   if (superMode && selector) {
     const previous = state.targetUserId || state.currentUser.id;
     selector.innerHTML = '';
-    state.users.forEach((user) => {
+    state.users.filter((user) => {
+    const query = ($('userListSearch')?.value || '').trim().toLowerCase();
+    return !query || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`
+      .toLowerCase()
+      .includes(query);
+  }).forEach((user) => {
       const opt = document.createElement('option');
       opt.value = user.id;
       opt.textContent = displayNameOf(user, user.username);
@@ -975,7 +993,8 @@ function renderUserContext() {
 }
 
 function switchView(view) {
-  if (view === 'system' && !isSuper()) {
+  if (view === 'audit' && isSuper()) ensureAuditView();
+  if ((view === 'system' || view === 'audit') && !isSuper()) {
     view = 'overview';
   }
   if (view === 'users' && !isManager()) {
@@ -993,6 +1012,8 @@ function switchView(view) {
   const panel = $(`view-${view}`);
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
+  if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
+  syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
   if ($('pageSubtitle')) $('pageSubtitle').textContent = title[1];
@@ -1057,6 +1078,7 @@ function renderApp() {
   $('appThemeCount').value = app.theme_count || 19;
   $('appAllowClientTheme').checked = app.allow_client_theme !== false;
   if ($('appDefaultViewMode')) $('appDefaultViewMode').value = app.default_view_mode === 'list' ? 'list' : 'grid';
+  renderButtonContentLayout(app.button_content_layout, app.button_content_layout_rules);
   $('appLogo').value = app.logo_text || '';
   $('appIcon').value = app.icon || app.icon_url || '';
   ensureExeIconField();
@@ -1072,9 +1094,21 @@ function renderApp() {
   $('appPasswordEnabled').checked = app.password_enabled === undefined ? !!app.password : !!app.password_enabled;
   $('appPassword').value = app.password_plain || '';
   $('appPassword').disabled = !$('appPasswordEnabled').checked;
-  $('appUpdateUrl').value = app.update_url || '';
-  $('appUpdateTitle').value = app.update_title || '工具箱更新';
-  $('appUpdateButton').value = app.update_button || '下载最新版';
+  const updateVariants = app.update_variants || {};
+  CLIENT_VARIANTS.forEach((variant) => {
+    const settings = updateVariants[variant.id] || (variant.id === 'original' ? {
+      version: app.version || '', url: app.update_url || '', title: app.update_title || '工具箱更新',
+      button: app.update_button || '下载最新版', minVersion: app.update_min_version || '', force: app.update_force === true
+    } : {});
+    const card = document.querySelector(`[data-update-variant="${variant.id}"]`);
+    if (!card) return;
+    card.querySelector('[data-update-field="version"]').value = settings.version || '';
+    card.querySelector('[data-update-field="url"]').value = settings.url || '';
+    card.querySelector('[data-update-field="title"]').value = settings.title || '工具箱更新';
+    card.querySelector('[data-update-field="button"]').value = settings.button || '下载最新版';
+    card.querySelector('[data-update-field="minVersion"]').value = settings.minVersion || '';
+    card.querySelector('[data-update-field="force"]').checked = settings.force === true;
+  });
   $('appExeTitle').value = app.exe_title || app.title || '';
   $('appExeDescription').value = app.exe_description || app.subtitle || '';
   $('appExeProduct').value = app.exe_product || app.title || '';
@@ -1131,12 +1165,15 @@ function organizeOverviewCards() {
   const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel', 'saveAppExeBtn', '保存 EXE');
   const pageAccessPanel = ensurePageAccessPanel();
   const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel', 'saveAppUpdateBtn', '保存更新入口');
+  updatePanel.classList.add('collapsible-panel', 'is-collapsed');
+  updatePanel.dataset.collapsiblePanel = '';
+  updatePanel.dataset.defaultCollapsed = '1';
   const popupPanel = createPopupOverviewPanel();
   view.insertBefore(loginPanel, stats);
   view.insertBefore(passwordPanel, stats);
-  view.insertBefore(pageAccessPanel, stats);
   view.insertBefore(propertyPanel, stats);
   view.insertBefore(updatePanel, stats);
+  view.insertBefore(pageAccessPanel, stats);
   view.insertBefore(popupPanel, stats);
   setupCollapsiblePanels();
   bindOverviewSaveActions();
@@ -1145,7 +1182,8 @@ function organizeOverviewCards() {
   moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
   moveLabels(grid, passwordPanel.querySelector('.form-grid'), ['appPasswordEnabled', 'appPassword']);
   moveLabels(grid, propertyPanel.querySelector('.form-grid'), ['appExeTitle', 'appExeDescription', 'appExeProduct', 'appExeVersion', 'appExeCompany', 'appExeCopyright']);
-  moveLabels(grid, updatePanel.querySelector('.form-grid'), ['appUpdateUrl', 'appUpdateTitle', 'appUpdateButton']);
+  const updateVariants = $('appUpdateVariants');
+  if (updateVariants) updatePanel.querySelector('.form-grid').appendChild(updateVariants);
 }
 
 function createPopupOverviewPanel() {
@@ -1247,6 +1285,173 @@ function createOverviewPanel(title, id, saveButtonId = '', saveText = '保存') 
   return panel;
 }
 
+const AUDIT_FILTER_STORAGE_KEY = 'toolbox_audit_filters';
+const AUDIT_FILTER_IDS = ['auditUserFilter', 'auditIpFilter', 'auditKeywordFilter', 'auditActionFilter', 'auditRiskFilter', 'auditStartFilter', 'auditEndFilter'];
+
+function ensureAuditView() {
+  if ($('view-audit')) return;
+  const view = document.createElement('section');
+  view.id = 'view-audit';
+  view.className = 'view';
+  view.innerHTML = `<div class="panel audit-panel">
+    <div class="panel-head"><div><h2>后台操作日志</h2><div id="auditResultCount" class="muted">正在读取日志...</div></div><div class="audit-head-actions"><button id="refreshAuditBtn" type="button">刷新</button><button id="clearFilteredAuditBtn" type="button" class="danger">清理筛选结果</button><button id="clearAuditBtn" type="button" class="danger">清空日志</button></div></div>
+    <div class="audit-filters">
+      <input id="auditUserFilter" type="search" list="auditUserOptions" autocomplete="off" placeholder="搜索或选择用户"><datalist id="auditUserOptions"></datalist>
+      <input id="auditIpFilter" type="search" placeholder="筛选 IP 地址"><input id="auditKeywordFilter" type="search" placeholder="搜索全部日志信息">
+      <select id="auditActionFilter"><option value="">全部操作类型</option><option value="login">登录记录</option><option value="POST">新增操作</option><option value="PATCH">修改操作</option><option value="PUT">保存操作</option><option value="DELETE">删除操作</option></select>
+      <select id="auditRiskFilter"><option value="">全部风险</option><option value="high">高风险</option><option value="medium">需关注</option><option value="low">无风险</option></select>
+      <label>开始时间<input id="auditStartFilter" type="datetime-local"></label><label>结束时间<input id="auditEndFilter" type="datetime-local"></label>
+      <button id="resetAuditFiltersBtn" type="button" class="secondary">清除筛选</button>
+    </div>
+    <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>用户</th><th>操作日志</th><th>时间</th><th>IP 地址</th><th>风险评估</th></tr></thead><tbody id="auditLogRows"><tr><td colspan="5">正在读取日志...</td></tr></tbody></table></div>
+  </div>`;
+  document.querySelector('main').appendChild(view);
+  $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
+  $('clearAuditBtn').onclick = () => clearAuditLog().catch(error => setStatus(error.message, true));
+  $('clearFilteredAuditBtn').onclick = () => clearFilteredAuditLog().catch(error => setStatus(error.message, true));
+  try {
+    const filters = JSON.parse(localStorage.getItem(AUDIT_FILTER_STORAGE_KEY) || '{}');
+    AUDIT_FILTER_IDS.forEach((id) => { if ($(id) && typeof filters[id] === 'string') $(id).value = filters[id]; });
+  } catch (_) {}
+  AUDIT_FILTER_IDS.forEach((id) => {
+    const apply = () => { localStorage.setItem(AUDIT_FILTER_STORAGE_KEY, JSON.stringify(Object.fromEntries(AUDIT_FILTER_IDS.map((key) => [key, $(key)?.value || ''])))); renderAuditLog(); };
+    $(id).addEventListener('input', apply); $(id).addEventListener('change', apply);
+  });
+  $('resetAuditFiltersBtn').onclick = () => { AUDIT_FILTER_IDS.forEach((id) => { $(id).value = ''; }); localStorage.removeItem(AUDIT_FILTER_STORAGE_KEY); renderAuditLog(); };
+}
+
+async function clearAuditLog() {
+  if (!confirm('确定清空全部操作日志吗？清空后无法恢复。')) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认清空日志：') || '';
+  if (!currentPassword) return;
+  const result = await api('/api/super/audit', { method: 'DELETE', body: JSON.stringify({ currentPassword }) });
+  await loadAuditLog();
+  setStatus(`已清理 ${Number(result.cleared || 0)} 条操作日志。`);
+}
+
+async function clearFilteredAuditLog() {
+  const hasFilter = AUDIT_FILTER_IDS.some((id) => ($(id)?.value || '').trim());
+  if (!hasFilter) { setStatus('请先设置筛选条件，再清理筛选结果。', true); return; }
+  const items = filteredAuditItems();
+  if (!items.length) { setStatus('当前筛选没有可清理的日志。', true); return; }
+  if (!confirm(`确定清理当前筛选出的 ${items.length} 条日志吗？清理后无法恢复。`)) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认清理筛选日志：') || '';
+  if (!currentPassword) return;
+  const result = await api('/api/super/audit', {
+    method: 'DELETE',
+    body: JSON.stringify({ currentPassword, filtered: true, eventKeys: items.map((item) => item.eventKey).filter(Boolean) })
+  });
+  await loadAuditLog();
+  setStatus(`已清理 ${Number(result.cleared || 0)} 条筛选日志。`);
+}
+
+async function loadAuditLog() {
+  if (state.auditRefreshBusy) return;
+  state.auditRefreshBusy = true;
+  ensureAuditView();
+  try {
+    const data = await api('/api/super/audit');
+    state.auditItems = data.items || [];
+    updateAuditUserOptions();
+    renderAuditLog();
+  } finally { state.auditRefreshBusy = false; }
+}
+
+function auditAccount(item) {
+  const actor = String(item.actor || item.username || '');
+  if (actor) return actor;
+
+  const target = String(item.target || '');
+  const isRealUser = state.users.some(
+    (user) => String(user.username || '') === target
+  );
+
+  return String(item.action || '').startsWith('login_') && isRealUser
+    ? target
+    : '未知用户';
+}
+function auditPath(item) { const value = String(item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item.path || ''); }
+function updateAuditUserOptions() {
+  const options = $('auditUserOptions');
+  const users = [...new Set(state.users.flatMap((user) => [user.displayName, user.username, user.email]
+    .map((value) => String(value || '').trim()).filter(Boolean)))].sort();
+
+  const signature = JSON.stringify(users);
+  if (!options || options.dataset.optionsSignature === signature) return;
+
+  options.replaceChildren(
+    ...users.map((name) => new Option(name, name))
+  );
+  options.dataset.optionsSignature = signature;
+}
+
+function auditUserSearchText(item) {
+  const account = auditAccount(item);
+  const user = state.users.find(
+    (entry) => entry.username === account || entry.id === item.actorId
+  );
+  return `${item.actorDisplayName || user?.displayName || ''} ${item.actor || user?.username || account} ${item.actorEmail || user?.email || ''}`;
+}
+
+function auditUserLabel(item) {
+  const account = auditAccount(item);
+  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
+  const displayName = String(item.actorDisplayName || user?.displayName || '').trim();
+  const username = String(item.actor || user?.username || account || '').trim();
+  const email = String(item.actorEmail || user?.email || '').trim();
+  return `<strong>${escapeHtml(displayName || username || '未知用户')}</strong>${username && username !== displayName ? `<div class="muted audit-user-username">用户名：${escapeHtml(username)}</div>` : ''}${email ? `<div class="muted audit-user-email">邮箱：${escapeHtml(email)}</div>` : ''}`;
+}
+
+function auditRisk(item) {
+  const action = String(item.action || ''); const path = auditPath(item);
+  if (item.success === false || action.includes('delete') || action.includes('blocked') || action.includes('reauth_failed')) return 'high';
+  if (/(account|users|system|mail|template)/.test(path) && /(?:patch|put|post|update|reset)/.test(action)) return 'high';
+  if (/^backend_(patch|put|post)$/.test(action) || /(?:update|reset|requested)/.test(action)) return 'medium';
+  return 'low';
+}
+
+function describeAuditEntry(item) {
+  const action = String(item.action || ''); const path = auditPath(item);
+  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置' };
+  if (fixed[action]) return fixed[action];
+  const method = action.replace(/^backend_/, '').toUpperCase();
+  const methods = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
+  const targets = [[/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '弹窗设置'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
+  const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
+  return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
+}
+
+function filteredAuditItems() {
+  const user = ($('auditUserFilter')?.value || '').trim().toLowerCase(); const ip = ($('auditIpFilter')?.value || '').trim().toLowerCase();
+  const keyword = ($('auditKeywordFilter')?.value || '').trim().toLowerCase(); const actionType = $('auditActionFilter')?.value || ''; const risk = $('auditRiskFilter')?.value || '';
+  const start = $('auditStartFilter')?.value ? new Date($('auditStartFilter').value).getTime() : 0; const end = $('auditEndFilter')?.value ? new Date($('auditEndFilter').value).getTime() : 0;
+  return state.auditItems.filter((item) => {
+    const account = auditAccount(item); const description = describeAuditEntry(item); const itemTime = new Date(item.time).getTime(); const action = String(item.action || '');
+    if (user && !auditUserSearchText(item).toLowerCase().includes(user)) return false;
+    if (ip && !`${item.ip || ''} ${item.ipAddress || ''}`.toLowerCase().includes(ip)) return false;
+    const riskLabel = { high: '高风险', medium: '需关注', low: '无风险' }[auditRisk(item)];
+    const searchable = `${auditUserSearchText(item)} ${description} ${action} ${auditPath(item)} ${item.ip || ''} ${formatDateTime(item.time)} ${riskLabel} ${JSON.stringify(item)}`;
+    if (keyword && !searchable.toLowerCase().includes(keyword)) return false;
+    if (actionType === 'login' && !action.startsWith('login_')) return false;
+    if (actionType && actionType !== 'login' && action !== `backend_${actionType.toLowerCase()}`) return false;
+    if (risk && auditRisk(item) !== risk) return false;
+    if (start && itemTime < start) return false; if (end && itemTime > end) return false; return true;
+  });
+}
+
+function renderAuditLog() {
+  const items = filteredAuditItems();
+  const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
+  $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
+  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td>${auditUserLabel(item)}</td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+}
+
+function syncAuditAutoRefresh(view) {
+  if (state.auditRefreshTimer) { clearInterval(state.auditRefreshTimer); state.auditRefreshTimer = null; }
+  if (view !== 'audit' || !isSuper()) return;
+  state.auditRefreshTimer = setInterval(() => { if (state.activeView === 'audit' && document.visibilityState === 'visible') loadAuditLog().catch(() => {}); }, 2000);
+}
+
 function ensureDownloadCleanupBasicField(grid) {
   if (!grid || $('deleteDownloadsOnExit')) return;
   const label = document.createElement('label');
@@ -1339,19 +1544,24 @@ function ensureExeIconField() {
 }
 
 function ensureUpdateFields() {
-  if ($('appUpdateUrl')) return;
+  if ($('appUpdateVariants')) return;
   const grid = $('appPassword')?.closest('.form-grid');
   if (!grid) return;
-  const updateUrl = document.createElement('label');
-  updateUrl.className = 'wide';
-  updateUrl.innerHTML = '工具箱更新链接<input id="appUpdateUrl" placeholder="粘贴新版 EXE 下载地址，留空不显示更新入口">';
-  const updateTitle = document.createElement('label');
-  updateTitle.innerHTML = '更新入口标题<input id="appUpdateTitle" placeholder="例如：工具箱更新">';
-  const updateButton = document.createElement('label');
-  updateButton.innerHTML = '更新按钮文字<input id="appUpdateButton" placeholder="例如：下载最新版">';
-  grid.appendChild(updateUrl);
-  grid.appendChild(updateTitle);
-  grid.appendChild(updateButton);
+  const wrap = document.createElement('div');
+  wrap.id = 'appUpdateVariants';
+  wrap.className = 'update-variant-list';
+  wrap.innerHTML = CLIENT_VARIANTS.map((variant) => `<section class="update-variant-card" data-update-variant="${escapeAttr(variant.id)}">
+    <h3>${escapeHtml(variant.label)}</h3>
+    <div class="form-grid compact">
+      <label>当前最新版<input data-update-field="version" placeholder="例如：4.0"></label>
+      <label>最低可用版本<input data-update-field="minVersion" placeholder="例如：3.0"></label>
+      <label class="wide">更新链接<input data-update-field="url" placeholder="新版 EXE、网盘或网页地址"></label>
+      <label>弹窗标题<input data-update-field="title" placeholder="工具箱更新"></label>
+      <label>更新按钮文字<input data-update-field="button" placeholder="下载最新版"></label>
+      <label class="toggle-line wide">强制更新<span><input data-update-field="force" type="checkbox"> 低于最低版本时禁止使用</span></label>
+    </div>
+  </section>`).join('');
+  grid.appendChild(wrap);
 }
 
 function renderAccount() {
@@ -1361,6 +1571,15 @@ function renderAccount() {
   $('accountDisplayName').value = user.displayName || '';
   $('accountCurrentPassword').value = '';
   $('accountNewPassword').value = '';
+  let ip = $('accountLastLoginIp');
+  if (!ip) {
+    const label = document.createElement('label');
+    label.innerHTML = '最后登录 IP<input id="accountLastLoginIp" readonly>';
+    $('accountDisplayName').closest('.form-grid').appendChild(label);
+    ip = $('accountLastLoginIp');
+  }
+  const last = user.lastLoginIp || {};
+  ip.value = last.ip ? `${last.ip} · ${last.address || '未知位置'}` : '暂无记录';
 }
 
 function renderMailSettings() {
@@ -1411,8 +1630,15 @@ async function saveAccount() {
     displayName: $('accountDisplayName').value.trim()
   };
   const newPassword = $('accountNewPassword').value;
-  if (newPassword) {
+  const emailChanged = body.email.toLowerCase() !== String(state.currentUser?.email || '').toLowerCase();
+  if (newPassword || emailChanged) {
     body.currentPassword = $('accountCurrentPassword').value;
+    if (!body.currentPassword) {
+      setStatus('修改邮箱或密码前请输入当前密码。', true);
+      return;
+    }
+  }
+  if (newPassword) {
     body.password = newPassword;
   }
   const result = await api('/api/admin/account', {
@@ -1437,6 +1663,7 @@ function renderUsers() {
     tableWrap.hidden = true;
   }
   const panel = tbody.closest('.panel');
+  ensureUserBatchTools(panel);
   setPanelCounter(panel, 'userTotalCount', state.users.length);
   let cards = $('userCards');
   if (!cards && panel) {
@@ -1445,7 +1672,6 @@ function renderUsers() {
     cards.className = 'user-card-list';
     panel.appendChild(cards);
   }
-  ensureUserBatchTools(panel);
   if (!cards) return;
   cards.classList.add('collapsible-body');
   cards.hidden = !!panel?.classList.contains('is-collapsed');
@@ -1464,7 +1690,7 @@ function renderUsers() {
         <div class="user-summary">
           <strong>${escapeHtml(user.displayName || user.username || '')}</strong>
           <span>${escapeHtml(user.username || '')} · ${escapeHtml(user.email || '未填写邮箱')}</span>
-          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
+          <small>上次登录：${escapeHtml(formatDateTime(user.lastLoginAt))}${user.lastLoginIp?.ip ? ` · ${escapeHtml(user.lastLoginIp.ip)} · ${escapeHtml(user.lastLoginIp.address || '未知位置')}` : ''}${user.parentAgentName ? ` · 归属代理：${escapeHtml(user.parentAgentName)}` : ''}</small>
         </div>
         <span class="pill">${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</span>
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
@@ -1480,6 +1706,7 @@ function renderUsers() {
         ` : ''}
       </div>
       <div class="user-card-detail" hidden>
+        <div class="login-ip-history"><strong>最近三次登录 IP</strong>${(user.loginIpHistory || []).map(item => `<div>${escapeHtml(formatDateTime(item.time))} · ${escapeHtml(item.ip || '')} · ${escapeHtml(item.address || '未知位置')}</div>`).join('') || '<div>暂无记录</div>'}</div>
         <div class="form-grid">
           <label>账号<input data-field="username" value="${escapeAttr(user.username || '')}"><small>${escapeHtml(user.id || '')}</small></label>
           <label>邮箱<input data-field="email" type="email" value="${escapeAttr(user.email || '')}"></label>
@@ -1564,6 +1791,8 @@ function ensureUserBatchTools(panel) {
   bar.id = 'userBatchBar';
   bar.className = 'batch-bar collapsible-body';
   bar.innerHTML = `
+    <input id="userListSearch" type="search" autocomplete="off"
+      placeholder="搜索昵称、用户名或邮箱">
     <label class="checkline"><input id="userSelectAll" type="checkbox"> 全选</label>
     <button data-user-batch="enable">批量启用</button>
     <button data-user-batch="disable">批量停用</button>
@@ -1574,6 +1803,7 @@ function ensureUserBatchTools(panel) {
   const head = panel.querySelector('.panel-head');
   head?.insertAdjacentElement('afterend', bar);
   if (panel.classList.contains('is-collapsed')) bar.hidden = true;
+  $('userListSearch').oninput = () => renderUsers();
   $('userSelectAll').onchange = (event) => {
     document.querySelectorAll('.user-check:not(:disabled)').forEach((box) => { box.checked = event.target.checked; });
   };
@@ -1797,6 +2027,17 @@ function renderSystemSettings() {
   const agent = state.system.agent || {};
   const pay = state.system.pay || {};
   const integrity = state.system.integrity || {};
+  ensureIpLocationPanel();
+  const ipLocation = state.system.ipLocation || {};
+  document.querySelectorAll('[data-ip-provider]').forEach(input => { input.checked = (ipLocation.providers || ['system']).includes(input.value); });
+  if ($('ipLocationMode')) $('ipLocationMode').value = ipLocation.mode || 'consensus';
+  if ($('ipLocationThreshold')) $('ipLocationThreshold').value = Number(ipLocation.threshold || 2);
+  if ($('ipUnifiedChinese')) $('ipUnifiedChinese').checked = ipLocation.unifiedChinese !== false;
+  if ($('ipAmapKey')) $('ipAmapKey').value = ipLocation.amapKey || '';
+  if ($('ipBaiduKey')) $('ipBaiduKey').value = ipLocation.baiduKey || '';
+  if ($('ipTencentKey')) $('ipTencentKey').value = ipLocation.tencentKey || '';
+  if ($('ipAmapSecret')) $('ipAmapSecret').value = ipLocation.amapSecret || '';
+  if ($('ipTencentSecret')) $('ipTencentSecret').value = ipLocation.tencentSecret || '';
   if ($('systemNoticeTitle')) $('systemNoticeTitle').value = locations.noticeAreaTitle || '全部未读';
   if ($('systemMenuName')) $('systemMenuName').value = locations.adminSystemName || '系统管理';
   if ($('systemFrontendGlow')) $('systemFrontendGlow').checked = locations.frontendActiveGlow !== false;
@@ -1813,7 +2054,259 @@ function renderSystemSettings() {
   if ($('payWechatOrder')) $('payWechatOrder').value = Number(pay.wechatOrder || 10);
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
   renderPayGatewayCards();
+  renderClientVariantSettings();
   renderOrders();
+  renderBuiltinFunctions();
+  renderMenuIcons();
+}
+
+async function loadMenuIcons() {
+  const result = await api('/api/admin/menu-icons');
+  state.menuIcons = result.icons || [];
+  state.menuIconLibraryError = result.libraryError || '';
+}
+
+function renderMenuIcons() {
+  const root = $('menuIconRows');
+  if (!root || !isSuper()) return;
+  const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
+  root.innerHTML = icons.length ? icons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无管理员手工添加的菜单图标。</p>';
+  root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { icons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
+  if ($('menuIconLibraryStatus') && !state.menuIconLibraryError) $('menuIconLibraryStatus').textContent = `项目图库现有 ${icons.length} 个图标，所有用户均可看图选择。`;
+}
+
+async function uploadImage(input, endpoint) {
+  const file = input?.files?.[0];
+  if (!file) throw new Error('请先选择图片。');
+  if (file.size > 2 * 1024 * 1024) throw new Error('图标图片不能超过 2MB。');
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  return api(endpoint, { method: 'POST', body: JSON.stringify({ dataUrl }) });
+}
+
+async function uploadMenuIconFile(file) {
+  if (file.size > 2 * 1024 * 1024) throw new Error(`${file.name} 超过 2MB。`);
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  let result;
+  try {
+    result = await api('/api/super/system/menu-icon', { method: 'POST', body: JSON.stringify({ dataUrl }), signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`${file.name} 上传超时。`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  return { id: `icon_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, name: file.name.replace(/\.[^.]+$/, ''), url: result.url };
+}
+
+async function uploadMenuIconFolder() {
+  const input = $('globalMenuIconFolder');
+  const uploadButton = $('uploadMenuIconFolderBtn');
+  let files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type) || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+  if (!files.length) throw new Error('请选择包含图片的文件夹。');
+  if (files.length > 500) throw new Error('一次最多上传 500 个图标。');
+  if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
+  const normalizedName = (value) => String(value || '').trim().toLocaleLowerCase();
+  const selectedByName = new Map();
+  files.forEach((file) => selectedByName.set(normalizedName(file.name.replace(/\.[^.]+$/, '')), file));
+  files = [...selectedByName.values()];
+  const existingNames = new Set(state.system.menuIcons.map((item) => normalizedName(item.name)));
+  const duplicateNames = files.map((file) => file.name.replace(/\.[^.]+$/, '')).filter((name) => existingNames.has(normalizedName(name)));
+  const overwrite = duplicateNames.length ? window.confirm(`发现 ${duplicateNames.length} 个同名图标：\n${duplicateNames.slice(0, 12).join('、')}${duplicateNames.length > 12 ? '…' : ''}\n\n确定：覆盖重复图标\n取消：跳过重复图标`) : false;
+  const skipped = overwrite ? 0 : duplicateNames.length;
+  if (!overwrite) files = files.filter((file) => !existingNames.has(normalizedName(file.name.replace(/\.[^.]+$/, ''))));
+  if (!files.length) {
+    if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `没有需要上传的图标，已跳过 ${skipped} 个重复项。`;
+    return;
+  }
+  uploadButton.disabled = true;
+  const total = files.length;
+  let completed = 0;
+  const queue = [...files];
+  const uploaded = [];
+  const failures = [];
+  const worker = async () => {
+    while (queue.length) {
+      const file = queue.shift();
+      try { uploaded.push(await uploadMenuIconFile(file)); }
+      catch (error) { failures.push(`${file.name}：${error.message || '上传失败'}`); }
+      finally { completed++; if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `正在处理 ${completed}/${total}，成功 ${uploaded.length}，失败 ${failures.length}…`; }
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
+    uploaded.forEach((item) => {
+      const index = state.system.menuIcons.findIndex((current) => normalizedName(current.name) === normalizedName(item.name));
+      if (index >= 0 && overwrite) state.system.menuIcons[index] = item;
+      else if (index < 0) state.system.menuIcons.push(item);
+    });
+    input.value = '';
+    if (uploaded.length) {
+      await saveMenuIcons();
+      await loadMenuIcons();
+      renderMenuIcons();
+    }
+    const summary = `处理完成：成功 ${uploaded.length}，跳过 ${skipped}，失败 ${failures.length}。`;
+    if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = failures.length ? `${summary} ${failures.slice(0, 3).join('；')}` : summary;
+    setStatus(summary, failures.length > 0);
+  } finally {
+    uploadButton.disabled = false;
+  }
+}
+
+async function saveMenuIcons() {
+  const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
+  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons }) });
+  renderMenuIcons();
+  state.menuIconLibraryError = '';
+  setStatus('项目图标库已保存。');
+}
+
+function renderBuiltinFunctions() {
+  const root = $('builtinFunctionRows');
+  if (!root || !isSuper()) return;
+  const rows = state.system?.builtinFunctions || [];
+  root.innerHTML = rows.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>动作</th><th>状态</th><th>类型</th><th>操作</th></tr></thead><tbody>${rows.map((item, index) => `
+    <tr data-builtin-index="${index}">
+      <td><strong>${escapeHtml(item.name || '')}</strong></td>
+      <td>${escapeHtml(ACTION_LABELS[item.action || (item.builtIn ? 'script' : 'download')] || '内置功能')}</td>
+      <td>${item.enabled !== false ? '启用' : '停用'}</td>
+      <td>${item.builtIn ? '系统内置' : '自定义'}</td>
+      <td class="actions"><button data-builtin-edit type="button">编辑</button>${item.builtIn ? '' : '<button class="danger" data-builtin-delete type="button">删除</button>'}</td>
+    </tr>`).join('')}</tbody></table></div>` : '<p class="empty">暂无全局内置功能。</p>';
+  root.querySelectorAll('[data-builtin-edit]').forEach((button) => button.onclick = () => renderBuiltinEditRow(Number(button.closest('tr').dataset.builtinIndex)));
+  root.querySelectorAll('[data-builtin-delete]').forEach((button) => button.onclick = () => {
+    rows.splice(Number(button.closest('tr').dataset.builtinIndex), 1);
+    renderBuiltinFunctions();
+  });
+}
+
+function renderBuiltinEditRow(index) {
+  const item = state.system?.builtinFunctions?.[index];
+  const row = document.querySelector(`#builtinFunctionRows tr[data-builtin-index="${index}"]`);
+  if (!item || !row) return;
+  const action = item.action || (item.builtIn ? 'script' : 'download');
+  row.className = 'button-edit-row';
+  row.innerHTML = `<td colspan="5"><div class="button-edit-panel">
+    <div class="button-edit-title"><strong>编辑功能：${escapeHtml(item.name || '')}</strong><span>${item.builtIn ? '系统内置功能' : '总管理员自定义功能'}</span></div>
+    <div class="button-edit-grid">
+      <label>功能名称<input data-builtin-name value="${escapeAttr(item.name || '')}"></label>
+      <label>动作<select data-builtin-action>${ACTIONS.map(([value, label]) => `<option value="${value}" ${value === action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label class="toggle-line">状态<span><input data-builtin-enabled type="checkbox" ${item.enabled !== false ? 'checked' : ''}> 启用</span></label>
+    </div>
+    <label class="button-edit-target"><span data-builtin-target-label>${action === 'download' ? '私密下载链接' : '目标内容'}</span><input data-builtin-target value="${escapeAttr(item.target || item.downloadUrl || '')}" placeholder="${action === 'script' ? '系统内置功能可留空' : '填写网址、命令或软件包 ID'}"></label>
+    <div class="button-edit-actions"><button data-builtin-apply type="button">确定</button><button data-builtin-cancel type="button">取消</button></div>
+  </div></td>`;
+  const actionSelect = row.querySelector('[data-builtin-action]');
+  actionSelect.onchange = () => {
+    row.querySelector('[data-builtin-target-label]').textContent = actionSelect.value === 'download' ? '私密下载链接（仅总管理员可见）' : '目标内容';
+  };
+  row.querySelector('[data-builtin-apply]').onclick = () => {
+    item.name = row.querySelector('[data-builtin-name]').value.trim();
+    item.action = actionSelect.value;
+    item.target = row.querySelector('[data-builtin-target]').value.trim();
+    item.downloadUrl = item.action === 'download' ? item.target : '';
+    item.enabled = row.querySelector('[data-builtin-enabled]').checked;
+    renderBuiltinFunctions();
+  };
+  row.querySelector('[data-builtin-cancel]').onclick = renderBuiltinFunctions;
+}
+
+function addBuiltinFunctionRow() {
+  if (!state.system) return;
+  const rows = state.system.builtinFunctions || (state.system.builtinFunctions = []);
+  rows.push({ id: `builtin_${Date.now().toString(36)}`, name: '新内置功能', action: 'download', target: '', downloadUrl: '', enabled: true, builtIn: false });
+  renderBuiltinFunctions();
+  renderBuiltinEditRow(rows.length - 1);
+}
+
+async function saveBuiltinFunctions() {
+  const functions = (state.system?.builtinFunctions || []).map((item) => ({
+    id: item.id, name: item.name, action: item.action,
+    target: item.target || item.downloadUrl || '', enabled: item.enabled !== false
+  }));
+  state.system = await api('/api/super/system', {
+    method: 'PATCH',
+    body: JSON.stringify({ builtinFunctions: functions })
+  });
+  await loadBuiltinFunctions();
+  renderAll();
+  setStatus('全局内置功能已保存。');
+}
+
+async function loadBuiltinFunctions() {
+  const result = await api('/api/admin/builtin-functions');
+  state.builtinFunctions = result.functions || [];
+}
+
+async function loadClientVariants() {
+  const result = await api('/api/admin/client/variants');
+  const clientVariants = {};
+  (result.variants || []).forEach((variant) => {
+    if (variant?.id) clientVariants[variant.id] = variant;
+  });
+  if (!state.system) state.system = {};
+  state.system.clientVariants = clientVariants;
+}
+
+function variantSettings(variant) {
+  return state.system?.clientVariants?.[variant.id] || {};
+}
+
+function renderClientVariantSettings() {
+  const wrap = $('clientVariantSettings');
+  if (!wrap || !isSuper()) return;
+  wrap.innerHTML = CLIENT_VARIANTS.map((variant) => {
+    const config = variantSettings(variant);
+    const mode = config.coverMode || 'default';
+    return `<article class="variant-setting" data-variant-setting="${escapeAttr(variant.id)}">
+      <div class="variant-setting-preview">${mode !== 'default' && config.coverUrl ? `<img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}">` : clientPreviewMarkup(variant.preview)}</div>
+      <div class="variant-setting-fields">
+        <label>名称<input data-variant-field="name" value="${escapeAttr(config.name || variant.label)}"></label>
+        <label>角标<input data-variant-field="badge" value="${escapeAttr(config.badge || variant.badge)}"></label>
+        <label class="wide">介绍<textarea data-variant-field="description" rows="3">${escapeHtml(config.description || variant.description)}</textarea></label>
+        <label>封面来源<select data-variant-field="coverMode"><option value="default" ${mode === 'default' ? 'selected' : ''}>默认封面</option><option value="upload" ${mode === 'upload' ? 'selected' : ''}>上传服务器</option><option value="url" ${mode === 'url' ? 'selected' : ''}>图床地址</option></select></label>
+        <label class="wide variant-cover-url">图床 / 封面地址<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/cover.png"></label>
+        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button data-variant-upload-btn type="button">上传图片</button></div>
+      </div>
+    </article>`;
+  }).join('');
+  wrap.querySelectorAll('[data-variant-upload-btn]').forEach((button) => {
+    button.onclick = () => uploadVariantCover(button.closest('[data-variant-setting]')).catch((error) => setStatus(error.message, true));
+  });
+}
+
+async function uploadVariantCover(card) {
+  const file = card?.querySelector('[data-variant-upload]')?.files?.[0];
+  if (!file) throw new Error('请先选择封面图片。');
+  if (file.size > 5 * 1024 * 1024) throw new Error('封面图片不能超过 5MB。');
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const result = await api('/api/super/system/variant-cover', { method: 'POST', body: JSON.stringify({ variantId: card.dataset.variantSetting, dataUrl }) });
+  card.querySelector('[data-variant-field="coverMode"]').value = 'upload';
+  card.querySelector('[data-variant-field="coverUrl"]').value = result.url;
+  if (!state.system) state.system = {};
+  if (!state.system.clientVariants) state.system.clientVariants = {};
+  state.system.clientVariants[card.dataset.variantSetting] = {
+    ...(state.system.clientVariants[card.dataset.variantSetting] || {}),
+    coverMode: 'upload',
+    coverUrl: result.url
+  };
+  const preview = card.querySelector('.variant-setting-preview');
+  if (preview) preview.innerHTML = `<img src="${escapeAttr(result.url)}" alt="封面预览">`;
+  setStatus('封面已上传，请点击保存。');
+}
+
+async function saveClientVariants() {
+  const clientVariants = {};
+  document.querySelectorAll('[data-variant-setting]').forEach((card) => {
+    const value = (field) => card.querySelector(`[data-variant-field="${field}"]`)?.value.trim() || '';
+    clientVariants[card.dataset.variantSetting] = { name: value('name'), badge: value('badge'), description: value('description'), coverMode: value('coverMode'), coverUrl: value('coverUrl') };
+  });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ clientVariants }) });
+  await loadClientVariants();
+  renderSystemSettings(); renderClientVariants(); setStatus('工具箱封面与介绍已保存。');
 }
 
 function renderPopupSettings() {
@@ -2078,6 +2571,28 @@ function clientPreviewMarkup(type) {
         </div>
       </div>`;
   }
+  if (type === 'audio') {
+    return `
+      <div class="client-preview tuner-preview">
+        <div class="preview-window-bar tuner-window-bar"><span>音频工具箱火山版</span><i></i><i></i><i></i></div>
+        <div class="tuner-preview-body">
+          <aside style="max-width:52px;background:#232b31">
+            <div class="tuner-brand"><b>Y</b></div>
+            <em class="active">⚙</em><em>◉</em><em>▦</em><em>✣</em>
+          </aside>
+          <main>
+            <section class="tuner-section">
+              <h4 style="color:#f00">宿主插件类:</h4>
+              <div class="tuner-buttons"><span>插件列表</span><span>Waves 清理</span><span>插件残留清理</span><span>扫描重置</span><span>效果备份</span></div>
+            </section>
+            <section class="tuner-section">
+              <h4 style="color:#f00">系统优化类:</h4>
+              <div class="tuner-buttons"><span>系统工具箱</span><span>系统激活</span><span>系统更新设置</span><span>系统防护开关</span><span>电源高性能</span></div>
+            </section>
+          </main>
+        </div>
+      </div>`;
+  }
   if (type === 'tuner') {
     return `
       <div class="client-preview tuner-preview">
@@ -2147,21 +2662,25 @@ function renderClientVariants() {
   const grid = $('clientVariantGrid');
   if (!grid) return;
   const editing = isTemplateMode();
-  grid.innerHTML = CLIENT_VARIANTS.map((variant) => `
+  grid.innerHTML = CLIENT_VARIANTS.map((variant) => {
+    const config = variantSettings(variant);
+    const cover = config.coverMode !== 'default' && config.coverUrl ? `<div class="client-preview custom-client-cover"><img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}"></div>` : clientPreviewMarkup(variant.preview);
+    return `
     <article class="client-variant-card" data-client-variant="${escapeAttr(variant.id)}">
-      ${clientPreviewMarkup(variant.preview)}
+      ${cover}
       <div class="client-variant-info">
         <div>
-          <strong>${escapeHtml(variant.label)}</strong>
-          <span>${escapeHtml(variant.badge)}</span>
+          <strong>${escapeHtml(config.name || variant.label)}</strong>
+          <span>${escapeHtml(config.badge || variant.badge)}</span>
         </div>
-        <p>${escapeHtml(variant.description)}</p>
+        <p>${escapeHtml(config.description || variant.description)}</p>
+        <div class="client-variant-download-count">已下载 ${Number(config.downloadCount || 0)} 次</div>
         <button type="button" data-action="download-client-variant" data-variant="${escapeAttr(variant.id)}" ${editing ? 'disabled' : ''}>
           ${editing ? '模板不能下载' : '下载这个版本'}
         </button>
       </div>
     </article>
-  `).join('');
+  `; }).join('');
   grid.querySelectorAll('[data-action="download-client-variant"]').forEach((button) => {
     button.onclick = () => downloadClient('', button.dataset.variant || 'original').catch((error) => setStatus(error.message, true));
   });
@@ -2377,7 +2896,7 @@ function ensurePageLockGroups() {
     state.config.page_lock_groups = {};
   }
   if (!state.config.page_lock_groups.default || typeof state.config.page_lock_groups.default !== 'object' || Array.isArray(state.config.page_lock_groups.default)) {
-    state.config.page_lock_groups.default = { title: '合并页面密码', password: '', pages: [] };
+    state.config.page_lock_groups.default = { title: '合并页面密码', enabled: false, password: '', pages: [] };
   }
   const group = state.config.page_lock_groups.default;
   if (!Array.isArray(group.pages)) group.pages = [];
@@ -2435,10 +2954,10 @@ function ensurePageAccessPanel() {
     </div>
     <div class="page-lock-group-box">
       <div class="page-lock-group-head">
-        <strong>合并页面密码</strong>
+        <div class="page-lock-group-title"><strong>合并页面密码</strong><label class="checkline"><input id="mergedPageLockEnabled" type="checkbox"> 启用</label></div>
         <small>从现有页面中逐个选择；这些页面输入一次密码后全部解锁。</small>
       </div>
-      <input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码">
+      <div class="password-field"><input id="mergedPageLockPassword" type="password" autocomplete="new-password" placeholder="输入合并密码"><button type="button" data-password-toggle="mergedPageLockPassword">显示</button></div>
       <div id="mergedPageLockSelectors" class="page-lock-group-selectors"></div>
       <button id="addMergedPageLockBtn" class="page-lock-group-add" type="button">＋ 添加页面</button>
       <label class="checkline page-lock-independent-toggle"><input id="showIndependentPageLocks" type="checkbox"> 设置独立页面密码</label>
@@ -2507,7 +3026,7 @@ function renderMergedPageLockSelectors(pages, locks, mergedGroup) {
 }
 
 function refreshMergedPageLockRows(locks, mergedGroup) {
-  const mergedPages = new Set(mergedGroup.pages.filter(Boolean));
+  const mergedPages = new Set(mergedGroup.enabled === true ? mergedGroup.pages.filter(Boolean) : []);
   const hasMergedPassword = !!mergedGroup.password || !!$('mergedPageLockPassword')?.value.trim();
   document.querySelectorAll('[data-page-lock-id]').forEach((row) => {
     const pageId = row.dataset.pageLockId || '';
@@ -2553,8 +3072,13 @@ function renderPageAccessControls() {
   }
   if (independentArea) independentArea.hidden = !showIndependent;
   const mergedPassword = $('mergedPageLockPassword');
+  const mergedEnabled = $('mergedPageLockEnabled');
+  if (mergedEnabled) {
+    mergedEnabled.checked = mergedGroup.enabled === true;
+    mergedEnabled.onchange = () => { mergedGroup.enabled = mergedEnabled.checked; refreshMergedPageLockRows(locks, mergedGroup); };
+  }
   if (mergedPassword) {
-    mergedPassword.value = '';
+    mergedPassword.value = mergedGroup.password_plain || '';
     mergedPassword.placeholder = mergedGroup.password ? '已设置，留空不修改' : '输入合并密码';
   }
   const softwareEnabled = $('softwareCatalogEnabled');
@@ -2574,7 +3098,7 @@ function renderPageAccessControls() {
         <td><strong>${escapeHtml(page.title)}</strong></td>
         <td>${escapeHtml(page.type)}</td>
         <td><label class="checkline"><input data-page-lock-enabled type="checkbox" ${enabled ? 'checked' : ''}> 必须输入密码</label></td>
-        <td><input data-page-lock-password type="password" placeholder="${hasPassword ? '已设置，留空不修改' : '输入独立密码'}"></td>
+        <td><div class="password-field"><input id="pageLockPassword_${escapeAttr(page.id)}" data-page-lock-password type="password" value="${escapeAttr(lock.password_plain || '')}" placeholder="输入独立密码"><button type="button" data-password-toggle="pageLockPassword_${escapeAttr(page.id)}">显示</button></div></td>
         <td><span data-page-lock-status class="${hasPassword ? 'muted-pill' : 'danger-pill'}">${hasPassword ? '已设置独立密码' : '未设置独立密码'}</span></td>
       </tr>
     `;
@@ -2591,8 +3115,10 @@ async function savePageAccess() {
   const locks = ensurePageLocks();
   const groups = ensurePageLockGroups();
   const mergedGroup = groups.default;
+  mergedGroup.enabled = $('mergedPageLockEnabled')?.checked === true;
   const mergedPassword = $('mergedPageLockPassword')?.value.trim() || '';
-  if (mergedPassword) mergedGroup.password = mergedPassword;
+  mergedGroup.password = mergedPassword;
+  mergedGroup.password_plain = mergedPassword;
   mergedGroup.title = '合并页面密码';
   const showIndependent = $('showIndependentPageLocks')?.checked === true;
   mergedGroup.show_independent = showIndependent;
@@ -2607,22 +3133,14 @@ async function savePageAccess() {
     const current = locks[pageId] && typeof locks[pageId] === 'object' ? locks[pageId] : {};
     const next = { ...current };
     const password = row.querySelector('[data-page-lock-password]')?.value.trim() || '';
-    const merged = mergedPageSet.has(pageId);
+    const merged = mergedGroup.enabled && mergedPageSet.has(pageId);
     next.enabled = merged || (showIndependent && row.querySelector('[data-page-lock-enabled]')?.checked === true);
     next.title = title;
     if (merged) {
       next.group = 'default';
     } else {
       delete next.group;
-      if (showIndependent && password) next.password = password;
-    }
-    if (merged && !mergedGroup.password) {
-      missingPasswordFor = '合并页面密码';
-      return;
-    }
-    if (showIndependent && next.enabled && !merged && !next.password) {
-      missingPasswordFor = title;
-      return;
+      if (showIndependent) { next.password = password; next.password_plain = password; }
     }
     locks[pageId] = next;
   });
@@ -2633,11 +3151,7 @@ async function savePageAccess() {
     return;
   }
 
-  await api(configApiPath(), {
-    method: 'PUT',
-    body: JSON.stringify(state.config)
-  });
-  setStatus('页面权限已保存；合并组内页面输入一次密码即可全部解锁。');
+  await saveWholeConfig('页面权限已保存；合并组内页面输入一次密码即可全部解锁。');
 }
 
 function parsePositionValue(value) {
@@ -2681,6 +3195,36 @@ function renderManageControls() {
   renderManagedSections();
 }
 
+function renderScopeIconPicker(iconUrl, enabled) {
+  const picker = $('scopeIconPicker');
+  const trigger = $('openScopeIconPickerBtn');
+  const preset = $('manageScopeIconPreset');
+  const preview = $('scopeIconPickerPreview');
+  const label = $('scopeIconPickerLabel');
+  if (!picker || !trigger || !preset || !preview || !label) return;
+  const selected = state.menuIcons.find((item) => item.url === iconUrl);
+  preview.src = selected?.url || '';
+  preview.hidden = !selected;
+  label.textContent = selected?.name || '选择图标';
+  trigger.disabled = !enabled;
+  picker.innerHTML = `<button class="icon-picker-item${selected ? '' : ' is-selected'}" data-icon-picker-value="" type="button"><span class="icon-picker-built-in">内置</span><strong>使用内置图标</strong></button>${state.menuIcons.map((item) => `<button class="icon-picker-item${selected?.url === item.url ? ' is-selected' : ''}" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}`;
+  trigger.onclick = () => { if (enabled) picker.hidden = !picker.hidden; };
+  picker.querySelectorAll('[data-icon-picker-value]').forEach((button) => {
+    button.onclick = () => {
+      const value = button.dataset.iconPickerValue || '';
+      const item = state.menuIcons.find((row) => row.url === value);
+      preset.value = value;
+      if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = '';
+      preview.src = item?.url || '';
+      preview.hidden = !item;
+      label.textContent = item?.name || '选择图标';
+      picker.querySelectorAll('.icon-picker-item').forEach((row) => row.classList.toggle('is-selected', row === button));
+      picker.hidden = true;
+    };
+  });
+  picker.hidden = true;
+}
+
 function renderManagedSections() {
   const pos = parsePositionValue($('manageScope')?.value || '');
   const sectionSelect = $('manageSection');
@@ -2688,6 +3232,19 @@ function renderManagedSections() {
 
   $('manageScopeName').value = pos.name || '';
   if ($('manageScopeOrder')) $('manageScopeOrder').value = Number(pos.orderIndex || 0) + 1;
+  const sidebarItem = pos.scope === 'page' ? (state.config.sidebar || []).find(item => item.id === pos.pageId) : null;
+  const iconUrl = sidebarItem?.icon || '';
+  const preset = $('manageScopeIconPreset');
+  if (preset) {
+    preset.value = state.menuIcons.some(item => item.url === iconUrl) ? iconUrl : '';
+    preset.disabled = pos.scope !== 'page';
+    renderScopeIconPicker(iconUrl, pos.scope === 'page');
+  }
+  if ($('manageScopeIconUrl')) {
+    $('manageScopeIconUrl').value = state.menuIcons.some((item) => item.url === iconUrl) ? '' : iconUrl;
+    $('manageScopeIconUrl').disabled = pos.scope !== 'page';
+    $('manageScopeIconUrl').oninput = () => { if ($('manageScopeIconUrl').value.trim()) { preset.value = ''; renderScopeIconPicker('', pos.scope === 'page'); } };
+  }
   const previous = sectionSelect.value;
   const sections = ensureSections(pos.container);
   sectionSelect.innerHTML = '';
@@ -2718,20 +3275,26 @@ function renderManagedSectionName() {
 
 function renderSelectors() {
   const scope = $('addScope');
+  const previousScope = scope.value;
+  const previousSection = $('addSection')?.value || '';
   scope.innerHTML = '';
 
-  getPositions().forEach((item) => {
+  const positions = getPositions();
+  positions.forEach((item) => {
     const opt = document.createElement('option');
     opt.value = item.value;
     opt.textContent = item.label;
     scope.appendChild(opt);
   });
 
-  scope.onchange = renderSectionSelector;
-  renderSectionSelector();
+  if (positions.some((item) => item.value === previousScope)) {
+    scope.value = previousScope;
+  }
+  scope.onchange = () => renderSectionSelector();
+  renderSectionSelector(previousSection);
 }
 
-function renderSectionSelector() {
+function renderSectionSelector(preferredSection = '') {
   const section = $('addSection');
   const target = currentAddTarget();
   section.innerHTML = '';
@@ -2749,6 +3312,10 @@ function renderSectionSelector() {
     opt.value = '0';
     opt.textContent = '默认分组';
     section.appendChild(opt);
+  }
+
+  if ([...section.options].some((option) => option.value === preferredSection)) {
+    section.value = preferredSection;
   }
 }
 
@@ -2879,38 +3446,20 @@ function renderButtonEditRow(tr, button) {
   const enabled = button.enabled !== false;
   const moveScopeValue = positionValueForButton(button);
   tr.className = enabled ? 'button-edit-row' : 'button-edit-row button-disabled-row';
-  tr.innerHTML = `
-    <td>
-      <select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select>
-      <select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select>
-    </td>
-    <td><input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></td>
-    <td><input value="${escapeAttr(button.name || '')}" data-field="name"></td>
-    <td>
-      <div class="icon-field">
-        <span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span>
-        <input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接">
-      </div>
-    </td>
-    <td><input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></td>
-    <td>
-      <select data-field="action">
-        ${ACTIONS.map(([action, label]) =>
-          `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`
-        ).join('')}
-      </select>
-    </td>
-    <td>
-      <span class="target-control">${targetControlHtml(button.action, button.target)}</span>
-      <small class="target-note"></small>
-    </td>
-    <td class="actions">
-      <button data-action="save">保存</button>
-      <button data-action="cancel">取消</button>
-      <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
-      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
-    </td>
-  `;
+  tr.innerHTML = `<td colspan="8"><div class="button-edit-panel">
+    <div class="button-edit-title"><strong>编辑按钮：${escapeHtml(button.name || '未命名')}</strong><span>${escapeHtml(button.area || '')} / ${escapeHtml(button.section || '')}</span></div>
+    <div class="button-edit-grid">
+      <label>页面<select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select></label>
+      <label>分组<select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select></label>
+      <label>排序<input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></label>
+      <label>按钮名称<input value="${escapeAttr(button.name || '')}" data-field="name"></label>
+      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"></div></label>
+      <label>说明<input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></label>
+      <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+    </div>
+    <label class="button-edit-target">下载 / 目标<span class="target-control">${targetControlHtml(button.action, button.target, button.raw || button)}</span><small class="target-note"></small></label>
+    <div class="button-edit-actions"><button data-action="save">保存</button><button data-action="cancel">取消</button><button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}</div>
+  </div></td>`;
 
   updateRowTargetState(tr, button);
   tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
@@ -3015,6 +3564,11 @@ function updateIconPreview(row) {
 function displayTarget(button) {
   if (button.action === 'script') {
     const scriptId = normalizeScriptTarget(button.target);
+    const catalogItem = state.builtinFunctions.find((item) => item.id === scriptId || `builtin:${item.id}` === scriptId);
+    if (catalogItem) return catalogItem.name;
+    if (scriptId.startsWith('builtin:')) {
+      return state.builtinFunctions.find((item) => `builtin:${item.id}` === scriptId)?.name || '全局内置功能';
+    }
     return SCRIPT_LABELS[scriptId] || (button.target ? `自定义：${button.target}` : '');
   }
   return button.target || '';
@@ -3035,17 +3589,79 @@ function scriptOptionsHtml(selected = '') {
   const selectedValue = normalizeScriptTarget(selected);
   const effectiveValue = selectedValue || SCRIPT_OPTIONS[0]?.value || '';
   const options = SCRIPT_OPTIONS.map(({ value, label }) =>
-    `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(label)}</option>`
+    `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(state.builtinFunctions.find((item) => item.id === value)?.name || label)}</option>`
   ).join('');
-  const customSelected = effectiveValue && !SCRIPT_LABELS[effectiveValue] ? 'selected' : '';
-  return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option><option value="" disabled>────────────</option>${options}`;
+  const customSelected = effectiveValue && !SCRIPT_LABELS[effectiveValue] && !effectiveValue.startsWith('builtin:') ? 'selected' : '';
+  const globalOptions = state.builtinFunctions.filter((item) => !item.builtIn).map((item) => {
+    const value = `builtin:${item.id}`;
+    return `<option value="${escapeAttr(value)}" ${value === effectiveValue ? 'selected' : ''}>${escapeHtml(item.name)}</option>`;
+  }).join('');
+  const globals = globalOptions ? `<option value="" disabled>── 总管理员提供 ──</option>${globalOptions}` : '';
+  return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option>${globals}<option value="" disabled>── 系统功能 ──</option>${options}`;
 }
 
-function targetControlHtml(action, target = '') {
+function downloadFileRowHtml(file = {}, index = 0) {
+  return `<div class="download-file-row">
+    <input data-download-url value="${escapeAttr(file.url || '')}" placeholder="文件下载地址">
+    <label class="download-primary" title="全部文件下载完成后自动运行此文件"><input type="radio" data-download-primary name="download-primary-${Date.now()}-${Math.random()}" ${file.primary || index === 0 ? 'checked' : ''}> 完成后运行</label>
+    <button type="button" class="danger" data-remove-download title="删除此文件">×</button>
+  </div>`;
+}
+
+function downloadControlHtml(target = '', data = {}) {
+  const files = Array.isArray(data.files) && data.files.length ? data.files : [{ name: '', url: target || '', primary: true }];
+  const multiple = data.download_mode === 'multiple' || files.length > 1;
+  return `<div class="download-target-control">
+    <select data-download-mode><option value="single" ${multiple ? '' : 'selected'}>单文件</option><option value="multiple" ${multiple ? 'selected' : ''}>多文件安装包</option></select>
+    <div data-download-single ${multiple ? 'hidden' : ''}><input data-field="target" value="${escapeAttr(target || files[0]?.url || '')}" placeholder="文件下载地址"></div>
+    <div class="download-multiple" data-download-multiple ${multiple ? '' : 'hidden'}>
+      <input data-package-name value="${escapeAttr(data.package_name || data.name || '')}" placeholder="安装包文件夹名称">
+      <div data-download-files>${files.map(downloadFileRowHtml).join('')}</div>
+      <button type="button" data-add-download>＋ 添加文件</button>
+      <small>所有文件下载到同一目录；全部成功后运行标记为主程序的文件。</small>
+    </div>
+  </div>`;
+}
+
+function bindDownloadControl(root) {
+  const control = root.querySelector('.download-target-control');
+  if (!control || control.dataset.ready) return;
+  control.dataset.ready = '1';
+  const mode = control.querySelector('[data-download-mode]');
+  const single = control.querySelector('[data-download-single]');
+  const multiple = control.querySelector('[data-download-multiple]');
+  const sync = () => { single.hidden = mode.value !== 'single'; multiple.hidden = mode.value !== 'multiple'; };
+  const bindRows = () => {
+    [...control.querySelectorAll('.download-file-row')].forEach((row) => {
+      row.querySelector('[data-remove-download]').onclick = () => {
+        if (control.querySelectorAll('.download-file-row').length <= 1) return;
+        const wasPrimary = row.querySelector('[data-download-primary]').checked;
+        row.remove();
+        if (wasPrimary) control.querySelector('[data-download-primary]')?.click();
+      };
+      row.querySelector('[data-download-primary]').onchange = (event) => {
+        if (!event.target.checked) return;
+        control.querySelectorAll('[data-download-primary]').forEach((radio) => { if (radio !== event.target) radio.checked = false; });
+      };
+    });
+  };
+  mode.onchange = sync;
+  control.querySelector('[data-add-download]').onclick = () => { control.querySelector('[data-download-files]').insertAdjacentHTML('beforeend', downloadFileRowHtml({}, 1)); bindRows(); };
+  bindRows(); sync();
+}
+
+function readDownloadConfig(root) {
+  const control = root.querySelector('.download-target-control');
+  if (!control || control.querySelector('[data-download-mode]').value !== 'multiple') return {};
+  const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
+  return { download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
+}
+
+function targetControlHtml(action, target = '', data = {}) {
   if (action === 'script') {
     const scriptId = normalizeScriptTarget(target);
     const effectiveScriptId = scriptId || SCRIPT_OPTIONS[0]?.value || '';
-    const custom = effectiveScriptId && !SCRIPT_LABELS[effectiveScriptId];
+    const custom = effectiveScriptId && !SCRIPT_LABELS[effectiveScriptId] && !effectiveScriptId.startsWith('builtin:');
     return `
       <div class="script-target-control">
         <select class="target-input" data-field="target">${scriptOptionsHtml(effectiveScriptId)}</select>
@@ -3053,6 +3669,7 @@ function targetControlHtml(action, target = '') {
       </div>
     `;
   }
+  if (action === 'download') return downloadControlHtml(target, data);
   return `<input class="target-input" value="${escapeAttr(target || '')}" data-field="target" title="${escapeAttr(target || '')}">`;
 }
 
@@ -3061,8 +3678,9 @@ function updateRowTargetState(row, button) {
   const holder = row.querySelector('.target-control');
   const note = row.querySelector('.target-note');
   const currentTarget = readRowTarget(row) || button.target || '';
-  if (holder) holder.innerHTML = targetControlHtml(action, currentTarget);
+  if (holder) holder.innerHTML = targetControlHtml(action, currentTarget, button.raw || button);
   bindScriptTargetControl(row);
+  bindDownloadControl(row);
   if (note && action !== 'script') note.textContent = '';
 }
 
@@ -3088,9 +3706,17 @@ function updateAddTargetState() {
   if (!target) return;
   const label = target.closest('label');
   const help = $('buttonScriptHelp');
-  if (action === 'script') {
+  label.classList.toggle('download-config-field', action === 'download');
+  if (action === 'download') {
+    const current = target?.value?.trim() || '';
+    label.innerHTML = `下载配置${downloadControlHtml(current, {})}`;
+    const singleInput = label.querySelector('[data-field="target"]');
+    if (singleInput) singleInput.id = 'addTarget';
+    bindDownloadControl(label);
+    if (help) help.hidden = true;
+  } else if (action === 'script') {
     const selected = normalizeScriptTarget(readAddTarget()) || SCRIPT_OPTIONS[0]?.value || '';
-    const custom = selected && !SCRIPT_LABELS[selected];
+    const custom = selected && !SCRIPT_LABELS[selected] && !selected.startsWith('builtin:');
     label.innerHTML = `
       内置功能
       <div id="addScriptControl" class="script-target-control">
@@ -3100,6 +3726,9 @@ function updateAddTargetState() {
     `;
     bindAddScriptTargetControl();
     if (label?.firstChild?.nodeType === Node.TEXT_NODE) label.firstChild.textContent = '内置功能';
+  } else if (label.querySelector('.download-target-control')) {
+    label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
+    if (help) help.hidden = true;
   } else if (target.tagName === 'SELECT') {
     label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
     if (help) help.hidden = true;
@@ -3130,6 +3759,8 @@ function readAddTarget() {
     if (select?.value === CUSTOM_SCRIPT_VALUE) return $('addCustomScript')?.value.trim() || '';
     return select?.value.trim() || '';
   }
+  const downloadControl = $('addTarget')?.closest('label')?.querySelector('.download-target-control');
+  if ($('addAction')?.value === 'download' && downloadControl?.querySelector('[data-download-mode]')?.value === 'multiple') return downloadControl.querySelector('[data-download-url]')?.value.trim() || '';
   return $('addTarget')?.value.trim() || '';
 }
 
@@ -3161,6 +3792,133 @@ async function saveAppBasicSettings() {
   await saveWholeConfig('基础信息已保存。');
 }
 
+function ensureIpLocationPanel() {
+  if ($('ipLocationPanel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'ipLocationPanel'; panel.className = 'panel collapsible-panel is-collapsed'; panel.dataset.collapsiblePanel = '';
+  panel.innerHTML = `<div class="panel-head"><h2>IP 定位接口</h2><button id="saveIpLocationBtn" type="button">保存设置</button></div>
+    <div class="ip-location-settings"><div class="form-grid compact"><label>定位模式<select id="ipLocationMode"><option value="consensus">智能一致性（推荐）</option><option value="first">单接口优先</option><option value="system">仅系统自带</option></select></label><label>一致性阈值<input id="ipLocationThreshold" type="number" min="1" max="8" value="2"></label><label class="toggle-line">统一输出中文<span><input id="ipUnifiedChinese" type="checkbox"> 开启</span></label></div>
+    <div class="ip-provider-grid"><label class="checkline"><input data-ip-provider value="amap" type="checkbox"> 高德</label><label class="checkline"><input data-ip-provider value="tencent" type="checkbox"> 腾讯</label><label class="checkline"><input data-ip-provider value="baidu" type="checkbox"> 百度</label><label class="checkline"><input data-ip-provider value="system" type="checkbox"> 系统自带</label><label class="checkline"><input data-ip-provider value="ip-api" type="checkbox"> ip-api.com</label><label class="checkline"><input data-ip-provider value="ipapi-co" type="checkbox"> ipapi.co</label><label class="checkline"><input data-ip-provider value="ip-sb" type="checkbox"> ip.sb</label><label class="checkline"><input data-ip-provider value="pconline" type="checkbox"> 太平洋 IP</label></div>
+    <div class="form-grid compact"><label>高德 Key<input id="ipAmapKey"></label><label>高德签名密钥<input id="ipAmapSecret"></label><label>腾讯 Key<input id="ipTencentKey"></label><label>腾讯 Secret Key<input id="ipTencentSecret"></label><label>百度 AK<input id="ipBaiduKey"></label></div>
+    <div class="ip-test-row"><input id="ipLocationTestInput" placeholder="输入要测试的 IPv4/IPv6"><button id="testIpLocationBtn" type="button">测试</button><span id="ipLocationTestResult"></span></div></div>`;
+  $('view-system').prepend(panel); setupCollapsiblePanels();
+  $('saveIpLocationBtn').onclick = () => saveSystemSettings('ipLocation').catch(e => setStatus(e.message, true));
+  $('testIpLocationBtn').onclick = async () => { const result = await api('/api/super/ip-location/test', { method: 'POST', body: JSON.stringify({ ip: $('ipLocationTestInput').value.trim() }) }); $('ipLocationTestResult').textContent = `${result.ip} · ${result.address}`; };
+}
+
+function normalizeButtonContentLayout(value) {
+  return value === 'none' ? 'none' : (value === 'icon_top' ? 'icon_top' : 'icon_left');
+}
+
+function buttonLayoutPages() {
+  const rows = [];
+  const seen = new Set();
+  (state.config?.sidebar || []).forEach((item) => {
+    if (!item?.id || item.id === 'settings' || seen.has(item.id)) return;
+    seen.add(item.id);
+    rows.push({ id: item.id, name: item.name || state.config?.pages?.[item.id]?.title || item.id });
+  });
+  Object.entries(state.config?.pages || {}).forEach(([id, page]) => {
+    if (!id || id === 'settings' || seen.has(id)) return;
+    seen.add(id);
+    rows.push({ id, name: page?.title || page?.name || id });
+  });
+  return rows;
+}
+
+function normalizedButtonLayoutRules(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return Object.fromEntries(['icon_left', 'icon_top'].map((id) => [id, {
+    enabled: source[id]?.enabled === true,
+    pages: Array.isArray(source[id]?.pages) ? [...new Set(source[id].pages.filter(Boolean).map(String))] : []
+  }]));
+}
+
+function canEditOwnButtonLayout() {
+  return !isTemplateMode() && (!state.targetUserId || state.targetUserId === state.currentUser?.id);
+}
+
+function renderButtonContentLayout(value, rulesValue = state.config?.app?.button_content_layout_rules) {
+  const normalized = normalizeButtonContentLayout(value);
+  const rules = normalizedButtonLayoutRules(rulesValue);
+  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
+    input.checked = input.value === normalized;
+    input.disabled = !canEditOwnButtonLayout();
+    const option = input.closest('.button-layout-option');
+    if (!option) return;
+    if (input.value === 'none') return;
+    let picker = option.querySelector('.button-layout-page-picker');
+    if (!picker) {
+      picker = document.createElement('div');
+      picker.className = 'button-layout-page-picker';
+      option.appendChild(picker);
+    }
+    const rule = rules[input.value];
+    const pages = buttonLayoutPages();
+    const disabled = !canEditOwnButtonLayout();
+    const selectedNames = pages.filter((page) => rule.pages.includes(page.id)).map((page) => page.name);
+    picker.innerHTML = `<label class="button-layout-scope-toggle"><input data-layout-scope-enabled type="checkbox" ${rule.enabled ? 'checked' : ''} ${disabled ? 'disabled' : ''}> 仅指定页面</label>
+      <details class="button-layout-page-dropdown" ${rule.enabled && rule.pages.length ? 'open' : ''}>
+        <summary>${selectedNames.length ? `已选择 ${selectedNames.length} 个页面` : '选择页面（未选择默认全部）'}</summary>
+        <div class="button-layout-page-options">${pages.map((page) => `<label><input data-layout-page type="checkbox" value="${escapeAttr(page.id)}" ${rule.pages.includes(page.id) ? 'checked' : ''} ${disabled || !rule.enabled ? 'disabled' : ''}> ${escapeHtml(page.name)}</label>`).join('') || '<small>暂无可选页面</small>'}</div>
+      </details>`;
+    picker.onclick = (event) => event.stopPropagation();
+    picker.querySelector('[data-layout-scope-enabled]').onchange = () => saveButtonLayoutRule(input.value, picker).catch((error) => setStatus(error.message, true));
+    picker.querySelectorAll('[data-layout-page]').forEach((box) => box.onchange = () => saveButtonLayoutRule(input.value, picker).catch((error) => setStatus(error.message, true)));
+  });
+}
+
+async function saveButtonLayoutRule(layoutId, picker) {
+  if (!canEditOwnButtonLayout()) throw new Error('按钮排列只能由每个用户修改自己的配置，不能修改全局模板或其他用户。');
+  const rules = normalizedButtonLayoutRules(state.config?.app?.button_content_layout_rules);
+  rules[layoutId] = {
+    enabled: picker.querySelector('[data-layout-scope-enabled]').checked,
+    pages: [...picker.querySelectorAll('[data-layout-page]:checked')].map((box) => box.value)
+  };
+  const saved = await api(appApiPath(), { method: 'PATCH', body: JSON.stringify({ button_content_layout_rules: rules }) });
+  state.config = saved;
+  renderButtonContentLayout(saved.app?.button_content_layout, saved.app?.button_content_layout_rules);
+  setStatus(rules[layoutId].enabled && rules[layoutId].pages.length ? '按钮排列页面范围已保存。' : '未限定页面，将对全部页面生效。');
+}
+
+let savingButtonContentLayout = false;
+async function saveButtonContentLayout(nextValue) {
+  if (savingButtonContentLayout) return;
+  if (!canEditOwnButtonLayout()) {
+    renderButtonContentLayout(state.config.app?.button_content_layout, state.config.app?.button_content_layout_rules);
+    setStatus('按钮排列只能由每个用户修改自己的配置，不能修改全局模板或其他用户。', true);
+    return;
+  }
+  const previous = normalizeButtonContentLayout(state.config.app?.button_content_layout);
+  const next = normalizeButtonContentLayout(nextValue);
+  if (next === previous) return;
+  const status = $('buttonContentLayoutStatus');
+  savingButtonContentLayout = true;
+  document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = true; });
+  if (status) {
+    status.classList.remove('error', 'success');
+    status.textContent = '正在保存按钮布局……';
+  }
+  try {
+    const saved = await api(appApiPath(), { method: 'PATCH', body: JSON.stringify({ button_content_layout: next }) });
+    state.config = saved;
+    renderButtonContentLayout(saved.app?.button_content_layout, saved.app?.button_content_layout_rules);
+    if (status) {
+      status.classList.add('success');
+      status.textContent = '按钮布局已保存，工具箱将在 5 秒内同步。';
+    }
+  } catch (error) {
+    renderButtonContentLayout(previous);
+    if (status) {
+      status.classList.add('error');
+      status.textContent = `按钮布局保存失败：${error.message}`;
+    }
+  } finally {
+    savingButtonContentLayout = false;
+    document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => { input.disabled = !canEditOwnButtonLayout(); });
+  }
+}
+
 async function saveAppLoginSettings() {
   if (state.currentUser?.role !== 'super') {
     setStatus('只有总管理员可以保存登录页设置。', true);
@@ -3175,17 +3933,10 @@ async function saveAppLoginSettings() {
 async function saveAppPasswordSettings() {
   const passwordEnabled = $('appPasswordEnabled').checked;
   const newPassword = $('appPassword').value.trim();
-  const hasExistingPassword = !!(state.config.app && state.config.app.password);
-
-  if (passwordEnabled && !hasExistingPassword && !newPassword) {
-    setStatus('开启工具箱密码时，请先填写新密码。', true);
-    return;
-  }
-
   const patch = {
-    password_enabled: passwordEnabled
+    password_enabled: passwordEnabled,
+    password: newPassword
   };
-  if (newPassword) patch.password = newPassword;
   await saveAppPatch(patch, '启动密码已保存。');
 }
 
@@ -3201,11 +3952,27 @@ async function saveAppExeSettings() {
 }
 
 async function saveAppUpdateSettings() {
+  const updateVariants = {};
+  document.querySelectorAll('[data-update-variant]').forEach((card) => {
+    const value = (field) => card.querySelector(`[data-update-field="${field}"]`)?.value.trim() || '';
+    const settings = {
+      version: value('version'), minVersion: value('minVersion'), url: value('url'),
+      title: value('title') || '工具箱更新', button: value('button') || '下载最新版',
+      force: card.querySelector('[data-update-field="force"]')?.checked === true
+    };
+    if (settings.force && !settings.url) throw new Error(`${CLIENT_VARIANTS.find((item) => item.id === card.dataset.updateVariant)?.label || '工具箱'}开启强制更新前必须填写更新链接。`);
+    updateVariants[card.dataset.updateVariant] = settings;
+  });
+  const original = updateVariants.original || {};
   await saveAppPatch({
-    update_url: $('appUpdateUrl')?.value.trim() || '',
-    update_title: $('appUpdateTitle')?.value.trim() || '工具箱更新',
-    update_button: $('appUpdateButton')?.value.trim() || '下载最新版'
-  }, '更新入口已保存。');
+    update_variants: updateVariants,
+    version: original.version || state.config?.app?.version || '',
+    update_url: original.url || '',
+    update_title: original.title || '工具箱更新',
+    update_button: original.button || '下载最新版',
+    update_min_version: original.minVersion || '',
+    update_force: original.force === true
+  }, '四个工具箱版本的更新设置已保存。');
 }
 
 async function saveApp() {
@@ -3271,6 +4038,15 @@ async function renamePosition() {
   }
 
   await saveWholeConfig('位置名称已保存。');
+}
+
+async function savePositionIcon() {
+  const pos = parsePositionValue($('manageScope').value);
+  if (!pos || pos.scope !== 'page') throw new Error('工具箱标签不使用左侧菜单图标。');
+  const sidebarItem = (state.config.sidebar || []).find(item => item.id === pos.pageId);
+  if (!sidebarItem) throw new Error('当前页面不在左侧菜单中。');
+  sidebarItem.icon = $('manageScopeIconPreset').value || $('manageScopeIconUrl').value.trim();
+  await saveWholeConfig('菜单图标已保存。');
 }
 
 function ensureSidebarOrder() {
@@ -3416,6 +4192,8 @@ async function addButton() {
       enabled: true
     }
   };
+  if (action === 'download') Object.assign(request.button, readDownloadConfig($('addTarget').closest('label')));
+  if (request.button.download_mode === 'multiple' && request.button.files.length < 2) { setStatus('多文件安装包请至少填写两个有效下载地址。', true); return; }
 
   if (scope === 'toolbox') request.tabIndex = Number(id);
   else request.pageId = id;
@@ -3429,7 +4207,9 @@ async function addButton() {
   if ($('addSort')) $('addSort').value = '0';
   $('addIcon').value = '';
   $('addDescription').value = '';
-  $('addTarget').value = '';
+  const addTargetLabel = $('addTarget')?.closest('label');
+  if (addTargetLabel && $('addAction').value === 'download') { addTargetLabel.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">'; updateAddTargetState(); }
+  else if ($('addTarget')) $('addTarget').value = '';
   await reloadConfigAndButtons('按钮已新增。');
 }
 
@@ -3452,6 +4232,7 @@ async function saveButton(ref, row) {
       enabled: ref.enabled !== false
     }
   };
+  if (request.button.action === 'download') Object.assign(request.button, readDownloadConfig(row));
 
   await api(buttonsApiPath(), {
     method: 'PATCH',
@@ -3469,7 +4250,7 @@ function readRowTarget(row) {
     }
     return target.value.trim();
   }
-  return target.value.trim();
+  return target?.value.trim() || row.querySelector('[data-download-url]')?.value.trim() || '';
 }
 
 async function toggleButtonEnabled(ref) {
@@ -3495,6 +4276,7 @@ async function toggleButtonEnabled(ref) {
       enabled: nextEnabled
     }
   };
+  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; }
 
   await api(buttonsApiPath(), {
     method: 'PATCH',
@@ -4026,6 +4808,12 @@ async function saveUser(userId, row) {
   };
   const password = row.querySelector('[data-field="password"]').value.trim();
   if (password) body.password = password;
+  const oldUser = state.users.find((item) => item.id === userId);
+  const sensitive = Boolean(password) || (oldUser && body.email.toLowerCase() !== String(oldUser.email || '').toLowerCase());
+  if (sensitive) {
+    body.currentPassword = prompt('请输入当前管理员密码以确认敏感账号修改：') || '';
+    if (!body.currentPassword) return;
+  }
 
   await api('/api/super/users', {
     method: 'PATCH',
@@ -4100,9 +4888,14 @@ async function batchUsers(action) {
     return;
   }
   if (action === 'delete' && !confirm(`确定删除选中的 ${ids.length} 个用户吗？`)) return;
+  const body = { ids, action };
+  if (action === 'delete') {
+    body.currentPassword = prompt('请输入当前管理员密码以确认批量删除：') || '';
+    if (!body.currentPassword) return;
+  }
   await api('/api/super/users/batch', {
     method: 'POST',
-    body: JSON.stringify({ ids, action })
+    body: JSON.stringify(body)
   });
   await loadUsers();
   renderUserContext();
@@ -4264,6 +5057,14 @@ async function saveSystemSettings(section) {
       rotateSecret: $('integrityRotateSecret')?.checked || false
     };
   }
+  if (section === 'ipLocation') {
+    body.ipLocation = {
+      providers: [...document.querySelectorAll('[data-ip-provider]:checked')].map(x => x.value),
+      mode: $('ipLocationMode').value, threshold: Number($('ipLocationThreshold').value || 2), unifiedChinese: $('ipUnifiedChinese').checked,
+      amapKey: $('ipAmapKey').value.trim(), amapSecret: $('ipAmapSecret').value.trim(), baiduKey: $('ipBaiduKey').value.trim(),
+      tencentKey: $('ipTencentKey').value.trim(), tencentSecret: $('ipTencentSecret').value.trim()
+    };
+  }
   state.system = await api('/api/super/system', {
     method: 'PATCH',
     body: JSON.stringify(body)
@@ -4389,10 +5190,12 @@ async function jumpToOrder(orderId) {
 
 async function resetUserApiKey(userId) {
   if (!confirm('重置后，这个用户旧的工具箱对接地址会失效，继续吗？')) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认重置：') || '';
+  if (!currentPassword) return;
 
   await api('/api/super/users', {
     method: 'PATCH',
-    body: JSON.stringify({ id: userId, resetApiKey: true })
+    body: JSON.stringify({ id: userId, resetApiKey: true, currentPassword })
   });
 
   await loadUsers();
@@ -4418,10 +5221,12 @@ async function toggleUserActive(userId, currentlyActive) {
 
 async function deleteUser(userId, username) {
   if (!confirm(`删除用户「${username}」？他的配置数据不会在界面里显示。`)) return;
+  const currentPassword = prompt('请输入当前管理员密码以确认删除：') || '';
+  if (!currentPassword) return;
 
   await api('/api/super/users', {
     method: 'DELETE',
-    body: JSON.stringify({ id: userId })
+    body: JSON.stringify({ id: userId, currentPassword })
   });
 
   if (state.targetUserId === userId) {
@@ -4504,6 +5309,8 @@ async function downloadClient(userId = '', variant = 'original') {
     updateClientBuildDialog('done', `已生成 ${fileName}，浏览器下载已开始。`);
     setTimeout(closeClientBuildDialog, 1600);
     setStatus(`${variantInfo.label} EXE 已生成，下一次同配置会更快。`);
+    await loadClientVariants();
+    renderClientVariants();
   } catch (error) {
     updateClientBuildDialog('error', error.message);
     throw error;
@@ -4969,9 +5776,7 @@ $('showForgotBtn').onclick = () => setLoginMode('forgot');
 $('registerBtn').onclick = () => register();
 $('sendResetCodeBtn').onclick = () => sendResetCode().catch((error) => setLoginMessage(error.message));
 updateResetCodeCountdown();
-if (Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0) > Date.now()) {
-  resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
-}
+if (Number(localStorage.getItem(RESET_CODE_COOLDOWN_KEY) || 0) > Date.now()) resetCodeCountdownTimer = setInterval(updateResetCodeCountdown, 1000);
 $('resetPasswordBtn').onclick = () => resetPassword();
 $('loginPassword').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') login();
@@ -5001,8 +5806,18 @@ $('toggleAppPassword').onclick = () => {
   input.type = visible ? 'password' : 'text';
   $('toggleAppPassword').textContent = visible ? '显示' : '隐藏';
 };
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-password-toggle]');
+  if (!button) return;
+  const input = $(button.dataset.passwordToggle);
+  if (!input) return;
+  const visible = input.type === 'text';
+  input.type = visible ? 'password' : 'text';
+  button.textContent = visible ? '显示' : '隐藏';
+});
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));
+if ($('saveScopeIconBtn')) $('saveScopeIconBtn').onclick = () => savePositionIcon().catch((error) => setStatus(error.message, true));
 $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(error.message, true));
 $('deleteScopeBtn').onclick = () => deletePosition().catch((error) => setStatus(error.message, true));
 $('addSectionBtn').onclick = () => addSection().catch((error) => setStatus(error.message, true));
@@ -5052,6 +5867,11 @@ if ($('sendNoticeBtn')) $('sendNoticeBtn').onclick = () => sendNotice().catch((e
 if ($('markAllNoticeReadBtn')) $('markAllNoticeReadBtn').onclick = () => markAllNoticesRead().catch((error) => setStatus(error.message, true));
 if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAllNotices().catch((error) => setStatus(error.message, true));
 if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
+if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
+if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
+if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
+if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
+if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
 if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));
@@ -5060,12 +5880,11 @@ if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMod
 if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () => copyCurrentToTemplate().catch((error) => setStatus(error.message, true));
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
 if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
+document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
+  input.addEventListener('change', () => {
+    if (input.checked) saveButtonContentLayout(input.value);
+  });
+});
 
 loadAll().catch((error) => handleLoadFailure(error, isAuthFailure(error)));
 updateAddTargetState();
-
-
-
-
-
-

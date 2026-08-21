@@ -115,6 +115,15 @@
           <label>版本号<input id="appVersion"></label>
           <label>主题色<input id="appTheme" type="color"></label>
           <label>默认显示模式<select id="appDefaultViewMode"><option value="grid">默认宫格</option><option value="list">默认列表</option></select></label>
+          <fieldset class="button-layout-setting" id="buttonContentLayoutSetting">
+            <legend>按钮图文排列</legend>
+            <div class="button-layout-options">
+              <label class="button-layout-option layout-none"><input type="radio" name="buttonContentLayout" value="none"><span class="button-layout-preview" aria-hidden="true"><b>功能入口</b></span><strong>关闭图文排列，使用默认文字按钮</strong></label>
+              <label class="button-layout-option"><input type="radio" name="buttonContentLayout" value="icon_left"><span class="button-layout-preview icon-left" aria-hidden="true"><i></i><b>功能入口</b></span><strong>图标在前，文字在后</strong></label>
+              <label class="button-layout-option"><input type="radio" name="buttonContentLayout" value="icon_top"><span class="button-layout-preview icon-top" aria-hidden="true"><i></i><b>功能入口</b></span><strong>图标在上，文字在下</strong></label>
+            </div>
+            <div class="button-layout-status" id="buttonContentLayoutStatus" aria-live="polite"></div>
+          </fieldset>
           <label>Logo 链接<input id="appLogo"></label>
           <label>图标链接<input id="appIcon"></label>
           <label>登录页提示<input id="loginHintInput"></label>
@@ -145,7 +154,7 @@
           <label>新密码<input id="accountNewPassword" type="password"></label>
         </div>
       </div>
-      </section>
+    </section>
 
     <section class="view" id="view-buttons">
       <div class="panel">
@@ -159,6 +168,14 @@
           <label>管理页面<select id="manageScope"></select></label>
           <label>页面新名称<input id="manageScopeName"></label>
           <label>页面位置<input id="manageScopeOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
+          <label>自定义图标链接<input id="manageScopeIconUrl" placeholder="https://... 或从后台图标库选择"></label>
+          <div class="icon-picker-field">
+            <span>从后台图标库选择</span>
+            <input id="manageScopeIconPreset" type="hidden">
+            <button id="openScopeIconPickerBtn" class="icon-picker-trigger" type="button"><img id="scopeIconPickerPreview" alt=""><span id="scopeIconPickerLabel">选择图标</span></button>
+            <div id="scopeIconPicker" class="icon-picker-popover" hidden></div>
+          </div>
+          <button id="saveScopeIconBtn" type="button">保存菜单图标</button>
           <button id="renameScopeBtn" type="button">重命名页面</button>
           <button id="moveScopeBtn" type="button">保存位置</button>
           <button id="deleteScopeBtn" type="button">删除页面</button>
@@ -230,7 +247,7 @@
           <label>可用次数<input id="newInviteMaxUses" type="number" min="1" value="1"></label>
         </div>
         <div class="table-wrap invite-table">
-          <table><thead><tr><th>邀请码</th><th>生成时间</th><th>注册后角色</th><th>绑定代理</th><th>代理邀请码</th><th>状态</th><th>是否使用</th><th>使用次数</th><th>使用记录</th><th></th></tr></thead><tbody id="inviteRows"></tbody></table>
+          <table><thead><tr><th>邀请码</th><th>生成时间</th><th>状态</th><th>是否使用</th><th>使用次数</th><th>使用记录</th><th></th></tr></thead><tbody id="inviteRows"></tbody></table>
         </div>
       </div>
     </section>
@@ -305,6 +322,34 @@
 
     <section class="view" id="view-system">
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head"><h2>全局默认菜单图标</h2><button id="saveMenuIconsBtn" type="button">保存图标库</button></div>
+        <div class="form-grid compact">
+          <label class="wide">上传图标文件夹<input id="globalMenuIconFolder" type="file" webkitdirectory directory multiple accept="image/png,image/jpeg,image/webp,image/gif"></label>
+          <button id="uploadMenuIconFolderBtn" type="button">上传文件夹并保存</button>
+          <small id="menuIconLibraryStatus" class="wide">图标名称自动使用图片文件名，非图片文件会自动跳过。</small>
+        </div>
+        <div id="menuIconRows" class="popup-config-list"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>全局内置功能</h2>
+          <div class="button-pair">
+            <button id="addBuiltinFunctionBtn" type="button">新增功能</button>
+            <button id="saveBuiltinFunctionsBtn" type="button">保存</button>
+          </div>
+        </div>
+        <div id="builtinFunctionRows" class="popup-config-list"></div>
+        <small>真实下载链接仅总管理员可见。普通用户只能选择功能名称，客户端下载由本站代理转发。</small>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>工具箱封面与介绍</h2>
+          <button id="saveClientVariantsBtn" type="button">保存</button>
+        </div>
+        <p class="note">设置对接页中各款工具箱的名称、介绍与封面。封面可使用默认预览、上传到服务器或填写图床地址。</p>
+        <div id="clientVariantSettings" class="variant-settings-grid"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
           <h2>邮箱设置</h2>
           <button id="saveMailBtn" type="button">保存</button>
@@ -333,6 +378,42 @@
           <label>系统管理菜单名称<input id="systemMenuName" placeholder="系统管理"></label>
           <label class="toggle-line">前台选中高亮<span><input id="systemFrontendGlow" type="checkbox"> 启用</span></label>
           <label class="toggle-line">前台分组数量<span><input id="systemFrontendGroupCount" type="checkbox"> 显示</span></label>
+        </div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+        <div class="panel-head">
+          <h2>隐藏入口弹窗</h2>
+          <button id="savePopupSettingsBtn" type="button">保存</button>
+        </div>
+        <div class="popup-settings">
+          <div class="form-grid compact">
+            <label class="toggle-line">启用隐藏入口<span><input id="popupEnabled" type="checkbox"> 启用</span></label>
+            <label>Logo 连续点击次数<input id="popupClickCount" type="number" min="1" max="20" step="1"></label>
+            <label>数据缓存分钟<input id="popupCacheMinutes" type="number" min="0" max="1440" step="1"></label>
+            <label>弹窗标题<input id="popupTitle" placeholder="联系我们 / 支持作者"></label>
+            <label class="wide">感谢文案<textarea id="popupThanksText" rows="3" placeholder="感谢你的支持，我们会持续维护和更新工具箱。"></textarea></label>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>联系方式二维码</h3>
+              <button id="addPopupContactBtn" type="button">新增联系方式</button>
+            </div>
+            <div id="popupContactRows" class="popup-config-list"></div>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>收款码</h3>
+              <button id="addPopupPaymentBtn" type="button">新增收款码</button>
+            </div>
+            <div id="popupPaymentRows" class="popup-config-list"></div>
+          </div>
+          <div class="popup-admin-block">
+            <div class="popup-admin-head">
+              <h3>相关链接</h3>
+              <button id="addPopupLinkBtn" type="button">新增链接</button>
+            </div>
+            <div id="popupLinkRows" class="popup-config-list"></div>
+          </div>
         </div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
@@ -395,7 +476,7 @@
           </table>
         </div>
       </div>
-      </section>
+    </section>
   </main>
 
   <div id="noticeComposer" class="modal-overlay" hidden>
@@ -429,8 +510,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026062902"></script>
+  <script src="/admin.js?v=2026072802"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>
-

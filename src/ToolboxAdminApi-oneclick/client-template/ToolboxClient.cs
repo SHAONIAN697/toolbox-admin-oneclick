@@ -9385,8 +9385,7 @@ namespace ToolboxClient
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
                     result.FileName = SafeDownloadFileName(result.Download.FileName);
-                    string dir = GetDownloadDirectory();
-                    Directory.CreateDirectory(dir);
+                    string dir = EnsureWritableDownloadDirectory();
                     result.Path = Path.Combine(dir, result.FileName);
                     result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
                 }
@@ -9411,6 +9410,11 @@ namespace ToolboxClient
             if (result.Error != null)
             {
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
+                if (result.Error is IOException || result.Error is UnauthorizedAccessException)
+                {
+                    status.Text = PortalText("下载目录不可用，且没有找到其他可写磁盘。", "No writable download folder is available.");
+                    return;
+                }
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
@@ -11191,6 +11195,46 @@ namespace ToolboxClient
                 SaveClientSettings(settings);
             }
             return Environment.ExpandEnvironmentVariables(dir);
+        }
+
+        private string EnsureWritableDownloadDirectory()
+        {
+            string configured = GetDownloadDirectory();
+            List<string> candidates = new List<string>();
+            if (!String.IsNullOrWhiteSpace(configured)) candidates.Add(configured);
+
+            string brand = SafeFolderName(GetText(AsDict(Get(config, "app")), "title", "Toolbox"));
+            foreach (DriveInfo drive in ReadyDownloadDrives())
+            {
+                string candidate = Path.Combine(drive.RootDirectory.FullName, brand);
+                if (!candidates.Exists(delegate(string value) { return value.Equals(candidate, StringComparison.OrdinalIgnoreCase); }))
+                    candidates.Add(candidate);
+            }
+
+            Exception lastError = null;
+            foreach (string candidate in candidates)
+            {
+                try
+                {
+                    string expanded = Environment.ExpandEnvironmentVariables(candidate);
+                    Directory.CreateDirectory(expanded);
+                    string probe = Path.Combine(expanded, ".toolbox-write-test-" + Guid.NewGuid().ToString("N") + ".tmp");
+                    using (FileStream stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    File.Delete(probe);
+                    if (!expanded.Equals(configured, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ClientSettings settings = LoadClientSettings();
+                        settings.DownloadDirectory = expanded;
+                        SaveClientSettings(settings);
+                    }
+                    return expanded;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+            }
+            throw new IOException("没有可写的下载目录。", lastError);
         }
 
         private bool IsOldAutomaticRemovableDirectory(string dir)
@@ -12999,7 +13043,10 @@ namespace ToolboxClient
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             SavePausedDownloadTasks();
-            CleanupDownloadedFilesOnExit();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { CleanupDownloadedFilesOnExit(); } catch { }
+            });
             base.OnFormClosing(e);
         }
 
