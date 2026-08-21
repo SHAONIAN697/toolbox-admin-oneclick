@@ -12,6 +12,7 @@
   system: null,
   builtinFunctions: [],
   menuIcons: [],
+  menuIconLibraryError: '',
   templateMode: false,
   notices: [],
   announcements: [],
@@ -2044,21 +2045,26 @@ function renderSystemSettings() {
 async function loadMenuIcons() {
   const result = await api('/api/admin/menu-icons');
   state.menuIcons = result.icons || [];
-  if (isSuper() && state.system) state.system.menuIcons = state.menuIcons;
+  state.menuIconLibraryError = result.libraryError || '';
 }
 
 function renderMenuIcons() {
   const root = $('menuIconRows');
   if (!root || !isSuper()) return;
-  root.innerHTML = state.menuIcons.length ? state.menuIcons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无默认菜单图标。</p>';
-  root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { state.menuIcons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
+  const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
+  root.innerHTML = icons.length ? icons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无管理员手工添加的菜单图标。</p>';
+  root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { icons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
+  if ($('globalMenuIconLibraryUrl')) $('globalMenuIconLibraryUrl').value = state.system?.menuIconLibraryUrl || '';
+  const libraryCount = state.menuIcons.filter((item) => item.library).length;
+  if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = state.menuIconLibraryError || (state.system?.menuIconLibraryUrl ? `外部图标库已读取 ${libraryCount} 个图标，所有用户均可看图选择。` : '支持 JSON 清单或“名称|图片直链”文本清单。');
 }
 
 function addMenuIcon() {
   const name = $('globalMenuIconName').value.trim();
   const url = $('globalMenuIconUrl').value.trim();
   if (!name || !url) throw new Error('请填写图标名称和图标链接。');
-  state.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url });
+  if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
+  state.system.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url });
   $('globalMenuIconName').value = ''; $('globalMenuIconUrl').value = ''; renderMenuIcons();
 }
 
@@ -2074,13 +2080,15 @@ async function uploadGlobalMenuIcon() {
   const name = $('globalMenuIconName').value.trim();
   if (!name) throw new Error('请先填写图标名称。');
   const result = await uploadImage($('globalMenuIconFile'), '/api/super/system/menu-icon');
-  state.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url: result.url });
+  if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
+  state.system.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url: result.url });
   renderMenuIcons(); setStatus('图标已上传，请点击保存图标库。');
 }
 
 async function saveMenuIcons() {
-  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = state.menuIcons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
-  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: state.menuIcons }) });
+  const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
+  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '' }) });
   await loadMenuIcons(); renderAll(); setStatus('全局默认菜单图标已保存。');
 }
 
@@ -3115,6 +3123,36 @@ function renderManageControls() {
   renderManagedSections();
 }
 
+function renderScopeIconPicker(iconUrl, enabled) {
+  const picker = $('scopeIconPicker');
+  const trigger = $('openScopeIconPickerBtn');
+  const preset = $('manageScopeIconPreset');
+  const preview = $('scopeIconPickerPreview');
+  const label = $('scopeIconPickerLabel');
+  if (!picker || !trigger || !preset || !preview || !label) return;
+  const selected = state.menuIcons.find((item) => item.url === iconUrl);
+  preview.src = selected?.url || '';
+  preview.hidden = !selected;
+  label.textContent = selected?.name || '使用内置图标';
+  trigger.disabled = !enabled;
+  picker.innerHTML = `<button class="icon-picker-item${selected ? '' : ' is-selected'}" data-icon-picker-value="" type="button"><span class="icon-picker-built-in">内置</span><strong>使用内置图标</strong></button>${state.menuIcons.map((item) => `<button class="icon-picker-item${selected?.url === item.url ? ' is-selected' : ''}" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}`;
+  trigger.onclick = () => { if (enabled) picker.hidden = !picker.hidden; };
+  picker.querySelectorAll('[data-icon-picker-value]').forEach((button) => {
+    button.onclick = () => {
+      const value = button.dataset.iconPickerValue || '';
+      const item = state.menuIcons.find((row) => row.url === value);
+      preset.value = value;
+      if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = '';
+      preview.src = item?.url || '';
+      preview.hidden = !item;
+      label.textContent = item?.name || '使用内置图标';
+      picker.querySelectorAll('.icon-picker-item').forEach((row) => row.classList.toggle('is-selected', row === button));
+      picker.hidden = true;
+    };
+  });
+  picker.hidden = true;
+}
+
 function renderManagedSections() {
   const pos = parsePositionValue($('manageScope')?.value || '');
   const sectionSelect = $('manageSection');
@@ -3126,12 +3164,15 @@ function renderManagedSections() {
   const iconUrl = sidebarItem?.icon || '';
   const preset = $('manageScopeIconPreset');
   if (preset) {
-    preset.innerHTML = '<option value="">使用内置图标</option>' + state.menuIcons.map(item => `<option value="${escapeAttr(item.url)}">${escapeHtml(item.name)}</option>`).join('');
     preset.value = state.menuIcons.some(item => item.url === iconUrl) ? iconUrl : '';
     preset.disabled = pos.scope !== 'page';
-    preset.onchange = () => { if (preset.value) $('manageScopeIconUrl').value = preset.value; };
+    renderScopeIconPicker(iconUrl, pos.scope === 'page');
   }
-  if ($('manageScopeIconUrl')) { $('manageScopeIconUrl').value = iconUrl; $('manageScopeIconUrl').disabled = pos.scope !== 'page'; }
+  if ($('manageScopeIconUrl')) {
+    $('manageScopeIconUrl').value = state.menuIcons.some((item) => item.url === iconUrl) ? '' : iconUrl;
+    $('manageScopeIconUrl').disabled = pos.scope !== 'page';
+    $('manageScopeIconUrl').oninput = () => { if ($('manageScopeIconUrl').value.trim()) { preset.value = ''; renderScopeIconPicker('', pos.scope === 'page'); } };
+  }
   const previous = sectionSelect.value;
   const sections = ensureSections(pos.container);
   sectionSelect.innerHTML = '';
@@ -3932,12 +3973,13 @@ async function savePositionIcon() {
   if (!pos || pos.scope !== 'page') throw new Error('工具箱标签不使用左侧菜单图标。');
   const sidebarItem = (state.config.sidebar || []).find(item => item.id === pos.pageId);
   if (!sidebarItem) throw new Error('当前页面不在左侧菜单中。');
-  sidebarItem.icon = $('manageScopeIconUrl').value.trim();
+  sidebarItem.icon = $('manageScopeIconPreset').value || $('manageScopeIconUrl').value.trim();
   await saveWholeConfig('菜单图标已保存。');
 }
 
 async function uploadPositionIcon() {
   const result = await uploadImage($('manageScopeIconFile'), '/api/admin/menu-icon/upload');
+  $('manageScopeIconPreset').value = '';
   $('manageScopeIconUrl').value = result.url;
   await savePositionIcon();
 }

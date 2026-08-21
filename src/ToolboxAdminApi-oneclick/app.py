@@ -21,7 +21,7 @@ from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 ROOT = Path(__file__).resolve().parent
 WWW = ROOT / "wwwroot"
@@ -389,9 +389,12 @@ def locate_ip(ip, bypass_cache=False):
             if cfg.get("mode") == "first": break
     address = select_ip_location(results, cfg)
     if cfg.get("unifiedChinese", True):
-        repeated = re.fullmatch(r"(.+?)\1", address, flags=re.I)
+        repeated = re.fullmatch(r"(.+?)\\1", address, flags=re.I)
         if repeated: address = repeated.group(1)
-        location_names = {"Autonomous Region": "", "Hulun Buir": "呼伦贝尔市", "Hulunbuir": "呼伦贝尔市", "Beijing": "北京市", "Shanghai": "上海市", "Tianjin": "天津市", "Chongqing": "重庆市", "Hebei": "河北省", "Shanxi": "山西省", "Liaoning": "辽宁省", "Jilin": "吉林省", "Heilongjiang": "黑龙江省", "Jiangsu": "江苏省", "Zhejiang": "浙江省", "Anhui": "安徽省", "Fujian": "福建省", "Jiangxi": "江西省", "Shandong": "山东省", "Henan": "河南省", "Hubei": "湖北省", "Hunan": "湖南省", "Guangdong": "广东省", "Hainan": "海南省", "Sichuan": "四川省", "Guizhou": "贵州省", "Yunnan": "云南省", "Shaanxi": "陕西省", "Gansu": "甘肃省", "Qinghai": "青海省", "Taiwan": "台湾省", "Inner Mongolia": "内蒙古自治区", "Guangxi": "广西壮族自治区", "Tibet": "西藏自治区", "Ningxia": "宁夏回族自治区", "Xinjiang": "新疆维吾尔自治区", "Hong Kong": "香港特别行政区", "Macao": "澳门特别行政区", "Macau": "澳门特别行政区"}
+        location_names = {
+            "Autonomous Region": "",
+            "Hulun Buir": "呼伦贝尔市",
+            "Hulunbuir": "呼伦贝尔市","Beijing": "北京市", "Shanghai": "上海市", "Tianjin": "天津市", "Chongqing": "重庆市", "Hebei": "河北省", "Shanxi": "山西省", "Liaoning": "辽宁省", "Jilin": "吉林省", "Heilongjiang": "黑龙江省", "Jiangsu": "江苏省", "Zhejiang": "浙江省", "Anhui": "安徽省", "Fujian": "福建省", "Jiangxi": "江西省", "Shandong": "山东省", "Henan": "河南省", "Hubei": "湖北省", "Hunan": "湖南省", "Guangdong": "广东省", "Hainan": "海南省", "Sichuan": "四川省", "Guizhou": "贵州省", "Yunnan": "云南省", "Shaanxi": "陕西省", "Gansu": "甘肃省", "Qinghai": "青海省", "Taiwan": "台湾省", "Inner Mongolia": "内蒙古自治区", "Guangxi": "广西壮族自治区", "Tibet": "西藏自治区", "Ningxia": "宁夏回族自治区", "Xinjiang": "新疆维吾尔自治区", "Hong Kong": "香港特别行政区", "Macao": "澳门特别行政区", "Macau": "澳门特别行政区"}
         for english in sorted(location_names, key=len, reverse=True):
             address = re.sub(re.escape(english), location_names[english], address, flags=re.I)
         if re.search(r"[\u3400-\u9fff]", address):
@@ -721,6 +724,11 @@ def normalize_view_mode(value, default="grid"):
     return default
 
 
+def normalize_button_content_layout(value):
+    value = str(value or "").strip().lower()
+    return value if value in ("none", "icon_left", "icon_top") else "icon_left"
+
+
 def normalize_feature_settings(config):
     changed = False
     features = config.get("features")
@@ -1014,9 +1022,7 @@ def ensure_config_defaults(config):
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
         changed = True
-    button_content_layout = str(app.get("button_content_layout") or "").strip().lower()
-    if button_content_layout not in ("none", "icon_left", "icon_top"):
-        button_content_layout = "icon_left"
+    button_content_layout = normalize_button_content_layout(app.get("button_content_layout"))
     if app.get("button_content_layout") != button_content_layout:
         app["button_content_layout"] = button_content_layout
         changed = True
@@ -1492,8 +1498,7 @@ def apply_app_patch(config, patch):
         elif key == "default_view_mode":
             app[key] = normalize_view_mode(value, "grid")
         elif key == "button_content_layout":
-            normalized = str(value or "").strip().lower()
-            app[key] = normalized if normalized in ("none", "icon_left", "icon_top") else "icon_left"
+            app[key] = normalize_button_content_layout(value)
         elif key == "button_content_layout_rules" and isinstance(value, dict):
             app[key] = value
         else:
@@ -1649,6 +1654,7 @@ def default_system_settings():
             for variant_id, variant in CLIENT_VARIANTS.items()
         },
         "menuIcons": [],
+        "menuIconLibraryUrl": "",
         "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
             "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
@@ -1834,8 +1840,75 @@ def public_system_settings():
     return public
 
 
+def read_remote_menu_icons(library_url):
+    library_url = str(library_url or "").strip()
+    if not library_url:
+        return [], ""
+    try:
+        request = urllib.request.Request(library_url, headers={
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
+            "User-Agent": "ToolboxAdmin/1.0",
+        })
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read(1024 * 1024 + 1)
+            final_url = response.geturl()
+        if len(raw) > 1024 * 1024:
+            raise ValueError("图标库清单不能超过 1MB")
+        text = raw.decode("utf-8-sig", errors="replace").strip()
+        sources = None
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                payload = payload.get("icons", payload.get("files", []))
+            if isinstance(payload, list):
+                sources = payload
+        except json.JSONDecodeError:
+            pass
+        if sources is None:
+            sources = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "|" in line:
+                    name, icon_url = line.split("|", 1)
+                    sources.append({"name": name.strip(), "url": icon_url.strip()})
+                else:
+                    sources.append(line)
+
+        icons = []
+        used = set()
+        for source in sources[:500]:
+            if isinstance(source, str):
+                icon_url = source.strip()
+                name = Path(urlparse(icon_url).path).stem
+            elif isinstance(source, dict):
+                icon_url = str(source.get("url") or source.get("downloadUrl") or source.get("link") or "").strip()
+                name = str(source.get("name") or source.get("title") or "").strip()
+            else:
+                continue
+            icon_url = urljoin(final_url, icon_url)
+            if not http_url(icon_url) or icon_url in used:
+                continue
+            used.add(icon_url)
+            icons.append({
+                "id": "library_" + hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:16],
+                "name": (name or Path(urlparse(icon_url).path).stem or "图标")[:80],
+                "url": icon_url,
+                "library": True,
+            })
+        return icons, ""
+    except Exception as exc:
+        return [], "图标库读取失败：" + str(exc)[:160]
+
+
 def write_system_settings(body):
     current = read_system_settings()
+    if "menuIconLibraryUrl" in body:
+        library_url = str(body.get("menuIconLibraryUrl") or "").strip()[:1000]
+        if library_url and not http_url(library_url):
+            raise ValueError("图标库清单地址必须是 HTTP/HTTPS 地址。")
+        current["menuIconLibraryUrl"] = library_url
     if isinstance(body.get("menuIcons"), list):
         rows = []
         used = set()
@@ -3370,6 +3443,13 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EXE_FILE_VERSION__"', csharp_literal(exe_version))
     with tempfile.TemporaryDirectory() as td:
         icon_file = custom_client_icon(app_config, td)
+        embedded_brand_icon = base64.b64encode(
+            icon_file.read_bytes()
+        ).decode("ascii")
+        source = source.replace(
+            '"__EMBEDDED_BRAND_ICON_BASE64__"',
+            csharp_literal(embedded_brand_icon)
+        )
         src = Path(td) / "ToolboxClient.cs"
         exe = Path(td) / file_name
         src.write_text(source, encoding="utf-8")
@@ -4067,7 +4147,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/client/variants" and method == "GET":
             return self.send_json(public_client_variants())
         if path == "/api/admin/menu-icons" and method == "GET":
-            return self.send_json({"icons": read_system_settings().get("menuIcons") or []})
+            settings = read_system_settings()
+            icons = list(settings.get("menuIcons") or [])
+            library_icons, library_error = read_remote_menu_icons(settings.get("menuIconLibraryUrl") or "")
+            return self.send_json({"icons": icons + library_icons, "libraryError": library_error})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)
             name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)
@@ -4323,5 +4406,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("TOOLBOX_PORT", "5088"))
     print(f"Toolbox admin API started: http://{host}:{port}/", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-

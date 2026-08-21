@@ -21,7 +21,7 @@ from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 ROOT = Path(__file__).resolve().parent
 WWW = ROOT / "wwwroot"
@@ -1654,6 +1654,7 @@ def default_system_settings():
             for variant_id, variant in CLIENT_VARIANTS.items()
         },
         "menuIcons": [],
+        "menuIconLibraryUrl": "",
         "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
             "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
@@ -1839,8 +1840,75 @@ def public_system_settings():
     return public
 
 
+def read_remote_menu_icons(library_url):
+    library_url = str(library_url or "").strip()
+    if not library_url:
+        return [], ""
+    try:
+        request = urllib.request.Request(library_url, headers={
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
+            "User-Agent": "ToolboxAdmin/1.0",
+        })
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read(1024 * 1024 + 1)
+            final_url = response.geturl()
+        if len(raw) > 1024 * 1024:
+            raise ValueError("图标库清单不能超过 1MB")
+        text = raw.decode("utf-8-sig", errors="replace").strip()
+        sources = None
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                payload = payload.get("icons", payload.get("files", []))
+            if isinstance(payload, list):
+                sources = payload
+        except json.JSONDecodeError:
+            pass
+        if sources is None:
+            sources = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "|" in line:
+                    name, icon_url = line.split("|", 1)
+                    sources.append({"name": name.strip(), "url": icon_url.strip()})
+                else:
+                    sources.append(line)
+
+        icons = []
+        used = set()
+        for source in sources[:500]:
+            if isinstance(source, str):
+                icon_url = source.strip()
+                name = Path(urlparse(icon_url).path).stem
+            elif isinstance(source, dict):
+                icon_url = str(source.get("url") or source.get("downloadUrl") or source.get("link") or "").strip()
+                name = str(source.get("name") or source.get("title") or "").strip()
+            else:
+                continue
+            icon_url = urljoin(final_url, icon_url)
+            if not http_url(icon_url) or icon_url in used:
+                continue
+            used.add(icon_url)
+            icons.append({
+                "id": "library_" + hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:16],
+                "name": (name or Path(urlparse(icon_url).path).stem or "图标")[:80],
+                "url": icon_url,
+                "library": True,
+            })
+        return icons, ""
+    except Exception as exc:
+        return [], "图标库读取失败：" + str(exc)[:160]
+
+
 def write_system_settings(body):
     current = read_system_settings()
+    if "menuIconLibraryUrl" in body:
+        library_url = str(body.get("menuIconLibraryUrl") or "").strip()[:1000]
+        if library_url and not http_url(library_url):
+            raise ValueError("图标库清单地址必须是 HTTP/HTTPS 地址。")
+        current["menuIconLibraryUrl"] = library_url
     if isinstance(body.get("menuIcons"), list):
         rows = []
         used = set()
@@ -4079,7 +4147,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/client/variants" and method == "GET":
             return self.send_json(public_client_variants())
         if path == "/api/admin/menu-icons" and method == "GET":
-            return self.send_json({"icons": read_system_settings().get("menuIcons") or []})
+            settings = read_system_settings()
+            icons = list(settings.get("menuIcons") or [])
+            library_icons, library_error = read_remote_menu_icons(settings.get("menuIconLibraryUrl") or "")
+            return self.send_json({"icons": icons + library_icons, "libraryError": library_error})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)
             name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)

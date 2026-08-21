@@ -168,7 +168,12 @@
           <label>管理页面<select id="manageScope"></select></label>
           <label>页面新名称<input id="manageScopeName"></label>
           <label>页面位置<input id="manageScopeOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
-          <label>默认菜单图标<select id="manageScopeIconPreset"><option value="">使用内置图标</option></select></label>
+          <div class="icon-picker-field">
+            <span>默认菜单图标</span>
+            <input id="manageScopeIconPreset" type="hidden">
+            <button id="openScopeIconPickerBtn" class="icon-picker-trigger" type="button"><img id="scopeIconPickerPreview" alt=""><span id="scopeIconPickerLabel">使用内置图标</span></button>
+            <div id="scopeIconPicker" class="icon-picker-popover" hidden></div>
+          </div>
           <label>自定义图标链接<input id="manageScopeIconUrl" placeholder="https://... 或选择默认图标"></label>
           <label>上传菜单图标<input id="manageScopeIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
           <button id="uploadScopeIconBtn" type="button">上传图标</button>
@@ -321,6 +326,8 @@
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head"><h2>全局默认菜单图标</h2><button id="saveMenuIconsBtn" type="button">保存图标库</button></div>
         <div class="form-grid compact">
+          <label class="wide">图标库清单地址（仅管理员可设置）<input id="globalMenuIconLibraryUrl" placeholder="https://.../icons.json"></label>
+          <small id="menuIconLibraryStatus" class="wide"></small>
           <label>图标名称<input id="globalMenuIconName" placeholder="例如：系统工具"></label>
           <label>图标链接<input id="globalMenuIconUrl" placeholder="https://..."></label>
           <label>上传图片<input id="globalMenuIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
