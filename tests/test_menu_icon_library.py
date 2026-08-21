@@ -71,6 +71,9 @@ class MenuIconLibraryTests(unittest.TestCase):
             config_load = script.index("state.config = await api(configApiPath())")
             deferred_icons = script.index("loadMenuIcons().then", config_load)
             self.assertGreater(deferred_icons, config_load)
+            save_body = script.split("async function saveMenuIcons()", 1)[1].split("function renderBuiltinFunctions", 1)[0]
+            self.assertNotIn("await loadMenuIcons()", save_body)
+            self.assertIn("图标库正在后台刷新", save_body)
             failure_body = script.split("function handleLoadFailure", 1)[1].split("function showLogin", 1)[0]
             self.assertIn("if (!silent)", failure_body)
             self.assertIn("$('manageScopeIconUrl').value = '';", script)

@@ -2102,7 +2102,15 @@ async function saveMenuIcons() {
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
   document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
   state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '', menuIconLibraryToken: $('globalMenuIconLibraryToken')?.value.trim() || '' }) });
-  await loadMenuIcons(); renderAll(); setStatus('全局默认菜单图标已保存。');
+  renderMenuIcons();
+  setStatus('全局默认菜单图标已保存，图标库正在后台刷新。');
+  loadMenuIcons().then(() => {
+    renderMenuIcons();
+    if (state.activeView === 'buttons') renderManagedSections();
+  }).catch((error) => {
+    state.menuIconLibraryError = error.message || '图标库读取失败。';
+    renderMenuIcons();
+  });
 }
 
 function renderBuiltinFunctions() {

@@ -1883,7 +1883,10 @@ def openlist_icon_sources(library_url, token):
     with urllib.request.urlopen(request, timeout=12) as response:
         payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8-sig"))
     if int(payload.get("code") or 0) != 200:
-        raise ValueError(payload.get("message") or "目录接口拒绝访问")
+        message = str(payload.get("message") or "目录接口拒绝访问")
+        if "guest user is disabled" in message.lower():
+            message = "目录禁止游客访问，请填写图标库访问令牌"
+        raise ValueError(message)
     content = ((payload.get("data") or {}).get("content") or [])
     rows = []
     image_suffixes = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp")
