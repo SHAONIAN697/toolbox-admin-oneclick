@@ -342,8 +342,8 @@ namespace ToolboxClient
             BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 5000;
-            refreshTimer.Tick += delegate { LoadConfigAsync(false); LoadPopupConfigAsync(false); };
+            refreshTimer.Interval = 15000;
+            refreshTimer.Tick += delegate { LoadConfigAsync(false); };
             Shown += delegate
             {
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
@@ -2308,7 +2308,7 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                json = NormalizeConfigJson(DownloadText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks + "&r=" + Guid.NewGuid().ToString("N"))));
+                json = NormalizeConfigJson(DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks)));
                 EnsureConfigResponse(json);
                 SaveCache(json);
                 if (json == lastConfigJson)
@@ -2344,7 +2344,7 @@ namespace ToolboxClient
                 }
                 if (!String.IsNullOrWhiteSpace(lastConfigJson))
                 {
-                    string keepMessage = "后台连接失败，保留当前配置：" + ex.Message;
+                    string keepMessage = "后台连接较慢，保留当前配置并稍后重试";
                     BeginInvoke(new Action(delegate { status.Text = keepMessage; }));
                     return;
                 }
@@ -14158,9 +14158,19 @@ namespace ToolboxClient
 
         private string DownloadText(string url)
         {
+            return DownloadText(url, 10000);
+        }
+
+        private string DownloadConfigText(string url)
+        {
+            return DownloadText(url, 4000);
+        }
+
+        private string DownloadText(string url, int timeout)
+        {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Timeout = 10000;
-            request.ReadWriteTimeout = 10000;
+            request.Timeout = timeout;
+            request.ReadWriteTimeout = timeout;
             request.UserAgent = "ToolboxClient";
             request.Accept = "application/json, text/plain, */*";
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
