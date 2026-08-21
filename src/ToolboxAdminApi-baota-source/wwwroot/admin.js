@@ -1373,11 +1373,8 @@ function auditAccount(item) {
 function auditPath(item) { const value = String(item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item.path || ''); }
 function updateAuditUserOptions() {
   const options = $('auditUserOptions');
-  const users = [...new Set(
-    state.users
-      .map((user) => String(user.username || '').trim())
-      .filter(Boolean)
-  )].sort();
+  const users = [...new Set(state.users.flatMap((user) => [user.displayName, user.username, user.email]
+    .map((value) => String(value || '').trim()).filter(Boolean)))].sort();
 
   const signature = JSON.stringify(users);
   if (!options || options.dataset.optionsSignature === signature) return;
@@ -1393,7 +1390,16 @@ function auditUserSearchText(item) {
   const user = state.users.find(
     (entry) => entry.username === account || entry.id === item.actorId
   );
-  return `${account} ${user?.displayName || ''} ${user?.username || ''}`;
+  return `${item.actorDisplayName || user?.displayName || ''} ${item.actor || user?.username || account} ${item.actorEmail || user?.email || ''}`;
+}
+
+function auditUserLabel(item) {
+  const account = auditAccount(item);
+  const user = state.users.find((entry) => entry.username === account || entry.id === item.actorId);
+  const displayName = String(item.actorDisplayName || user?.displayName || '').trim();
+  const username = String(item.actor || user?.username || account || '').trim();
+  const email = String(item.actorEmail || user?.email || '').trim();
+  return `<strong>${escapeHtml(displayName || username || '未知用户')}</strong>${username && username !== displayName ? `<div class="muted audit-user-username">用户名：${escapeHtml(username)}</div>` : ''}${email ? `<div class="muted audit-user-email">邮箱：${escapeHtml(email)}</div>` : ''}`;
 }
 
 function auditRisk(item) {
@@ -1437,7 +1443,7 @@ function renderAuditLog() {
   const items = filteredAuditItems();
   const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
   $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
-  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td><strong>${escapeHtml(auditAccount(item))}</strong></td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td>${auditUserLabel(item)}</td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
 }
 
 function syncAuditAutoRefresh(view) {
