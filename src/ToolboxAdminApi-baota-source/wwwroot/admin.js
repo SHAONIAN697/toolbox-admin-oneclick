@@ -2594,6 +2594,7 @@ function renderClientVariants() {
           <span>${escapeHtml(config.badge || variant.badge)}</span>
         </div>
         <p>${escapeHtml(config.description || variant.description)}</p>
+        <div class="client-variant-download-count">已下载 ${Number(config.downloadCount || 0)} 次</div>
         <button type="button" data-action="download-client-variant" data-variant="${escapeAttr(variant.id)}" ${editing ? 'disabled' : ''}>
           ${editing ? '模板不能下载' : '下载这个版本'}
         </button>
@@ -5201,6 +5202,8 @@ async function downloadClient(userId = '', variant = 'original') {
     updateClientBuildDialog('done', `已生成 ${fileName}，浏览器下载已开始。`);
     setTimeout(closeClientBuildDialog, 1600);
     setStatus(`${variantInfo.label} EXE 已生成，下一次同配置会更快。`);
+    await loadClientVariants();
+    renderClientVariants();
   } catch (error) {
     updateClientBuildDialog('error', error.message);
     throw error;

@@ -1144,6 +1144,7 @@ body.is-template-mode .template-status {
   color: var(--muted);
   line-height: 1.55;
 }
+.client-variant-download-count { color: var(--muted); font-size: 13px; }
 
 .popup-row-actions {
   display: flex;

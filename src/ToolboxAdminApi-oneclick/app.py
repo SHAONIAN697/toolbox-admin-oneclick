@@ -43,6 +43,7 @@ CLIENT_ICON = ROOT / "assets" / "toolbox-default.ico"
 CLIENT_CACHE = DATA / "client-cache"
 CLIENT_JOBS = DATA / "client-jobs"
 CLIENT_INTEGRITY_PATH = DATA / "client-integrity.json"
+CLIENT_DOWNLOAD_STATS_PATH = DATA / "client-download-stats.json"
 AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
 IP_CACHE_PATH = DATA / "ip-location-cache.json"
 BACKUP_DIR = DATA / "security-backups"
@@ -894,6 +895,7 @@ def client_variant_info(value):
 
 def public_client_variants():
     configured = read_system_settings().get("clientVariants") or {}
+    counts = read_client_download_counts()
     variants = []
     for variant_id in ("original", "studio", "tuner", "audio", "portal"):
         item = dict(CLIENT_VARIANTS[variant_id])
@@ -901,8 +903,39 @@ def public_client_variants():
         for key in ("name", "badge", "description", "coverMode", "coverUrl"):
             if key in values:
                 item[key] = values[key]
+        item["downloadCount"] = counts.get(variant_id, 0)
         variants.append(item)
     return {"variants": variants}
+
+
+def read_client_download_counts():
+    data = read_json(CLIENT_DOWNLOAD_STATS_PATH, {})
+    return {
+        variant_id: max(0, int(data.get(variant_id) or 0))
+        for variant_id in CLIENT_VARIANTS
+    } if isinstance(data, dict) else {variant_id: 0 for variant_id in CLIENT_VARIANTS}
+
+
+def record_client_download(variant):
+    variant = normalize_client_variant(variant)
+    with SECURITY_LOCK:
+        counts = read_client_download_counts()
+        counts[variant] = counts.get(variant, 0) + 1
+        write_json(CLIENT_DOWNLOAD_STATS_PATH, counts)
+        return counts[variant]
+
+
+def record_client_build_download(job_id, actor):
+    if is_super(actor):
+        return False
+    with CLIENT_BUILD_LOCK:
+        job = CLIENT_BUILD_JOBS.get(job_id)
+        if not job or job.get("downloadCounted"):
+            return False
+        job["downloadCounted"] = True
+        variant = job.get("variant")
+    record_client_download(variant)
+    return True
 
 
 def request_client_variant(handler, body=None):
@@ -4036,9 +4069,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/menu-icons" and method == "GET":
             return self.send_json({"icons": read_system_settings().get("menuIcons") or []})
         if path == "/api/admin/client/download" and method == "GET":
-            name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), request_client_variant(self))
+            variant = request_client_variant(self)
+            name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)
             if not is_windows_exe(data):
                 return self.send_json({"error": "EXE 生成结果无效，请清理缓存后重试。"}, 500)
+            if not is_super(auth["user"]):
+                record_client_download(variant)
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/build" and method == "POST":
             body = self.read_body()
@@ -4067,6 +4103,7 @@ class Handler(BaseHTTPRequestHandler):
             data = file_path.read_bytes()
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
+            record_client_build_download(job_id, auth["user"])
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
             user = find_user_by_id(user_id) or auth["user"]
