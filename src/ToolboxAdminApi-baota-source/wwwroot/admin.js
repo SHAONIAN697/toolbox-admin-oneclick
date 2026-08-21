@@ -2106,6 +2106,8 @@ async function saveMenuIcons() {
   state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '', menuIconLibraryToken: $('globalMenuIconLibraryToken')?.value.trim() || '', menuIconLibraryUsername: $('globalMenuIconLibraryUsername')?.value.trim() || '', menuIconLibraryPassword: $('globalMenuIconLibraryPassword')?.value || '' }) });
   renderMenuIcons();
   setStatus('全局默认菜单图标已保存，图标库正在后台刷新。');
+  state.menuIconLibraryError = '正在登录图标库并读取图片，请稍候…';
+  renderMenuIcons();
   loadMenuIcons().then(() => {
     renderMenuIcons();
     if (state.activeView === 'buttons') renderManagedSections();

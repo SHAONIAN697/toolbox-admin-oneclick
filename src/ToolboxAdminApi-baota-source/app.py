@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -1967,6 +1968,7 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
 
         icons = []
         used = set()
+        candidates = []
         for source in sources[:500]:
             if isinstance(source, str):
                 icon_url = source.strip()
@@ -1980,13 +1982,32 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
             if not http_url(icon_url) or icon_url in used:
                 continue
             used.add(icon_url)
+            candidates.append((icon_url, (name or Path(urlparse(icon_url).path).stem or "图标")[:80]))
+        if not candidates:
+            directory = unquote(urlparse(library_url).path or "/")
+            raise ValueError("目录读取成功，但未发现图片文件，当前目录：" + directory)
+
+        def build_icon(candidate):
+            icon_url, icon_name = candidate
             cached_url = cache_library_icon(icon_url, token)
-            icons.append({
+            return {
                 "id": "library_" + hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:16],
-                "name": (name or Path(urlparse(icon_url).path).stem or "图标")[:80],
+                "name": icon_name,
                 "url": cached_url,
                 "library": True,
-            })
+            }
+
+        failures = []
+        with ThreadPoolExecutor(max_workers=min(12, len(candidates))) as executor:
+            futures = {executor.submit(build_icon, candidate): candidate for candidate in candidates}
+            for future in as_completed(futures):
+                try:
+                    icons.append(future.result())
+                except Exception as exc:
+                    failures.append(str(exc))
+        icons.sort(key=lambda item: item.get("name", "").lower())
+        if not icons:
+            raise ValueError("目录中发现图片，但缓存全部失败：" + (failures[0] if failures else "未知错误"))
         return icons, ""
     except Exception as exc:
         return [], "图标库读取失败：" + str(exc)[:160]

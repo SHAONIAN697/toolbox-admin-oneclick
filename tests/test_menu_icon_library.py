@@ -61,9 +61,10 @@ class MenuIconLibraryTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         page = FakeResponse(b"<!doctype html><html></html>", "https://wd.example.test/icons", "text/html")
-        with patch.object(module, "openlist_login", return_value="temporary-token") as login, patch.object(module.urllib.request, "urlopen", return_value=page), patch.object(module, "openlist_icon_sources", return_value=[] ) as listing:
+        rows = [{"name": "icon", "url": "https://wd.example.test/d/icons/icon.png"}]
+        with patch.object(module, "openlist_login", return_value="temporary-token") as login, patch.object(module.urllib.request, "urlopen", return_value=page), patch.object(module, "openlist_icon_sources", return_value=rows) as listing, patch.object(module, "cache_library_icon", return_value="/uploads/menu-icon-library/icon.png"):
             icons, error = module.read_remote_menu_icons("https://wd.example.test/icons", "", "admin", "password")
-        self.assertEqual([], icons)
+        self.assertEqual(1, len(icons))
         self.assertEqual("", error)
         login.assert_called_once()
         self.assertEqual("temporary-token", listing.call_args.args[1])
