@@ -3689,6 +3689,16 @@ body.sidebar-collapsed .nav.active {
 .announcement-editor-grid .wide { grid-column: 1 / -1; }
 .announcement-editor-tools { display: flex; flex-wrap: wrap; gap: 7px; }
 .announcement-editor-tools button { min-height: 32px; padding: 5px 10px; }
+.announcement-editor-tools .announcement-color-red { color: #dc2626; }
+.announcement-editor-tools .announcement-color-orange { color: #ea580c; }
+.announcement-editor-tools .announcement-color-green { color: #16a34a; }
+.announcement-editor-tools .announcement-color-blue { color: #2563eb; }
+.announcement-editor-tools .announcement-color-highlight { color: #854d0e; background: #fef08a; }
+.announcement-content .notice-color-red { color: #dc2626; font-weight: 600; }
+.announcement-content .notice-color-orange { color: #ea580c; font-weight: 600; }
+.announcement-content .notice-color-green { color: #16a34a; font-weight: 600; }
+.announcement-content .notice-color-blue { color: #2563eb; font-weight: 600; }
+.announcement-content .notice-color-highlight { color: #854d0e; background: #fef08a; padding: 0 2px; border-radius: 2px; }
 .announcement-preview { min-height: 100px; }
 .announcement-popup-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .announcement-popup-actions span { margin-right: auto; color: var(--muted); }

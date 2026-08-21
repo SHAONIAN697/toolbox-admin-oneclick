@@ -5534,6 +5534,7 @@ function safeAnnouncementMarkdown(source) {
   let list = '';
   const inline = (value) => escapeHtml(value)
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[color=(red|orange|green|blue|highlight)\]([\s\S]*?)\[\/color\]/g, '<span class="notice-color-$1">$2</span>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   const closeList = () => { if (list) { html += `</${list}>`; list = ''; } };
   lines.forEach((line) => {
@@ -5624,7 +5625,7 @@ function ensureAnnouncementEditor() {
     <label class="wide">简短摘要<textarea id="announcementSummaryInput" rows="2" maxlength="500"></textarea></label>
     <label class="toggle-line"><input id="announcementPopupInput" type="checkbox" checked> 登录后自动弹窗</label><label class="toggle-line"><input id="announcementForceInput" type="checkbox"> 每次登录弹出</label>
     <label>发布时间<input id="announcementPublishTimeInput" type="datetime-local"></label><label>过期时间<input id="announcementExpireTimeInput" type="datetime-local"></label>
-    <div class="wide announcement-editor-tools"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button></div>
+    <div class="wide announcement-editor-tools"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button><button type="button" class="announcement-color-red" data-format="color-red">红色重点</button><button type="button" class="announcement-color-orange" data-format="color-orange">橙色重点</button><button type="button" class="announcement-color-green" data-format="color-green">绿色重点</button><button type="button" class="announcement-color-blue" data-format="color-blue">蓝色重点</button><button type="button" class="announcement-color-highlight" data-format="color-highlight">黄色高亮</button></div>
     <label class="wide">更新内容<textarea id="announcementContentInput" rows="12"></textarea></label><div class="wide"><strong>预览</strong><div id="announcementPreview" class="announcement-content announcement-preview"></div></div>
   </div><div class="button-pair"><button id="announcementSaveDraftBtn" type="button">保存草稿</button><button id="announcementPublishBtn" type="button">发布公告</button></div></div>`;
   document.body.appendChild(overlay);
@@ -5637,6 +5638,7 @@ function ensureAnnouncementEditor() {
     if (type === 'ordered') applyAnnouncementFormat('1. ', '');
     if (type === 'unordered') applyAnnouncementFormat('- ', '');
     if (type === 'link') applyAnnouncementFormat('[', '](https://)');
+    if (type.indexOf('color-') === 0) applyAnnouncementFormat(`[color=${type.slice(6)}]`, '[/color]');
   }; });
   $('announcementSaveDraftBtn').onclick = () => saveAdminAnnouncement(false).catch((error) => showToast(error.message, 'error'));
   $('announcementPublishBtn').onclick = () => saveAdminAnnouncement(true).catch((error) => showToast(error.message, 'error'));
