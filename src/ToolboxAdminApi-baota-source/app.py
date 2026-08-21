@@ -49,6 +49,7 @@ IP_CACHE_PATH = DATA / "ip-location-cache.json"
 BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
 MENU_ICON_DIR = WWW / "uploads" / "menu-icons"
+MENU_ICON_LIBRARY_DIR = WWW / "uploads" / "menu-icon-library"
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
@@ -1655,6 +1656,7 @@ def default_system_settings():
         },
         "menuIcons": [],
         "menuIconLibraryUrl": "",
+        "menuIconLibraryToken": "",
         "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
             "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
@@ -1840,22 +1842,84 @@ def public_system_settings():
     return public
 
 
-def read_remote_menu_icons(library_url):
+def cache_library_icon(source_url, token=""):
+    digest = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+    parsed = urlparse(source_url)
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp"):
+        suffix = ".png"
+    target = MENU_ICON_LIBRARY_DIR / (digest + suffix)
+    if target.exists() and target.stat().st_size:
+        return "/uploads/menu-icon-library/" + target.name
+    headers = {"User-Agent": "ToolboxAdmin/1.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(source_url, headers=headers)
+    with urllib.request.urlopen(request, timeout=12) as response:
+        raw = response.read(5 * 1024 * 1024 + 1)
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+    if len(raw) > 5 * 1024 * 1024 or not raw or (content_type and "image/" not in content_type):
+        raise ValueError("图标文件格式无效或超过 5MB")
+    MENU_ICON_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(raw)
+    os.replace(str(temporary), str(target))
+    return "/uploads/menu-icon-library/" + target.name
+
+
+def openlist_icon_sources(library_url, token):
+    parsed = urlparse(library_url)
+    path = unquote(parsed.path or "/")
+    if path.startswith("/d/"):
+        path = path[2:]
+    elif path == "/d":
+        path = "/"
+    api_url = parsed.scheme + "://" + parsed.netloc + "/api/fs/list"
+    body = json.dumps({"path": path, "password": "", "page": 1, "per_page": 500, "refresh": False}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "ToolboxAdmin/1.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(api_url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8-sig"))
+    if int(payload.get("code") or 0) != 200:
+        raise ValueError(payload.get("message") or "目录接口拒绝访问")
+    content = ((payload.get("data") or {}).get("content") or [])
+    rows = []
+    image_suffixes = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".bmp")
+    for item in content:
+        name = str(item.get("name") or "").strip()
+        if item.get("is_dir") or not name.lower().endswith(image_suffixes):
+            continue
+        raw_url = str(item.get("raw_url") or "").strip()
+        if not raw_url:
+            raw_url = parsed.scheme + "://" + parsed.netloc + "/d" + quote(path.rstrip("/") + "/" + name, safe="/")
+        rows.append({"name": Path(name).stem, "url": raw_url})
+    return rows
+
+
+def read_remote_menu_icons(library_url, token=""):
     library_url = str(library_url or "").strip()
     if not library_url:
         return [], ""
     try:
-        request = urllib.request.Request(library_url, headers={
+        headers = {
             "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
             "User-Agent": "ToolboxAdmin/1.0",
-        })
+        }
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        request = urllib.request.Request(library_url, headers=headers)
         with urllib.request.urlopen(request, timeout=8) as response:
             raw = response.read(1024 * 1024 + 1)
             final_url = response.geturl()
+            content_type = str(response.headers.get("Content-Type") or "").lower()
         if len(raw) > 1024 * 1024:
             raise ValueError("图标库清单不能超过 1MB")
         text = raw.decode("utf-8-sig", errors="replace").strip()
         sources = None
+        if "text/html" in content_type or text[:100].lower().startswith(("<!doctype html", "<html")):
+            sources = openlist_icon_sources(library_url, token)
         try:
             payload = json.loads(text)
             if isinstance(payload, dict):
@@ -1865,6 +1929,8 @@ def read_remote_menu_icons(library_url):
         except json.JSONDecodeError:
             pass
         if sources is None:
+            if "<html" in text[:500].lower() or "<!doctype" in text[:100].lower():
+                raise ValueError("该地址是网页而不是图标清单，请填写访问令牌后重试")
             sources = []
             for line in text.splitlines():
                 line = line.strip()
@@ -1891,10 +1957,11 @@ def read_remote_menu_icons(library_url):
             if not http_url(icon_url) or icon_url in used:
                 continue
             used.add(icon_url)
+            cached_url = cache_library_icon(icon_url, token)
             icons.append({
                 "id": "library_" + hashlib.sha256(icon_url.encode("utf-8")).hexdigest()[:16],
                 "name": (name or Path(urlparse(icon_url).path).stem or "图标")[:80],
-                "url": icon_url,
+                "url": cached_url,
                 "library": True,
             })
         return icons, ""
@@ -1909,6 +1976,8 @@ def write_system_settings(body):
         if library_url and not http_url(library_url):
             raise ValueError("图标库清单地址必须是 HTTP/HTTPS 地址。")
         current["menuIconLibraryUrl"] = library_url
+    if "menuIconLibraryToken" in body:
+        current["menuIconLibraryToken"] = str(body.get("menuIconLibraryToken") or "").strip()[:4000]
     if isinstance(body.get("menuIcons"), list):
         rows = []
         used = set()
@@ -4149,7 +4218,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/menu-icons" and method == "GET":
             settings = read_system_settings()
             icons = list(settings.get("menuIcons") or [])
-            library_icons, library_error = read_remote_menu_icons(settings.get("menuIconLibraryUrl") or "")
+            library_icons, library_error = read_remote_menu_icons(settings.get("menuIconLibraryUrl") or "", settings.get("menuIconLibraryToken") or "")
             return self.send_json({"icons": icons + library_icons, "libraryError": library_error})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)

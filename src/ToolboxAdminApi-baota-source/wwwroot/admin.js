@@ -2055,6 +2055,7 @@ function renderMenuIcons() {
   root.innerHTML = icons.length ? icons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无管理员手工添加的菜单图标。</p>';
   root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { icons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
   if ($('globalMenuIconLibraryUrl')) $('globalMenuIconLibraryUrl').value = state.system?.menuIconLibraryUrl || '';
+  if ($('globalMenuIconLibraryToken')) $('globalMenuIconLibraryToken').value = state.system?.menuIconLibraryToken || '';
   const libraryCount = state.menuIcons.filter((item) => item.library).length;
   if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = state.menuIconLibraryError || (state.system?.menuIconLibraryUrl ? `外部图标库已读取 ${libraryCount} 个图标，所有用户均可看图选择。` : '支持 JSON 清单或“名称|图片直链”文本清单。');
 }
@@ -2088,7 +2089,7 @@ async function uploadGlobalMenuIcon() {
 async function saveMenuIcons() {
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
   document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
-  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '' }) });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '', menuIconLibraryToken: $('globalMenuIconLibraryToken')?.value.trim() || '' }) });
   await loadMenuIcons(); renderAll(); setStatus('全局默认菜单图标已保存。');
 }
 

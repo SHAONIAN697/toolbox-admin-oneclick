@@ -10,9 +10,10 @@ SOURCES = ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick")
 
 
 class FakeResponse:
-    def __init__(self, payload, url="https://cdn.example.test/icons/list.json"):
+    def __init__(self, payload, url="https://cdn.example.test/icons/list.json", content_type="application/json"):
         self.payload = payload
         self.url = url
+        self.headers = {"Content-Type": content_type}
 
     def __enter__(self):
         return self
@@ -34,12 +35,25 @@ class MenuIconLibraryTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         payload = json.dumps({"icons": [{"name": "系统工具", "url": "images/system.png"}]}).encode()
-        with patch.object(module.urllib.request, "urlopen", return_value=FakeResponse(payload)):
+        with patch.object(module.urllib.request, "urlopen", return_value=FakeResponse(payload)), patch.object(module, "cache_library_icon", side_effect=lambda url, _token="": url):
             icons, error = module.read_remote_menu_icons("https://cdn.example.test/icons/list.json")
         self.assertEqual("", error)
         self.assertEqual("系统工具", icons[0]["name"])
         self.assertEqual("https://cdn.example.test/icons/images/system.png", icons[0]["url"])
         self.assertTrue(icons[0]["library"])
+
+    def test_html_directory_uses_openlist_api_instead_of_parsing_markup(self):
+        app_path = ROOT / "src" / SOURCES[0] / "app.py"
+        spec = importlib.util.spec_from_file_location("toolbox_menu_icon_html_test_app", app_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        page = FakeResponse(b"<!doctype html><html><head></head></html>", "https://wd.example.test/d/icons", "text/html")
+        rows = [{"name": "office365", "url": "https://wd.example.test/d/icons/office365.png"}]
+        with patch.object(module.urllib.request, "urlopen", return_value=page), patch.object(module, "openlist_icon_sources", return_value=rows), patch.object(module, "cache_library_icon", return_value="/uploads/menu-icon-library/cached.png"):
+            icons, error = module.read_remote_menu_icons("https://wd.example.test/d/icons", "secret")
+        self.assertEqual("", error)
+        self.assertEqual(["office365"], [item["name"] for item in icons])
+        self.assertEqual("/uploads/menu-icon-library/cached.png", icons[0]["url"])
 
     def test_admin_ui_uses_visual_picker_without_exposing_selected_url(self):
         for source_dir in SOURCES:
