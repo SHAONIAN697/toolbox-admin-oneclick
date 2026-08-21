@@ -11119,7 +11119,7 @@ namespace ToolboxClient
         private static int DownloadDrivePriority(DriveInfo drive)
         {
             if (drive == null) return 99;
-            string letter = (drive.Name ?? "").TrimEnd('\\');
+            string letter = (drive.Name ?? "").TrimEnd(new char[] { '\\' });
             if (drive.DriveType == DriveType.Fixed && letter.Equals("D:", StringComparison.OrdinalIgnoreCase)) return 0;
             if (drive.DriveType == DriveType.Fixed && !letter.Equals("C:", StringComparison.OrdinalIgnoreCase)) return 1;
             if (drive.DriveType == DriveType.Fixed) return 2;
@@ -11175,14 +11175,14 @@ namespace ToolboxClient
             }
             task.Path = newPath;
             task.PartPath = File.Exists(newPartPath) ? newPartPath : "";
-            task.StateText = "磁盘空间不足，已从 " + currentRoot.TrimEnd('\\') + " 切换到 " + target.Name.TrimEnd('\\');
+            task.StateText = "磁盘空间不足，已从 " + currentRoot.TrimEnd(new char[] { '\\' }) + " 切换到 " + target.Name.TrimEnd(new char[] { '\\' });
             ClientSettings settings = LoadClientSettings();
             settings.DownloadDirectory = newDirectory;
             SaveClientSettings(settings);
             QueueDownloadTaskRowUpdate(task);
             SavePausedDownloadTasks();
 
-            string message = "下载盘空间不足，已自动从 " + currentRoot.TrimEnd('\\') + " 切换到 " + target.Name.TrimEnd('\\') + "。\r\n新路径：" + newDirectory;
+            string message = "下载盘空间不足，已自动从 " + currentRoot.TrimEnd(new char[] { '\\' }) + " 切换到 " + target.Name.TrimEnd(new char[] { '\\' }) + "。\r\n新路径：" + newDirectory;
             BeginInvokeIfReady(delegate
             {
                 status.Text = message.Replace("\r\n", " ");
