@@ -168,15 +168,13 @@
           <label>管理页面<select id="manageScope"></select></label>
           <label>页面新名称<input id="manageScopeName"></label>
           <label>页面位置<input id="manageScopeOrder" type="number" min="1" step="1" placeholder="越小越靠前"></label>
+          <label>自定义图标链接<input id="manageScopeIconUrl" placeholder="https://... 或从后台图标库选择"></label>
           <div class="icon-picker-field">
-            <span>默认菜单图标</span>
+            <span>从后台图标库选择</span>
             <input id="manageScopeIconPreset" type="hidden">
-            <button id="openScopeIconPickerBtn" class="icon-picker-trigger" type="button"><img id="scopeIconPickerPreview" alt=""><span id="scopeIconPickerLabel">使用内置图标</span></button>
+            <button id="openScopeIconPickerBtn" class="icon-picker-trigger" type="button"><img id="scopeIconPickerPreview" alt=""><span id="scopeIconPickerLabel">选择图标</span></button>
             <div id="scopeIconPicker" class="icon-picker-popover" hidden></div>
           </div>
-          <label>自定义图标链接<input id="manageScopeIconUrl" placeholder="https://... 或选择默认图标"></label>
-          <label>上传菜单图标<input id="manageScopeIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
-          <button id="uploadScopeIconBtn" type="button">上传图标</button>
           <button id="saveScopeIconBtn" type="button">保存菜单图标</button>
           <button id="renameScopeBtn" type="button">重命名页面</button>
           <button id="moveScopeBtn" type="button">保存位置</button>

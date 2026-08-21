@@ -3133,7 +3133,7 @@ function renderScopeIconPicker(iconUrl, enabled) {
   const selected = state.menuIcons.find((item) => item.url === iconUrl);
   preview.src = selected?.url || '';
   preview.hidden = !selected;
-  label.textContent = selected?.name || '使用内置图标';
+  label.textContent = selected?.name || '选择图标';
   trigger.disabled = !enabled;
   picker.innerHTML = `<button class="icon-picker-item${selected ? '' : ' is-selected'}" data-icon-picker-value="" type="button"><span class="icon-picker-built-in">内置</span><strong>使用内置图标</strong></button>${state.menuIcons.map((item) => `<button class="icon-picker-item${selected?.url === item.url ? ' is-selected' : ''}" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}`;
   trigger.onclick = () => { if (enabled) picker.hidden = !picker.hidden; };
@@ -3145,7 +3145,7 @@ function renderScopeIconPicker(iconUrl, enabled) {
       if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = '';
       preview.src = item?.url || '';
       preview.hidden = !item;
-      label.textContent = item?.name || '使用内置图标';
+      label.textContent = item?.name || '选择图标';
       picker.querySelectorAll('.icon-picker-item').forEach((row) => row.classList.toggle('is-selected', row === button));
       picker.hidden = true;
     };
@@ -3975,13 +3975,6 @@ async function savePositionIcon() {
   if (!sidebarItem) throw new Error('当前页面不在左侧菜单中。');
   sidebarItem.icon = $('manageScopeIconPreset').value || $('manageScopeIconUrl').value.trim();
   await saveWholeConfig('菜单图标已保存。');
-}
-
-async function uploadPositionIcon() {
-  const result = await uploadImage($('manageScopeIconFile'), '/api/admin/menu-icon/upload');
-  $('manageScopeIconPreset').value = '';
-  $('manageScopeIconUrl').value = result.url;
-  await savePositionIcon();
 }
 
 function ensureSidebarOrder() {
@@ -5753,7 +5746,6 @@ document.addEventListener('click', (event) => {
 $('addScopeBtn').onclick = () => addPosition().catch((error) => setStatus(error.message, true));
 $('renameScopeBtn').onclick = () => renamePosition().catch((error) => setStatus(error.message, true));
 if ($('saveScopeIconBtn')) $('saveScopeIconBtn').onclick = () => savePositionIcon().catch((error) => setStatus(error.message, true));
-if ($('uploadScopeIconBtn')) $('uploadScopeIconBtn').onclick = () => uploadPositionIcon().catch((error) => setStatus(error.message, true));
 $('moveScopeBtn').onclick = () => movePosition().catch((error) => setStatus(error.message, true));
 $('deleteScopeBtn').onclick = () => deletePosition().catch((error) => setStatus(error.message, true));
 $('addSectionBtn').onclick = () => addSection().catch((error) => setStatus(error.message, true));
