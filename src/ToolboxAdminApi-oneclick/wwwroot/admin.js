@@ -2206,6 +2206,15 @@ async function uploadVariantCover(card) {
   const result = await api('/api/super/system/variant-cover', { method: 'POST', body: JSON.stringify({ variantId: card.dataset.variantSetting, dataUrl }) });
   card.querySelector('[data-variant-field="coverMode"]').value = 'upload';
   card.querySelector('[data-variant-field="coverUrl"]').value = result.url;
+  if (!state.system) state.system = {};
+  if (!state.system.clientVariants) state.system.clientVariants = {};
+  state.system.clientVariants[card.dataset.variantSetting] = {
+    ...(state.system.clientVariants[card.dataset.variantSetting] || {}),
+    coverMode: 'upload',
+    coverUrl: result.url
+  };
+  const preview = card.querySelector('.variant-setting-preview');
+  if (preview) preview.innerHTML = `<img src="${escapeAttr(result.url)}" alt="封面预览">`;
   setStatus('封面已上传，请点击保存。');
 }
 
@@ -2216,6 +2225,7 @@ async function saveClientVariants() {
     clientVariants[card.dataset.variantSetting] = { name: value('name'), badge: value('badge'), description: value('description'), coverMode: value('coverMode'), coverUrl: value('coverUrl') };
   });
   state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ clientVariants }) });
+  await loadClientVariants();
   renderSystemSettings(); renderClientVariants(); setStatus('工具箱封面与介绍已保存。');
 }
 
