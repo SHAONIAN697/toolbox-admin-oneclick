@@ -69,6 +69,20 @@ class MenuIconLibraryTests(unittest.TestCase):
         login.assert_called_once()
         self.assertEqual("temporary-token", listing.call_args.args[1])
 
+    def test_invalidated_account_token_is_replaced_and_retried(self):
+        app_path = ROOT / "src" / SOURCES[0] / "app.py"
+        spec = importlib.util.spec_from_file_location("toolbox_menu_icon_retry_test_app", app_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        page = FakeResponse(b"<!doctype html><html></html>", "https://wd.retry.test/icons", "text/html")
+        rows = [{"name": "icon", "url": "https://wd.retry.test/d/icons/icon.png"}]
+        with patch.object(module, "openlist_login", side_effect=["old-token", "new-token"]) as login, patch.object(module.urllib.request, "urlopen", return_value=page), patch.object(module, "openlist_icon_sources", side_effect=[ValueError("token is invalidated"), rows]) as listing, patch.object(module, "cache_library_icon", return_value="/uploads/menu-icon-library/icon.png"):
+            icons, error = module.read_remote_menu_icons("https://wd.retry.test/icons", "", "admin", "password")
+        self.assertEqual("", error)
+        self.assertEqual(1, len(icons))
+        self.assertEqual(2, login.call_count)
+        self.assertEqual("new-token", listing.call_args.args[1])
+
     def test_admin_ui_uses_visual_picker_without_exposing_selected_url(self):
         for source_dir in SOURCES:
             base = ROOT / "src" / source_dir

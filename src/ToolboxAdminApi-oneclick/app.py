@@ -51,6 +51,8 @@ BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
 MENU_ICON_DIR = WWW / "uploads" / "menu-icons"
 MENU_ICON_LIBRARY_DIR = WWW / "uploads" / "menu-icon-library"
+MENU_ICON_LIBRARY_TOKEN_CACHE = {}
+MENU_ICON_LIBRARY_LOGIN_LOCK = threading.Lock()
 ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
@@ -1864,7 +1866,7 @@ def cache_library_icon(source_url, token=""):
     if len(raw) > 5 * 1024 * 1024 or not raw or (content_type and "image/" not in content_type):
         raise ValueError("图标文件格式无效或超过 5MB")
     MENU_ICON_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary = target.with_name(target.name + "." + secrets.token_hex(4) + ".tmp")
     temporary.write_bytes(raw)
     os.replace(str(temporary), str(target))
     return "/uploads/menu-icon-library/" + target.name
@@ -1919,14 +1921,27 @@ def openlist_login(library_url, username, password):
     return token
 
 
+def cached_openlist_token(library_url, username, password, force=False):
+    parsed = urlparse(library_url)
+    key = (parsed.scheme.lower(), parsed.netloc.lower(), str(username))
+    with MENU_ICON_LIBRARY_LOGIN_LOCK:
+        cached = MENU_ICON_LIBRARY_TOKEN_CACHE.get(key) or {}
+        if not force and cached.get("token") and time.time() - float(cached.get("created") or 0) < 1800:
+            return cached["token"]
+        token = openlist_login(library_url, username, password)
+        MENU_ICON_LIBRARY_TOKEN_CACHE[key] = {"token": token, "created": time.time()}
+        return token
+
+
 def read_remote_menu_icons(library_url, token="", username="", password=""):
     library_url = str(library_url or "").strip()
     if not library_url:
         return [], ""
     try:
         token = str(token or "").strip()
-        if not token and username and password:
-            token = openlist_login(library_url, str(username), str(password))
+        account_login = not token and bool(username and password)
+        if account_login:
+            token = cached_openlist_token(library_url, str(username), str(password))
         headers = {
             "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
             "User-Agent": "ToolboxAdmin/1.0",
@@ -1943,7 +1958,14 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
         text = raw.decode("utf-8-sig", errors="replace").strip()
         sources = None
         if "text/html" in content_type or text[:100].lower().startswith(("<!doctype html", "<html")):
-            sources = openlist_icon_sources(library_url, token)
+            try:
+                sources = openlist_icon_sources(library_url, token)
+            except ValueError as exc:
+                if account_login and "token is invalidated" in str(exc).lower():
+                    token = cached_openlist_token(library_url, str(username), str(password), force=True)
+                    sources = openlist_icon_sources(library_url, token)
+                else:
+                    raise
         try:
             payload = json.loads(text)
             if isinstance(payload, dict):
