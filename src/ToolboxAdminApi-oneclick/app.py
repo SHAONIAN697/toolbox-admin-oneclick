@@ -1657,6 +1657,8 @@ def default_system_settings():
         "menuIcons": [],
         "menuIconLibraryUrl": "",
         "menuIconLibraryToken": "",
+        "menuIconLibraryUsername": "",
+        "menuIconLibraryPassword": "",
         "ipLocation": {"mode": "consensus", "threshold": 2, "providers": ["amap", "tencent", "ip-api", "ipapi-co", "pconline"], "unifiedChinese": True,
             "amapKey": "", "amapSecret": "", "baiduKey": "", "tencentKey": "", "tencentSecret": ""},
         "integrity": {
@@ -1885,7 +1887,7 @@ def openlist_icon_sources(library_url, token):
     if int(payload.get("code") or 0) != 200:
         message = str(payload.get("message") or "目录接口拒绝访问")
         if "guest user is disabled" in message.lower():
-            message = "目录禁止游客访问，请填写图标库访问令牌"
+            message = "目录禁止游客访问，请填写图标库登录账号和密码或访问令牌"
         raise ValueError(message)
     content = ((payload.get("data") or {}).get("content") or [])
     rows = []
@@ -1901,11 +1903,29 @@ def openlist_icon_sources(library_url, token):
     return rows
 
 
-def read_remote_menu_icons(library_url, token=""):
+def openlist_login(library_url, username, password):
+    parsed = urlparse(library_url)
+    api_url = parsed.scheme + "://" + parsed.netloc + "/api/auth/login"
+    body = json.dumps({"username": username, "password": password, "otp_code": ""}).encode("utf-8")
+    request = urllib.request.Request(api_url, data=body, headers={"Content-Type": "application/json", "User-Agent": "ToolboxAdmin/1.0"}, method="POST")
+    with urllib.request.urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read(1024 * 1024).decode("utf-8-sig"))
+    if int(payload.get("code") or 0) != 200:
+        raise ValueError(payload.get("message") or "图标库账号或密码错误")
+    token = str((payload.get("data") or {}).get("token") or "").strip()
+    if not token:
+        raise ValueError("图标库登录成功但未返回访问令牌")
+    return token
+
+
+def read_remote_menu_icons(library_url, token="", username="", password=""):
     library_url = str(library_url or "").strip()
     if not library_url:
         return [], ""
     try:
+        token = str(token or "").strip()
+        if not token and username and password:
+            token = openlist_login(library_url, str(username), str(password))
         headers = {
             "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
             "User-Agent": "ToolboxAdmin/1.0",
@@ -1981,6 +2001,10 @@ def write_system_settings(body):
         current["menuIconLibraryUrl"] = library_url
     if "menuIconLibraryToken" in body:
         current["menuIconLibraryToken"] = str(body.get("menuIconLibraryToken") or "").strip()[:4000]
+    if "menuIconLibraryUsername" in body:
+        current["menuIconLibraryUsername"] = str(body.get("menuIconLibraryUsername") or "").strip()[:200]
+    if "menuIconLibraryPassword" in body:
+        current["menuIconLibraryPassword"] = str(body.get("menuIconLibraryPassword") or "")[:500]
     if isinstance(body.get("menuIcons"), list):
         rows = []
         used = set()
@@ -4221,7 +4245,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/menu-icons" and method == "GET":
             settings = read_system_settings()
             icons = list(settings.get("menuIcons") or [])
-            library_icons, library_error = read_remote_menu_icons(settings.get("menuIconLibraryUrl") or "", settings.get("menuIconLibraryToken") or "")
+            library_icons, library_error = read_remote_menu_icons(
+                settings.get("menuIconLibraryUrl") or "",
+                settings.get("menuIconLibraryToken") or "",
+                settings.get("menuIconLibraryUsername") or "",
+                settings.get("menuIconLibraryPassword") or "",
+            )
             return self.send_json({"icons": icons + library_icons, "libraryError": library_error})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)

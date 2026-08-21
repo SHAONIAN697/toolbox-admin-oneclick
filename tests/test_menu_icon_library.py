@@ -55,6 +55,19 @@ class MenuIconLibraryTests(unittest.TestCase):
         self.assertEqual(["office365"], [item["name"] for item in icons])
         self.assertEqual("/uploads/menu-icon-library/cached.png", icons[0]["url"])
 
+    def test_account_password_login_supplies_openlist_token(self):
+        app_path = ROOT / "src" / SOURCES[0] / "app.py"
+        spec = importlib.util.spec_from_file_location("toolbox_menu_icon_login_test_app", app_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        page = FakeResponse(b"<!doctype html><html></html>", "https://wd.example.test/icons", "text/html")
+        with patch.object(module, "openlist_login", return_value="temporary-token") as login, patch.object(module.urllib.request, "urlopen", return_value=page), patch.object(module, "openlist_icon_sources", return_value=[] ) as listing:
+            icons, error = module.read_remote_menu_icons("https://wd.example.test/icons", "", "admin", "password")
+        self.assertEqual([], icons)
+        self.assertEqual("", error)
+        login.assert_called_once()
+        self.assertEqual("temporary-token", listing.call_args.args[1])
+
     def test_admin_ui_uses_visual_picker_without_exposing_selected_url(self):
         for source_dir in SOURCES:
             base = ROOT / "src" / source_dir
