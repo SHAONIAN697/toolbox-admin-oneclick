@@ -2066,21 +2066,7 @@ function renderMenuIcons() {
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
   root.innerHTML = icons.length ? icons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无管理员手工添加的菜单图标。</p>';
   root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { icons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
-  if ($('globalMenuIconLibraryUrl')) $('globalMenuIconLibraryUrl').value = state.system?.menuIconLibraryUrl || '';
-  if ($('globalMenuIconLibraryToken')) $('globalMenuIconLibraryToken').value = state.system?.menuIconLibraryToken || '';
-  if ($('globalMenuIconLibraryUsername')) $('globalMenuIconLibraryUsername').value = state.system?.menuIconLibraryUsername || '';
-  if ($('globalMenuIconLibraryPassword')) $('globalMenuIconLibraryPassword').value = state.system?.menuIconLibraryPassword || '';
-  const libraryCount = state.menuIcons.filter((item) => item.library).length;
-  if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = state.menuIconLibraryError || (state.system?.menuIconLibraryUrl ? `外部图标库已读取 ${libraryCount} 个图标，所有用户均可看图选择。` : '支持 JSON 清单或“名称|图片直链”文本清单。');
-}
-
-function addMenuIcon() {
-  const name = $('globalMenuIconName').value.trim();
-  const url = $('globalMenuIconUrl').value.trim();
-  if (!name || !url) throw new Error('请填写图标名称和图标链接。');
-  if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
-  state.system.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url });
-  $('globalMenuIconName').value = ''; $('globalMenuIconUrl').value = ''; renderMenuIcons();
+  if ($('menuIconLibraryStatus') && !state.menuIconLibraryError) $('menuIconLibraryStatus').textContent = `项目图库现有 ${icons.length} 个图标，所有用户均可看图选择。`;
 }
 
 async function uploadImage(input, endpoint) {
@@ -2091,30 +2077,40 @@ async function uploadImage(input, endpoint) {
   return api(endpoint, { method: 'POST', body: JSON.stringify({ dataUrl }) });
 }
 
-async function uploadGlobalMenuIcon() {
-  const name = $('globalMenuIconName').value.trim();
-  if (!name) throw new Error('请先填写图标名称。');
-  const result = await uploadImage($('globalMenuIconFile'), '/api/super/system/menu-icon');
+async function uploadMenuIconFile(file) {
+  if (file.size > 2 * 1024 * 1024) throw new Error(`${file.name} 超过 2MB。`);
+  const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+  const result = await api('/api/super/system/menu-icon', { method: 'POST', body: JSON.stringify({ dataUrl }) });
+  return { id: `icon_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, name: file.name.replace(/\.[^.]+$/, ''), url: result.url };
+}
+
+async function uploadMenuIconFolder() {
+  const input = $('globalMenuIconFolder');
+  const files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type) || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+  if (!files.length) throw new Error('请选择包含图片的文件夹。');
+  if (files.length > 500) throw new Error('一次最多上传 500 个图标。');
   if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
-  state.system.menuIcons.push({ id: `icon_${Date.now().toString(36)}`, name, url: result.url });
-  renderMenuIcons(); setStatus('图标已上传，请点击保存图标库。');
+  let completed = 0;
+  const queue = [...files];
+  const uploaded = [];
+  const worker = async () => { while (queue.length) { const file = queue.shift(); uploaded.push(await uploadMenuIconFile(file)); completed++; if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `正在上传 ${completed}/${files.length}…`; } };
+  await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
+  const existingUrls = new Set(state.system.menuIcons.map((item) => item.url));
+  state.system.menuIcons.push(...uploaded.filter((item) => !existingUrls.has(item.url)));
+  input.value = '';
+  await saveMenuIcons();
+  await loadMenuIcons();
+  renderMenuIcons();
+  setStatus(`图标文件夹上传完成，共保存 ${uploaded.length} 个图标。`);
 }
 
 async function saveMenuIcons() {
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
   document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
-  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconLibraryUrl: $('globalMenuIconLibraryUrl')?.value.trim() || '', menuIconLibraryToken: $('globalMenuIconLibraryToken')?.value.trim() || '', menuIconLibraryUsername: $('globalMenuIconLibraryUsername')?.value.trim() || '', menuIconLibraryPassword: $('globalMenuIconLibraryPassword')?.value || '' }) });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons }) });
   renderMenuIcons();
-  setStatus('全局默认菜单图标已保存，图标库正在后台刷新。');
-  state.menuIconLibraryError = '正在登录图标库并读取图片，请稍候…';
-  renderMenuIcons();
-  loadMenuIcons().then(() => {
-    renderMenuIcons();
-    if (state.activeView === 'buttons') renderManagedSections();
-  }).catch((error) => {
-    state.menuIconLibraryError = error.message || '图标库读取失败。';
-    renderMenuIcons();
-  });
+  state.menuIconLibraryError = '';
+  setStatus('项目图标库已保存。');
 }
 
 function renderBuiltinFunctions() {
@@ -5823,8 +5819,7 @@ if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => s
 if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
 if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
-if ($('addMenuIconBtn')) $('addMenuIconBtn').onclick = () => { try { addMenuIcon(); } catch (error) { setStatus(error.message, true); } };
-if ($('uploadMenuIconBtn')) $('uploadMenuIconBtn').onclick = () => uploadGlobalMenuIcon().catch((error) => setStatus(error.message, true));
+if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
 if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();

@@ -2049,9 +2049,13 @@ def write_system_settings(body):
     if "menuIconLibraryPassword" in body:
         current["menuIconLibraryPassword"] = str(body.get("menuIconLibraryPassword") or "")[:500]
     if isinstance(body.get("menuIcons"), list):
+        current["menuIconLibraryUrl"] = ""
+        current["menuIconLibraryToken"] = ""
+        current["menuIconLibraryUsername"] = ""
+        current["menuIconLibraryPassword"] = ""
         rows = []
         used = set()
-        for source in body.get("menuIcons")[:100]:
+        for source in body.get("menuIcons")[:500]:
             if not isinstance(source, dict):
                 continue
             icon_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("icon")
@@ -4288,13 +4292,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/menu-icons" and method == "GET":
             settings = read_system_settings()
             icons = list(settings.get("menuIcons") or [])
-            library_icons, library_error = read_remote_menu_icons(
-                settings.get("menuIconLibraryUrl") or "",
-                settings.get("menuIconLibraryToken") or "",
-                settings.get("menuIconLibraryUsername") or "",
-                settings.get("menuIconLibraryPassword") or "",
-            )
-            return self.send_json({"icons": icons + library_icons, "libraryError": library_error})
+            return self.send_json({"icons": icons, "libraryError": ""})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)
             name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)

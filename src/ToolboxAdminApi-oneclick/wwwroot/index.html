@@ -324,16 +324,9 @@
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head"><h2>全局默认菜单图标</h2><button id="saveMenuIconsBtn" type="button">保存图标库</button></div>
         <div class="form-grid compact">
-          <label class="wide">图标库清单地址（仅管理员可设置）<input id="globalMenuIconLibraryUrl" placeholder="https://.../icons.json"></label>
-          <label>图标库登录账号<input id="globalMenuIconLibraryUsername" autocomplete="off" placeholder="OpenList 登录账号"></label>
-          <label>图标库登录密码<input id="globalMenuIconLibraryPassword" type="password" autocomplete="new-password" placeholder="仅保存在服务器"></label>
-          <label class="wide">图标库访问令牌（可选）<input id="globalMenuIconLibraryToken" type="password" autocomplete="off" placeholder="使用账号密码登录时无需填写"></label>
-          <small id="menuIconLibraryStatus" class="wide"></small>
-          <label>图标名称<input id="globalMenuIconName" placeholder="例如：系统工具"></label>
-          <label>图标链接<input id="globalMenuIconUrl" placeholder="https://..."></label>
-          <label>上传图片<input id="globalMenuIconFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
-          <button id="addMenuIconBtn" type="button">添加到图标库</button>
-          <button id="uploadMenuIconBtn" type="button">上传并添加</button>
+          <label class="wide">上传图标文件夹<input id="globalMenuIconFolder" type="file" webkitdirectory directory multiple accept="image/png,image/jpeg,image/webp,image/gif"></label>
+          <button id="uploadMenuIconFolderBtn" type="button">上传文件夹并保存</button>
+          <small id="menuIconLibraryStatus" class="wide">图标名称自动使用图片文件名，非图片文件会自动跳过。</small>
         </div>
         <div id="menuIconRows" class="popup-config-list"></div>
       </div>
