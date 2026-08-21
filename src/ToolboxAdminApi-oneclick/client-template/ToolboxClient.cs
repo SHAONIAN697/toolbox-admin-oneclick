@@ -4091,13 +4091,25 @@ namespace ToolboxClient
             const int gap = 5;
             bool pageUsesConfiguredLayout = ButtonContentLayoutAppliesToCurrentPage();
             bool iconTopLayout = pageUsesConfiguredLayout && buttonContentLayout == "icon_top";
+            int buttonWidth = Math.Max(96, (width - gap * (columns - 1) - 4) / columns);
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
             int[] rowHeights = new int[rows];
             for (int i = 0; i < rows; i++) rowHeights[i] = 31;
-            if (iconTopLayout)
+            using (Font measureFont = new Font(Font.FontFamily, 8.5F))
             {
                 for (int i = 0; i < buttons.Count; i++)
-                    if (!String.IsNullOrWhiteSpace(GetText(buttons[i], "icon", ""))) rowHeights[i / columns] = 104;
+                {
+                    bool hasTopIcon = iconTopLayout && !String.IsNullOrWhiteSpace(GetText(buttons[i], "icon", ""));
+                    if (hasTopIcon)
+                    {
+                        rowHeights[i / columns] = 104;
+                        continue;
+                    }
+                    string buttonText = GetText(buttons[i], "name", "未命名");
+                    Size measured = TextRenderer.MeasureText(buttonText, measureFont, new Size(Math.Max(40, buttonWidth - 18), 96), TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+                    int requiredHeight = Math.Max(31, Math.Min(62, measured.Height + 10));
+                    rowHeights[i / columns] = Math.Max(rowHeights[i / columns], requiredHeight);
+                }
             }
             int panelHeight = 30 + Math.Max(0, rows - 1) * gap;
             for (int i = 0; i < rows; i++) panelHeight += rowHeights[i];
@@ -4118,7 +4130,6 @@ namespace ToolboxClient
                 TextAlign = ContentAlignment.MiddleLeft
             };
             panel.Controls.Add(heading);
-            int buttonWidth = Math.Max(96, (width - gap * (columns - 1) - 4) / columns);
             for (int i = 0; i < buttons.Count; i++)
             {
                 Dictionary<string, object> item = buttons[i];
@@ -4128,7 +4139,7 @@ namespace ToolboxClient
                 string iconUrl = GetText(item, "icon", "");
                 string displayIconUrl = pageUsesConfiguredLayout ? iconUrl : "";
                 bool useIconLayout = iconTopLayout && !String.IsNullOrWhiteSpace(displayIconUrl);
-                int buttonHeight = useIconLayout ? 104 : 31;
+                int buttonHeight = useIconLayout ? 104 : rowHeights[row];
                 int buttonTop = 24;
                 for (int priorRow = 0; priorRow < row; priorRow++) buttonTop += rowHeights[priorRow] + gap;
                 ActionInfo info = new ActionInfo
@@ -4147,7 +4158,7 @@ namespace ToolboxClient
                     FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(250, 250, 250),
                     ForeColor = Color.FromArgb(25, 25, 25),
                     Font = new Font(Font.FontFamily, 8.5F), Cursor = Cursors.Hand,
-                    AutoEllipsis = true
+                    AutoEllipsis = useIconLayout
                 };
                 button.Radius = 15;
                 button.InsetBorder = true;

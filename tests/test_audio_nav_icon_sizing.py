@@ -31,6 +31,14 @@ class AudioNavIconSizingTests(unittest.TestCase):
             self.assertIn("return DownloadText(url, 4000);", source)
             self.assertIn("后台连接较慢，保留当前配置并稍后重试", source)
 
+    def test_audio_text_buttons_grow_for_wrapped_labels(self):
+        for source_dir in ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick"):
+            source = (ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
+            self.assertIn("TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding", source)
+            self.assertIn("Math.Min(62, measured.Height + 10)", source)
+            self.assertIn("int buttonHeight = useIconLayout ? 104 : rowHeights[row];", source)
+            self.assertIn("AutoEllipsis = useIconLayout", source)
+
 
 if __name__ == "__main__":
     unittest.main()
