@@ -3457,7 +3457,35 @@ namespace ToolboxClient
             if (topToolTip != null) topToolTip.SetToolTip(button, label);
             nav.Controls.Add(button);
             navButtons[id] = button;
-            if (!String.IsNullOrWhiteSpace(iconUrl)) QueueButtonIconLoad(iconUrl, button);
+            if (!String.IsNullOrWhiteSpace(iconUrl)) QueueAudioNavIconLoad(iconUrl, button);
+        }
+
+        private void QueueAudioNavIconLoad(string url, Button target)
+        {
+            if (String.IsNullOrWhiteSpace(url) || target == null) return;
+            string resolved = ResolveAssetUrl(url);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Image source = LoadRemoteImage(resolved, 64, 64);
+                if (source == null) return;
+                Image icon = FitImageOnCanvas(source, 22, 22, 18);
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (target == null || target.IsDisposed)
+                        {
+                            icon.Dispose();
+                            return;
+                        }
+                        target.Text = "";
+                        target.Image = icon;
+                        target.ImageAlign = ContentAlignment.MiddleCenter;
+                        target.Invalidate();
+                    }));
+                }
+                catch { icon.Dispose(); }
+            });
         }
 
         private void FitAudioNavButtons()
@@ -8724,6 +8752,27 @@ namespace ToolboxClient
                 graphics.DrawImage(source, new Rectangle(0, 0, width, height));
             }
             return bitmap;
+        }
+
+        private static Image FitImageOnCanvas(Image source, int canvasWidth, int canvasHeight, int contentSize)
+        {
+            Bitmap canvas = new Bitmap(canvasWidth, canvasHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            double scale = Math.Min((double)contentSize / source.Width, (double)contentSize / source.Height);
+            int width = Math.Max(1, (int)Math.Round(source.Width * scale));
+            int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+            int left = (canvasWidth - width) / 2;
+            int top = (canvasHeight - height) / 2;
+            using (Graphics graphics = Graphics.FromImage(canvas))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.CompositingQuality = CompositingQuality.HighQuality;
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(source, new Rectangle(left, top, width, height));
+            }
+            return canvas;
         }
 
         private static Image ResizeImageToFill(
