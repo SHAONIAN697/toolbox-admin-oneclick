@@ -2080,28 +2080,73 @@ async function uploadImage(input, endpoint) {
 async function uploadMenuIconFile(file) {
   if (file.size > 2 * 1024 * 1024) throw new Error(`${file.name} 超过 2MB。`);
   const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
-  const result = await api('/api/super/system/menu-icon', { method: 'POST', body: JSON.stringify({ dataUrl }) });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  let result;
+  try {
+    result = await api('/api/super/system/menu-icon', { method: 'POST', body: JSON.stringify({ dataUrl }), signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`${file.name} 上传超时。`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   return { id: `icon_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, name: file.name.replace(/\.[^.]+$/, ''), url: result.url };
 }
 
 async function uploadMenuIconFolder() {
   const input = $('globalMenuIconFolder');
-  const files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type) || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+  const uploadButton = $('uploadMenuIconFolderBtn');
+  let files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type) || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
   if (!files.length) throw new Error('请选择包含图片的文件夹。');
   if (files.length > 500) throw new Error('一次最多上传 500 个图标。');
   if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
+  const normalizedName = (value) => String(value || '').trim().toLocaleLowerCase();
+  const selectedByName = new Map();
+  files.forEach((file) => selectedByName.set(normalizedName(file.name.replace(/\.[^.]+$/, '')), file));
+  files = [...selectedByName.values()];
+  const existingNames = new Set(state.system.menuIcons.map((item) => normalizedName(item.name)));
+  const duplicateNames = files.map((file) => file.name.replace(/\.[^.]+$/, '')).filter((name) => existingNames.has(normalizedName(name)));
+  const overwrite = duplicateNames.length ? window.confirm(`发现 ${duplicateNames.length} 个同名图标：\n${duplicateNames.slice(0, 12).join('、')}${duplicateNames.length > 12 ? '…' : ''}\n\n确定：覆盖重复图标\n取消：跳过重复图标`) : false;
+  const skipped = overwrite ? 0 : duplicateNames.length;
+  if (!overwrite) files = files.filter((file) => !existingNames.has(normalizedName(file.name.replace(/\.[^.]+$/, ''))));
+  if (!files.length) {
+    if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `没有需要上传的图标，已跳过 ${skipped} 个重复项。`;
+    return;
+  }
+  uploadButton.disabled = true;
+  const total = files.length;
   let completed = 0;
   const queue = [...files];
   const uploaded = [];
-  const worker = async () => { while (queue.length) { const file = queue.shift(); uploaded.push(await uploadMenuIconFile(file)); completed++; if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `正在上传 ${completed}/${files.length}…`; } };
-  await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
-  const existingUrls = new Set(state.system.menuIcons.map((item) => item.url));
-  state.system.menuIcons.push(...uploaded.filter((item) => !existingUrls.has(item.url)));
-  input.value = '';
-  await saveMenuIcons();
-  await loadMenuIcons();
-  renderMenuIcons();
-  setStatus(`图标文件夹上传完成，共保存 ${uploaded.length} 个图标。`);
+  const failures = [];
+  const worker = async () => {
+    while (queue.length) {
+      const file = queue.shift();
+      try { uploaded.push(await uploadMenuIconFile(file)); }
+      catch (error) { failures.push(`${file.name}：${error.message || '上传失败'}`); }
+      finally { completed++; if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = `正在处理 ${completed}/${total}，成功 ${uploaded.length}，失败 ${failures.length}…`; }
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
+    uploaded.forEach((item) => {
+      const index = state.system.menuIcons.findIndex((current) => normalizedName(current.name) === normalizedName(item.name));
+      if (index >= 0 && overwrite) state.system.menuIcons[index] = item;
+      else if (index < 0) state.system.menuIcons.push(item);
+    });
+    input.value = '';
+    if (uploaded.length) {
+      await saveMenuIcons();
+      await loadMenuIcons();
+      renderMenuIcons();
+    }
+    const summary = `处理完成：成功 ${uploaded.length}，跳过 ${skipped}，失败 ${failures.length}。`;
+    if ($('menuIconLibraryStatus')) $('menuIconLibraryStatus').textContent = failures.length ? `${summary} ${failures.slice(0, 3).join('；')}` : summary;
+    setStatus(summary, failures.length > 0);
+  } finally {
+    uploadButton.disabled = false;
+  }
 }
 
 async function saveMenuIcons() {

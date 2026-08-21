@@ -109,6 +109,9 @@ class MenuIconLibraryTests(unittest.TestCase):
             self.assertNotIn("await loadMenuIcons()", save_body)
             self.assertIn("项目图标库已保存", save_body)
             self.assertIn("async function uploadMenuIconFolder()", script)
+            self.assertIn("window.confirm(`发现 ${duplicateNames.length} 个同名图标", script)
+            self.assertIn("controller.abort()", script)
+            self.assertIn("失败 ${failures.length}", script)
             backend = (base / "app.py").read_text(encoding="utf-8")
             self.assertIn('body.get("menuIcons")[:500]', backend)
             failure_body = script.split("function handleLoadFailure", 1)[1].split("function showLogin", 1)[0]
