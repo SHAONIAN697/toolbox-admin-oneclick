@@ -1371,7 +1371,7 @@ function auditAccount(item) {
     ? target
     : '未知用户';
 }
-function auditPath(item) { const value = String(item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item.path || ''); }
+function auditPath(item) { const value = String(item?.details?.path || item.path || item.target || ''); return value.startsWith('/api/') ? value : String(item?.details?.path || item.path || ''); }
 function updateAuditUserOptions() {
   const options = $('auditUserOptions');
   const users = [...new Set(state.users.flatMap((user) => [user.displayName, user.username, user.email]
@@ -1403,6 +1403,54 @@ function auditUserLabel(item) {
   return `<strong>${escapeHtml(displayName || username || '未知用户')}</strong>${username && username !== displayName ? `<div class="muted audit-user-username">用户名：${escapeHtml(username)}</div>` : ''}${email ? `<div class="muted audit-user-email">邮箱：${escapeHtml(email)}</div>` : ''}`;
 }
 
+function auditDetailValue(value) {
+  if (value === true) return '已开启';
+  if (value === false) return '已关闭';
+  if (value === null || value === undefined || value === '') return '未设置';
+  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
+function ensureAuditDetailDialog() {
+  let overlay = $('auditDetailOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'auditDetailOverlay';
+  overlay.className = 'modal-overlay';
+  overlay.hidden = true;
+  overlay.innerHTML = `<div class="modal-card audit-detail-card" role="dialog" aria-modal="true" aria-labelledby="auditDetailTitle">
+    <div class="panel-head"><div><h2 id="auditDetailTitle">日志详情</h2><div id="auditDetailSubtitle" class="muted"></div></div><button id="auditDetailClose" type="button">关闭</button></div>
+    <div id="auditDetailBody" class="audit-detail-body"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  $('auditDetailClose').onclick = () => { overlay.hidden = true; };
+  overlay.onclick = (event) => { if (event.target === overlay) overlay.hidden = true; };
+  return overlay;
+}
+
+function openAuditDetail(item) {
+  if (!item) return;
+  const overlay = ensureAuditDetailDialog();
+  const details = item.details && typeof item.details === 'object' ? item.details : {};
+  const changes = Array.isArray(details.changes) ? details.changes : [];
+  const level = auditRisk(item);
+  const riskLabels = { high: '高风险', medium: '需关注', low: '无风险' };
+  const address = String(item.ipAddress || '').trim();
+  $('auditDetailTitle').textContent = describeAuditEntry(item);
+  $('auditDetailSubtitle').textContent = `${formatDateTime(item.time)} · ${riskLabels[level]}`;
+  const changeMarkup = changes.length ? `<section class="audit-detail-section"><h3>本次操作的具体变化</h3><div class="audit-change-list">${changes.map((change) => `<div class="audit-change-row"><strong>${escapeHtml(change.field || '配置项')}</strong><div><span class="audit-before">${escapeHtml(auditDetailValue(change.before))}</span><b>→</b><span class="audit-after">${escapeHtml(auditDetailValue(change.after))}</span></div></div>`).join('')}</div></section>` : '<section class="audit-detail-section"><h3>操作内容</h3><p class="muted">这条旧日志没有保存字段级变化，只保留了基础操作信息。</p></section>';
+  const extraDetails = Object.entries(details).filter(([key]) => !['title', 'category', 'method', 'path', 'changes', 'itemName', 'operation'].includes(key));
+  $('auditDetailBody').innerHTML = `
+    <div class="audit-detail-grid">
+      <section class="audit-detail-section"><h3>操作账号与联系方式</h3><div class="audit-detail-user">${auditUserLabel(item)}</div></section>
+      <section class="audit-detail-section"><h3>请求信息</h3><dl><dt>操作类型</dt><dd>${escapeHtml(details.method || String(item.action || '').replace(/^backend_/, '').toUpperCase() || '未记录')}</dd><dt>接口</dt><dd>${escapeHtml(auditPath(item) || '未记录')}</dd><dt>IP 地址</dt><dd>${escapeHtml(item.ip || '未记录')}</dd>${address ? `<dt>IP 归属地</dt><dd>${escapeHtml(address)}</dd>` : ''}<dt>执行结果</dt><dd>${item.success === false ? '失败' : '成功'}</dd></dl></section>
+    </div>
+    ${changeMarkup}
+    ${extraDetails.length ? `<section class="audit-detail-section"><h3>补充信息</h3><dl>${extraDetails.map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(auditDetailValue(value))}</dd>`).join('')}</dl></section>` : ''}
+    <section class="audit-detail-section audit-raw-info"><h3>日志标识</h3><div>${escapeHtml(item.eventKey || '未记录')}</div></section>`;
+  overlay.hidden = false;
+}
+
 function auditRisk(item) {
   const action = String(item.action || ''); const path = auditPath(item);
   if (item.success === false || action.includes('delete') || action.includes('blocked') || action.includes('reauth_failed')) return 'high';
@@ -1412,12 +1460,13 @@ function auditRisk(item) {
 }
 
 function describeAuditEntry(item) {
-  const action = String(item.action || ''); const path = auditPath(item);
-  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置' };
+  const action = String(item.action || ''); const path = auditPath(item); const detailTitle = String(item?.details?.title || '').trim();
+  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置', config_basic_update: '修改基础信息', contact_settings_update: '修改联系方式' };
+  if (detailTitle && detailTitle !== '后台操作') return `${detailTitle}${item.success === false ? '失败' : ''}`;
   if (fixed[action]) return fixed[action];
-  const method = action.replace(/^backend_/, '').toUpperCase();
+  const method = String(item?.details?.method || action.replace(/^backend_/, '')).toUpperCase();
   const methods = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
-  const targets = [[/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '弹窗设置'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
+  const targets = [[/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '联系方式'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
   const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
   return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
 }
@@ -1433,8 +1482,9 @@ function filteredAuditItems() {
     const riskLabel = { high: '高风险', medium: '需关注', low: '无风险' }[auditRisk(item)];
     const searchable = `${auditUserSearchText(item)} ${description} ${action} ${auditPath(item)} ${item.ip || ''} ${formatDateTime(item.time)} ${riskLabel} ${JSON.stringify(item)}`;
     if (keyword && !searchable.toLowerCase().includes(keyword)) return false;
+    const itemMethod = String(item?.details?.method || action.replace(/^backend_/, '')).toUpperCase();
     if (actionType === 'login' && !action.startsWith('login_')) return false;
-    if (actionType && actionType !== 'login' && action !== `backend_${actionType.toLowerCase()}`) return false;
+    if (actionType && actionType !== 'login' && itemMethod !== actionType) return false;
     if (risk && auditRisk(item) !== risk) return false;
     if (start && itemTime < start) return false; if (end && itemTime > end) return false; return true;
   });
@@ -1444,7 +1494,16 @@ function renderAuditLog() {
   const items = filteredAuditItems();
   const visible = items.slice(0, 1000); const labels = { high: '高风险', medium: '需关注', low: '无风险' };
   $('auditResultCount').textContent = `匹配 ${items.length} 条，当前显示 ${visible.length} 条，共读取 ${state.auditItems.length} 条；筛选条件会自动保存`;
-  $('auditLogRows').innerHTML = visible.map((item) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); return `<tr title="原始记录：${escapeAttr(`${item.action || ''} ${auditPath(item)}`)}"><td>${auditUserLabel(item)}</td><td>${escapeHtml(describeAuditEntry(item))}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+  const rows = $('auditLogRows');
+  const signature = JSON.stringify(visible.map((item) => [item.eventKey, item.time, item.action, item.actorId, item.actorDisplayName, item.actorEmail, item.ip, item.ipAddress, item.success, item.details]));
+  if (rows.auditRenderSignature === signature) return;
+  rows.auditRenderSignature = signature;
+  rows.innerHTML = visible.map((item, index) => { const level = auditRisk(item); const address = String(item.ipAddress || '').trim(); const changeCount = Array.isArray(item?.details?.changes) ? item.details.changes.length : 0; return `<tr class="audit-log-row" data-audit-index="${index}" tabindex="0" title="点击查看本条日志详情"><td>${auditUserLabel(item)}</td><td><strong>${escapeHtml(describeAuditEntry(item))}</strong>${changeCount ? `<div class="muted audit-change-count">包含 ${changeCount} 项具体变化</div>` : '<div class="muted audit-change-count">点击查看详情</div>'}</td><td>${escapeHtml(formatDateTime(item.time))}</td><td><div>${escapeHtml(item.ip || '未记录')}</div>${address ? `<div class="muted audit-ip-address">${escapeHtml(address)}</div>` : ''}</td><td><span class="audit-risk ${level}">${labels[level]}</span></td></tr>`; }).join('') || '<tr><td colspan="5" class="empty-cell">没有符合当前筛选条件的日志</td></tr>';
+  rows.querySelectorAll('[data-audit-index]').forEach((row) => {
+    const open = () => openAuditDetail(visible[Number(row.dataset.auditIndex || 0)]);
+    row.onclick = open;
+    row.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); } };
+  });
 }
 
 function syncAuditAutoRefresh(view) {
@@ -3787,10 +3846,9 @@ async function saveAppBasicSettings() {
     icon: $('appIcon').value.trim(),
     exe_icon: $('appExeIcon')?.value.trim() || '',
     window_width: Number($('appWidth').value || 1080),
-    window_height: Number($('appHeight').value || 700)
-  }, '正在保存基础信息...');
-  ensureFeatureSettings().delete_downloads_on_exit = deleteDownloadsOnExit;
-  await saveWholeConfig('基础信息已保存。');
+    window_height: Number($('appHeight').value || 700),
+    delete_downloads_on_exit: deleteDownloadsOnExit
+  }, '基础信息已保存。');
 }
 
 function ensureIpLocationPanel() {

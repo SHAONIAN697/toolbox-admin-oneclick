@@ -47,6 +47,8 @@ CLIENT_JOBS = DATA / "client-jobs"
 CLIENT_INTEGRITY_PATH = DATA / "client-integrity.json"
 CLIENT_DOWNLOAD_STATS_PATH = DATA / "client-download-stats.json"
 AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
+AUDIT_LOG_MAX_BYTES = 8 * 1024 * 1024
+AUDIT_LOG_KEEP_EVENTS = 5000
 IP_CACHE_PATH = DATA / "ip-location-cache.json"
 BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
@@ -451,8 +453,200 @@ def audit_event(action, actor=None, target="", handler=None, details=None, succe
         "details": details or {},
     }
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with SECURITY_LOCK, AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+    with SECURITY_LOCK:
+        with AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+        if AUDIT_LOG_PATH.stat().st_size > AUDIT_LOG_MAX_BYTES:
+            lines = AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines()
+            kept = []
+            kept_bytes = 0
+            for line in reversed(lines[-AUDIT_LOG_KEEP_EVENTS:]):
+                line_bytes = len((line + "\n").encode("utf-8"))
+                if kept and kept_bytes + line_bytes > AUDIT_LOG_MAX_BYTES:
+                    break
+                kept.append(line)
+                kept_bytes += line_bytes
+            kept.reverse()
+            AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+
+
+AUDIT_DETAILED_PATHS = {
+    "/api/admin/app", "/api/admin/popup", "/api/admin/buttons",
+    "/api/super/template/app", "/api/super/template/popup", "/api/super/template/buttons",
+}
+
+
+def should_write_generic_audit(path, method):
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    if path in ("/api/super/ip-location/test", "/api/super/audit") or path in AUDIT_DETAILED_PATHS:
+        return False
+    if path in ("/api/admin/announcements/read-all", "/api/admin/announcements/read-batch"):
+        return False
+    if re.fullmatch(r"/api/admin/announcements/[^/]+/read", path):
+        return False
+    return True
+
+
+def audit_display_value(value, limit=180):
+    if value is True:
+        return "已开启"
+    if value is False:
+        return "已关闭"
+    if value is None or value == "":
+        return "未设置"
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    text = str(value).strip()
+    if re.match(r"^https?://", text, re.I):
+        return "已设置（链接已隐藏）"
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def audit_change_rows(before, after, field_labels, keys=None):
+    rows = []
+    for key in (keys or field_labels.keys()):
+        old_value = (before or {}).get(key)
+        new_value = (after or {}).get(key)
+        if old_value == new_value:
+            continue
+        rows.append({
+            "field": field_labels.get(key, key),
+            "before": audit_display_value(old_value),
+            "after": audit_display_value(new_value),
+        })
+    return rows
+
+
+APP_AUDIT_FIELDS = {
+    "title": "工具箱名称", "subtitle": "副标题", "version": "版本号", "theme": "默认主题",
+    "theme_count": "主题数量", "allow_client_theme": "允许客户端切换主题",
+    "default_view_mode": "默认显示方式", "logo_text": "Logo 文字", "icon": "程序图标",
+    "exe_icon": "EXE 图标", "window_width": "窗口宽度", "window_height": "窗口高度",
+    "admin_title": "后台标题", "login_hint": "登录提示", "button_content_layout": "按钮内容布局",
+    "button_content_layout_rules": "按钮布局规则",
+}
+
+
+def apply_basic_settings_patch(config, patch):
+    payload = dict(patch or {})
+    marker = object()
+    delete_downloads = payload.pop("delete_downloads_on_exit", marker)
+    apply_app_patch(config, payload)
+    if delete_downloads is not marker:
+        features = config.setdefault("features", {})
+        if not isinstance(features, dict):
+            features = {}
+            config["features"] = features
+        features["delete_downloads_on_exit"] = delete_downloads is True
+        normalize_feature_settings(config)
+    return payload
+
+
+def basic_settings_audit_details(before, after, requested_patch, path):
+    requested = dict(requested_patch or {})
+    keys = [key for key in APP_AUDIT_FIELDS if key in requested]
+    changes = audit_change_rows((before or {}).get("app") or {}, (after or {}).get("app") or {}, APP_AUDIT_FIELDS, keys)
+    if "delete_downloads_on_exit" in requested:
+        old_value = ((before or {}).get("features") or {}).get("delete_downloads_on_exit") is True
+        new_value = ((after or {}).get("features") or {}).get("delete_downloads_on_exit") is True
+        if old_value != new_value:
+            changes.append({"field": "关闭时删除已下载文件", "before": audit_display_value(old_value), "after": audit_display_value(new_value)})
+    return {"title": "修改基础信息", "category": "basic", "method": "PATCH", "path": path, "changes": changes}
+
+
+def popup_rows_summary(rows):
+    items = rows if isinstance(rows, list) else []
+    names = [str(item.get("title") or "").strip() for item in items if isinstance(item, dict) and str(item.get("title") or "").strip()]
+    suffix = "（%s）" % "、".join(names[:6]) if names else ""
+    if len(names) > 6:
+        suffix = suffix[:-1] + "等）"
+    return "%d 项%s" % (len(items), suffix)
+
+
+POPUP_AUDIT_FIELDS = {
+    "enabled": "联系方式弹窗", "clickCount": "触发点击次数", "cacheMinutes": "缓存时间（分钟）",
+    "title": "弹窗标题", "thanksText": "感谢文字",
+}
+
+
+def popup_settings_audit_details(before, after, path):
+    changes = audit_change_rows(before or {}, after or {}, POPUP_AUDIT_FIELDS)
+    for key, label in (("contacts", "联系方式"), ("payments", "收款方式"), ("links", "相关链接")):
+        old_rows = (before or {}).get(key) or []
+        new_rows = (after or {}).get(key) or []
+        if old_rows != new_rows:
+            changes.append({"field": label, "before": popup_rows_summary(old_rows), "after": popup_rows_summary(new_rows)})
+    return {"title": "修改联系方式", "category": "contacts", "method": "PATCH", "path": path, "changes": changes}
+
+
+BUTTON_AUDIT_FIELDS = {
+    "name": "按钮名称", "enabled": "启用状态", "sort": "排序", "icon": "按钮图标",
+    "description": "按钮说明", "action": "操作类型", "download_mode": "下载模式", "package_name": "安装包名称",
+}
+BUTTON_ACTION_LABELS = {"link": "打开链接", "download": "下载文件", "cmd": "执行命令", "script": "内置功能", "winget": "Winget 安装"}
+
+
+def find_button_audit_row(config, body):
+    rows, _ = button_rows(config)
+    button_id = str((body or {}).get("id") or "")
+    if button_id:
+        return next((row for row in rows if str(row.get("id") or "") == button_id), None)
+    for row in rows:
+        if (row.get("scope") == (body or {}).get("scope") and
+                row.get("pageId") == (body or {}).get("pageId") and
+                row.get("tabIndex") == (body or {}).get("tabIndex") and
+                int(row.get("sectionIndex") or 0) == int((body or {}).get("sectionIndex") or 0) and
+                int(row.get("buttonIndex") or 0) == int((body or {}).get("buttonIndex") or 0)):
+            return row
+    return None
+
+
+def button_location_text(row):
+    if not row:
+        return "未记录"
+    area = str(row.get("area") or "").strip()
+    section = str(row.get("section") or "").strip()
+    return " / ".join(value for value in (area, section) if value) or "未记录"
+
+
+def button_audit_value(key, value):
+    if key == "action":
+        return BUTTON_ACTION_LABELS.get(str(value or ""), audit_display_value(value))
+    return audit_display_value(value)
+
+
+def button_audit_details(operation, before_row, after_row, path):
+    before_button = json_clone((before_row or {}).get("raw") or {})
+    after_button = json_clone((after_row or {}).get("raw") or {})
+    changes = []
+    if operation == "create":
+        for key, label in BUTTON_AUDIT_FIELDS.items():
+            if key in after_button and after_button.get(key) not in (None, ""):
+                changes.append({"field": label, "before": "未创建", "after": button_audit_value(key, after_button.get(key))})
+        changes.append({"field": "所在位置", "before": "未创建", "after": button_location_text(after_row)})
+    elif operation == "delete":
+        for key, label in BUTTON_AUDIT_FIELDS.items():
+            if key in before_button and before_button.get(key) not in (None, ""):
+                changes.append({"field": label, "before": button_audit_value(key, before_button.get(key)), "after": "已删除"})
+        changes.append({"field": "所在位置", "before": button_location_text(before_row), "after": "已删除"})
+    else:
+        for key, label in BUTTON_AUDIT_FIELDS.items():
+            if before_button.get(key) != after_button.get(key):
+                changes.append({"field": label, "before": button_audit_value(key, before_button.get(key)), "after": button_audit_value(key, after_button.get(key))})
+        if get_target(before_button) != get_target(after_button) or before_button.get("files") != after_button.get("files"):
+            changes.append({"field": "链接或执行目标", "before": "内容已隐藏", "after": "已修改（内容已隐藏）"})
+        old_location = button_location_text(before_row)
+        new_location = button_location_text(after_row)
+        if old_location != new_location:
+            changes.append({"field": "所在位置", "before": old_location, "after": new_location})
+    name = str((after_button or before_button).get("name") or "未命名按钮")
+    titles = {"create": "新增按钮", "update": "修改按钮", "delete": "删除按钮"}
+    methods = {"create": "POST", "update": "PATCH", "delete": "DELETE"}
+    return {
+        "title": "%s：%s" % (titles[operation], name), "category": "buttons", "operation": operation,
+        "method": methods[operation], "path": path, "itemName": name, "changes": changes,
+    }
 
 
 def security_backup(label, paths):
@@ -4012,8 +4206,9 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
-                if method in ("POST", "PUT", "PATCH", "DELETE") and path not in ("/api/super/ip-location/test", "/api/super/audit"):
-                    audit_event("backend_" + method.lower(), auth["user"], path, self)
+                if should_write_generic_audit(path, method):
+                    audit_event("backend_" + method.lower(), auth["user"], path, self,
+                                {"title": "后台操作", "method": method, "path": path})
                 if path.startswith("/api/super"):
                     return self.handle_super(path, method, auth)
                 if path.startswith("/api/admin"):
@@ -4081,15 +4276,24 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("不支持的模板操作。")
             if path == "/api/super/template/app" and method == "PATCH":
                 cfg = read_user_template_config()
-                apply_app_patch(cfg, self.read_body())
+                before = json_clone(cfg)
+                patch = self.read_body()
+                apply_basic_settings_patch(cfg, patch)
                 write_user_template_config(cfg)
+                details = basic_settings_audit_details(before, cfg, patch, path)
+                if details["changes"]:
+                    audit_event("config_basic_update", auth["user"], "user-template", self, details)
                 return self.send_json(read_user_template_config())
             if path == "/api/super/template/popup" and method == "PATCH":
                 cfg = read_user_template_config()
+                before_popup = json_clone(cfg.get("popup") or {})
                 merged = dict(cfg.get("popup") or {})
                 merged.update(self.read_body())
                 cfg["popup"] = normalize_popup_settings(merged)
                 write_user_template_config(cfg)
+                details = popup_settings_audit_details(before_popup, cfg["popup"], path)
+                if details["changes"]:
+                    audit_event("contact_settings_update", auth["user"], "user-template", self, details)
                 return self.send_json(read_user_template_config())
             if path == "/api/super/template/buttons":
                 cfg = read_user_template_config()
@@ -4099,26 +4303,37 @@ class Handler(BaseHTTPRequestHandler):
                         write_user_template_config(cfg)
                     return self.send_json(rows)
                 body = self.read_body()
+                before_row = find_button_audit_row(cfg, body)
+                operation = "update"
                 if method == "POST":
                     container = get_container(cfg, body)
                     sections = container.setdefault("sections", [])
                     while len(sections) <= int(body.get("sectionIndex", 0)):
                         sections.append({"title": "默认分组", "buttons": []})
                     payload = dict(body.get("button") or body)
-                    sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
+                    created = new_button(payload)
+                    sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(created)
+                    body["id"] = created.get("id")
+                    operation = "create"
                 elif method == "PATCH":
-                    update_button(cfg, body)
+                    updated = update_button(cfg, body)
+                    body["id"] = updated.get("id")
                 elif method == "DELETE":
                     section, button_index = find_button_slot(cfg, body)
                     if (section["buttons"][button_index] or {}).get("action") == "script":
                         return self.send_json({"error": "内置功能不能删除，请改为停用。"}, 400)
                     del section["buttons"][button_index]
+                    operation = "delete"
                 else:
                     return self.send_json({"error": "接口不存在"}, 404)
                 write_user_template_config(cfg)
                 rows, changed = button_rows(cfg)
                 if changed:
                     write_user_template_config(cfg)
+                after_row = None if operation == "delete" else find_button_audit_row(cfg, body)
+                details = button_audit_details(operation, before_row, after_row, path)
+                if details["changes"]:
+                    audit_event("button_" + operation, auth["user"], "user-template", self, details)
                 return self.send_json(rows)
             return self.send_json({"error": "接口不存在"}, 404)
         if path == "/api/super/users/batch" and method == "POST":
@@ -4518,17 +4733,25 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ("admin_title", "login_hint"):
                     patch.pop(key, None)
             cfg = read_config(user_id)
-            apply_app_patch(cfg, patch)
+            before = json_clone(cfg)
+            public_patch = apply_basic_settings_patch(cfg, patch)
             write_config_for_actor(cfg, user_id, auth["user"])
             if auth["user"].get("role") == "super" and should_sync_default_config(auth["user"], user_id):
-                sync_public_brand_config(patch)
+                sync_public_brand_config(public_patch)
+            details = basic_settings_audit_details(before, cfg, patch, path)
+            if details["changes"]:
+                audit_event("config_basic_update", auth["user"], user_id, self, details)
             return self.send_json(cfg)
         if path == "/api/admin/popup" and method == "PATCH":
             cfg = read_config(user_id)
+            before_popup = json_clone(cfg.get("popup") or {})
             merged = dict(cfg.get("popup") or {})
             merged.update(self.read_body())
             cfg["popup"] = normalize_popup_settings(merged)
             write_config_for_actor(cfg, user_id, auth["user"])
+            details = popup_settings_audit_details(before_popup, cfg["popup"], path)
+            if details["changes"]:
+                audit_event("contact_settings_update", auth["user"], user_id, self, details)
             return self.send_json(cfg)
         if path == "/api/admin/buttons":
             cfg = read_config(user_id)
@@ -4538,24 +4761,35 @@ class Handler(BaseHTTPRequestHandler):
                     write_config_for_actor(cfg, user_id, auth["user"])
                 return self.send_json(rows)
             body = self.read_body()
+            before_row = find_button_audit_row(cfg, body)
+            operation = "update"
             if method == "POST":
                 container = get_container(cfg, body)
                 sections = container.setdefault("sections", [])
                 while len(sections) <= int(body.get("sectionIndex", 0)):
                     sections.append({"title": "默认分组", "buttons": []})
                 payload = dict(body.get("button") or body)
-                sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(new_button(payload))
+                created = new_button(payload)
+                sections[int(body.get("sectionIndex", 0))].setdefault("buttons", []).append(created)
+                body["id"] = created.get("id")
+                operation = "create"
             elif method == "PATCH":
-                update_button(cfg, body)
+                updated = update_button(cfg, body)
+                body["id"] = updated.get("id")
             elif method == "DELETE":
                 section, button_index = find_button_slot(cfg, body)
                 if (section["buttons"][button_index] or {}).get("action") == "script":
                     return self.send_json({"error": "内置功能不能删除，请改为停用。"}, 400)
                 del section["buttons"][button_index]
+                operation = "delete"
             write_config_for_actor(cfg, user_id, auth["user"])
             rows, changed = button_rows(cfg)
             if changed:
                 write_config_for_actor(cfg, user_id, auth["user"])
+            after_row = None if operation == "delete" else find_button_audit_row(cfg, body)
+            details = button_audit_details(operation, before_row, after_row, path)
+            if details["changes"]:
+                audit_event("button_" + operation, auth["user"], user_id, self, details)
             return self.send_json(rows)
         if path == "/api/admin/builtin-functions" and method == "GET":
             return self.send_json({"functions": builtin_function_rows(is_super(auth["user"]))})
