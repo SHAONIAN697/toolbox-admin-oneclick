@@ -4113,15 +4113,16 @@ namespace ToolboxClient
 
         private Control CreateAudioSection(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index)
         {
-            const int columns = 5;
-            const int gap = 5;
+            // Keep audio actions readable: use three columns in narrow content areas and four when space allows.
+            int columns = width >= 900 ? 4 : 3;
+            const int gap = 10;
             bool pageUsesConfiguredLayout = ButtonContentLayoutAppliesToCurrentPage();
             bool iconTopLayout = pageUsesConfiguredLayout && buttonContentLayout == "icon_top";
             int buttonWidth = Math.Max(96, (width - gap * (columns - 1) - 4) / columns);
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
             int[] rowHeights = new int[rows];
-            for (int i = 0; i < rows; i++) rowHeights[i] = 31;
-            using (Font measureFont = new Font(Font.FontFamily, 8.5F))
+            for (int i = 0; i < rows; i++) rowHeights[i] = 42;
+            using (Font measureFont = new Font(Font.FontFamily, 9.5F))
             {
                 for (int i = 0; i < buttons.Count; i++)
                 {
@@ -4133,7 +4134,7 @@ namespace ToolboxClient
                     }
                     string buttonText = GetText(buttons[i], "name", "未命名");
                     Size measured = TextRenderer.MeasureText(buttonText, measureFont, new Size(Math.Max(40, buttonWidth - 18), 96), TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
-                    int requiredHeight = Math.Max(31, Math.Min(62, measured.Height + 10));
+                    int requiredHeight = Math.Max(42, Math.Min(72, measured.Height + 14));
                     rowHeights[i / columns] = Math.Max(rowHeights[i / columns], requiredHeight);
                 }
             }
@@ -4183,7 +4184,7 @@ namespace ToolboxClient
                     Image = GetCachedButtonIcon(displayIconUrl),
                     FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(250, 250, 250),
                     ForeColor = Color.FromArgb(25, 25, 25),
-                    Font = new Font(Font.FontFamily, 8.5F), Cursor = Cursors.Hand,
+                    Font = new Font(Font.FontFamily, 9.5F), Cursor = Cursors.Hand,
                     AutoEllipsis = useIconLayout
                 };
                 button.Radius = 15;
@@ -4193,7 +4194,7 @@ namespace ToolboxClient
                 button.TextImageRelation = useIconLayout ? TextImageRelation.ImageAboveText : TextImageRelation.ImageBeforeText;
                 button.ImageAlign = useIconLayout ? ContentAlignment.TopCenter : ContentAlignment.MiddleLeft;
                 button.TextAlign = useIconLayout ? ContentAlignment.BottomCenter : ContentAlignment.MiddleCenter;
-                button.Padding = useIconLayout ? new Padding(6, 8, 6, 8) : new Padding(8, 3, 8, 3);
+                button.Padding = useIconLayout ? new Padding(8, 10, 8, 10) : new Padding(10, 6, 10, 6);
                 button.HoverBackColor = Color.FromArgb(244, 247, 249);
                 button.FlatAppearance.BorderColor = Color.FromArgb(202, 205, 208);
                 button.FlatAppearance.MouseOverBackColor = Color.White;

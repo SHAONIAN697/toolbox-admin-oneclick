@@ -39,7 +39,13 @@ class AudioNavIconSizingTests(unittest.TestCase):
         for source_dir in ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick"):
             source = (ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
             self.assertIn("TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding", source)
-            self.assertIn("Math.Min(62, measured.Height + 10)", source)
+            if source_dir == "ToolboxAdminApi-oneclick":
+                self.assertIn("int columns = width >= 900 ? 4 : 3;", source)
+                self.assertIn("Math.Min(72, measured.Height + 14)", source)
+                self.assertIn("const int gap = 10;", source)
+                self.assertIn("Font(Font.FontFamily, 9.5F)", source)
+            else:
+                self.assertIn("Math.Min(62, measured.Height + 10)", source)
             self.assertIn("int buttonHeight = useIconLayout ? 104 : rowHeights[row];", source)
             self.assertIn("AutoEllipsis = useIconLayout", source)
 
