@@ -125,6 +125,8 @@ write_service() {
 [Unit]
 Description=Toolbox Admin API
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -133,8 +135,8 @@ Environment=TOOLBOX_HOST=127.0.0.1
 Environment=TOOLBOX_PORT=${port}
 Environment=TOOLBOX_ADMIN_TOKEN=${password}
 ExecStart=/usr/bin/python3 ${app_dir}/app.py
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

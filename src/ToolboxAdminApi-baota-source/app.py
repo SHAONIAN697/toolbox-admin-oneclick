@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import base64
+import gzip
 import ipaddress
 import json
 import mimetypes
@@ -117,6 +118,10 @@ LOGIN_MAX_FAILURES = 8
 CLIENT_BUILD_JOBS = {}
 CLIENT_BUILD_LOCK = threading.Lock()
 ADMIN_ANNOUNCEMENT_LOCK = threading.RLock()
+PUBLIC_CONFIG_CACHE_LOCK = threading.RLock()
+PUBLIC_CONFIG_CACHE = {}
+API_KEY_CACHE_LOCK = threading.RLock()
+API_KEY_CACHE = {"signature": None, "users": {}}
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
 RESET_CODES = {}
 RESET_CODE_REQUESTS = {}
@@ -1084,6 +1089,7 @@ def write_config(config, user_id=""):
         raise ValueError("配置格式错误。")
     ensure_config_defaults(config)
     write_json(path, config)
+    invalidate_public_config_cache(user_id or None)
 
 
 def read_user_template_config():
@@ -1320,6 +1326,53 @@ def public_toolbox_config(user_id):
     meta["updatedAt"] = int(path.stat().st_mtime) if path.exists() else int(time.time())
     cfg["_sync"] = meta
     return cfg
+
+
+def file_signature(path):
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def public_toolbox_config_payload(user_id):
+    path = user_config_path(user_id)
+    signature = (
+        file_signature(path),
+        file_signature(USERS_PATH),
+        file_signature(SYSTEM_PATH),
+    )
+    with PUBLIC_CONFIG_CACHE_LOCK:
+        cached = PUBLIC_CONFIG_CACHE.get(user_id)
+        if cached and cached["signature"] == signature:
+            return cached["data"], cached["gzip"], cached["etag"]
+
+    payload = public_toolbox_config(user_id)
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = gzip.compress(data, compresslevel=5)
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    final_signature = (
+        file_signature(path),
+        file_signature(USERS_PATH),
+        file_signature(SYSTEM_PATH),
+    )
+    with PUBLIC_CONFIG_CACHE_LOCK:
+        PUBLIC_CONFIG_CACHE[user_id] = {
+            "signature": final_signature,
+            "data": data,
+            "gzip": compressed,
+            "etag": etag,
+        }
+    return data, compressed, etag
+
+
+def invalidate_public_config_cache(user_id=None):
+    with PUBLIC_CONFIG_CACHE_LOCK:
+        if user_id:
+            PUBLIC_CONFIG_CACHE.pop(user_id, None)
+        else:
+            PUBLIC_CONFIG_CACHE.clear()
 
 
 GLOBAL_BUILTIN_PREFIX = "builtin:"
@@ -1569,6 +1622,10 @@ def write_users(store):
     store.setdefault("settings", {})
     cleanup_invites(store)
     write_json(USERS_PATH, store)
+    with API_KEY_CACHE_LOCK:
+        API_KEY_CACHE["signature"] = None
+        API_KEY_CACHE["users"] = {}
+    invalidate_public_config_cache()
 
 
 def is_super(user):
@@ -2457,7 +2514,18 @@ def find_user_by_email(email):
 def find_user_by_api_key(key):
     if not key:
         return None
-    return next((u for u in read_users()["users"] if u.get("apiKey") == key and u.get("active", True) is not False), None)
+    signature = file_signature(USERS_PATH)
+    with API_KEY_CACHE_LOCK:
+        if API_KEY_CACHE["signature"] != signature:
+            users = read_users()["users"]
+            API_KEY_CACHE["users"] = {
+                user.get("apiKey"): dict(user)
+                for user in users
+                if user.get("apiKey") and user.get("active", True) is not False
+            }
+            API_KEY_CACHE["signature"] = file_signature(USERS_PATH)
+        user = API_KEY_CACHE["users"].get(key)
+        return dict(user) if user else None
 
 
 def normalize_role(role):
@@ -3686,6 +3754,26 @@ def make_admin_desktop_exe(base_url):
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    request_queue_size = 128
+
+    def __init__(self, *args, **kwargs):
+        max_threads = max(8, int(os.environ.get("TOOLBOX_MAX_REQUEST_THREADS", "64")))
+        self.request_slots = threading.BoundedSemaphore(max_threads)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        self.request_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.request_slots.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3715,7 +3803,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_security_headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if self.command.upper() != "HEAD":
+            self.wfile.write(data)
+
+    def send_cached_json(self, data, compressed, etag):
+        if self.headers.get("If-None-Match", "").strip() == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "private, no-cache, must-revalidate")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_security_headers()
+            self.end_headers()
+            return
+        use_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        body = compressed if use_gzip else data
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "private, no-cache, must-revalidate")
+        self.send_header("ETag", etag)
+        self.send_header("Vary", "Accept-Encoding")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_security_headers()
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command.upper() != "HEAD":
+            self.wfile.write(body)
 
     def send_bytes(self, data, content_type, status=200, filename=None):
         self.send_response(status)
@@ -3853,7 +3966,8 @@ class Handler(BaseHTTPRequestHandler):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
-                return self.send_json(public_toolbox_config(user["id"]))
+                data, compressed, etag = public_toolbox_config_payload(user["id"])
+                return self.send_cached_json(data, compressed, etag)
 
             if path.startswith("/api/"):
                 auth = get_auth(self)

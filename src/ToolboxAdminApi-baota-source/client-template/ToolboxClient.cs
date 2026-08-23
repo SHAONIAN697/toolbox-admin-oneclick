@@ -100,8 +100,12 @@ namespace ToolboxClient
 
     internal sealed class ToolboxForm : Form
     {
+        private const int ConfigRefreshBaseIntervalMs = 30000;
+        private const int ConfigRefreshJitterMs = 15000;
         private readonly string configUrl;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private readonly Random configRefreshRandom = new Random();
+        private string configResponseEtag = "";
         private Dictionary<string, object> config = new Dictionary<string, object>();
         private Panel side;
         private PictureBox brandIcon;
@@ -342,8 +346,12 @@ namespace ToolboxClient
             BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 5000;
-            refreshTimer.Tick += delegate { LoadConfigAsync(false); };
+            refreshTimer.Interval = NextConfigRefreshInterval();
+            refreshTimer.Tick += delegate
+            {
+                refreshTimer.Interval = NextConfigRefreshInterval();
+                LoadConfigAsync(false);
+            };
             Shown += delegate
             {
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
@@ -352,6 +360,11 @@ namespace ToolboxClient
                 startupNetworkTimer.Start();
                 refreshTimer.Start();
             };
+        }
+
+        private int NextConfigRefreshInterval()
+        {
+            return ConfigRefreshBaseIntervalMs + configRefreshRandom.Next(ConfigRefreshJitterMs + 1);
         }
 
         private void BuildStartupOverlay()
@@ -2308,7 +2321,15 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                json = NormalizeConfigJson(DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks)));
+                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks));
+                if (downloaded == null)
+                {
+                    lastSyncText = "配置无变化 " + DateTime.Now.ToString("HH:mm:ss");
+                    statusMessage = lastSyncText;
+                    BeginInvoke(new Action(delegate { status.Text = statusMessage; }));
+                    return;
+                }
+                json = NormalizeConfigJson(downloaded);
                 EnsureConfigResponse(json);
                 SaveCache(json);
                 if (json == lastConfigJson)
@@ -14233,15 +14254,15 @@ namespace ToolboxClient
 
         private string DownloadText(string url)
         {
-            return DownloadText(url, 10000);
+            return DownloadText(url, 10000, false);
         }
 
         private string DownloadConfigText(string url)
         {
-            return DownloadText(url, 4000);
+            return DownloadText(url, 4000, true);
         }
 
-        private string DownloadText(string url, int timeout)
+        private string DownloadText(string url, int timeout, bool useConfigEtag)
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Timeout = timeout;
@@ -14253,12 +14274,34 @@ namespace ToolboxClient
             request.Headers[HttpRequestHeader.CacheControl] = "no-cache, no-store, must-revalidate";
             request.Headers[HttpRequestHeader.Pragma] = "no-cache";
             request.Headers[HttpRequestHeader.Expires] = "0";
-            ApplyIntegrityHeaders(request);
-            using (WebResponse response = request.GetResponse())
-            using (Stream stream = response.GetResponseStream())
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+            if (useConfigEtag && !String.IsNullOrWhiteSpace(configResponseEtag))
             {
-                return reader.ReadToEnd();
+                request.Headers["If-None-Match"] = configResponseEtag;
+            }
+            ApplyIntegrityHeaders(request);
+            try
+            {
+                using (WebResponse response = request.GetResponse())
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    if (useConfigEtag)
+                    {
+                        string etag = response.Headers["ETag"];
+                        if (!String.IsNullOrWhiteSpace(etag)) configResponseEtag = etag;
+                    }
+                    return reader.ReadToEnd();
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse response = ex.Response as HttpWebResponse;
+                if (useConfigEtag && response != null && response.StatusCode == HttpStatusCode.NotModified)
+                {
+                    response.Close();
+                    return null;
+                }
+                throw;
             }
         }
 
