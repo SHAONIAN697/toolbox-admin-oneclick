@@ -10451,7 +10451,8 @@ namespace ToolboxClient
                                 output.Write(buffer, 0, read);
                                 received += read;
                                 segment.Received = received;
-                                Interlocked.Add(ref task.Received, read);
+                                // Rebuild the aggregate from segment state so retries cannot count bytes twice.
+                                Interlocked.Exchange(ref task.Received, SumSegmentReceived(task.ActiveSegments));
                                 task.StateText = "分片加速 " + segment.TotalSegments + "线程";
                                 task.UpdateSpeed();
                                 if ((DateTime.Now - lastUi).TotalMilliseconds > 100)
