@@ -547,7 +547,7 @@ def normalize_announcement_payload(body, current=None):
     importance = clean_announcement_text(body.get("importance", item.get("importance") or "普通"), 20)
     item["importance"] = importance if importance in ANNOUNCEMENT_IMPORTANCE else "普通"
     item["popup_enabled"] = bool(body.get("popup_enabled", item.get("popup_enabled", True)))
-    item["force_popup"] = bool(body.get("force_popup", item.get("force_popup", False)))
+    item["force_popup"] = False
     item["publish_time"] = clean_announcement_text(body.get("publish_time", item.get("publish_time")), 50)
     item["expire_time"] = clean_announcement_text(body.get("expire_time", item.get("expire_time")), 50)
     item["enabled"] = bool(body.get("enabled", item.get("enabled", True)))
@@ -599,6 +599,45 @@ def mark_admin_announcement_read(announcement_id, user, revision):
                 "notification_revision": revision,
             })
             write_json(ADMIN_ANNOUNCEMENT_READS_PATH, store)
+
+
+def mark_admin_announcement_batch_read(rows, reads, user, references):
+    """Mark exactly the announcement revisions displayed in a one-time popup."""
+    if not isinstance(references, list):
+        return 0
+    user_id = user.get("id")
+    by_id = {str(item.get("id") or ""): item for item in rows if item.get("id")}
+    marked = 0
+    seen = set()
+    for reference in references[:200]:
+        if isinstance(reference, dict):
+            announcement_id = clean_announcement_text(reference.get("id"), 160)
+            requested_revision = reference.get("notification_revision")
+        else:
+            announcement_id = clean_announcement_text(reference, 160)
+            requested_revision = None
+        item = by_id.get(announcement_id)
+        if not item or announcement_id in seen or not announcement_is_available(item):
+            continue
+        revision = int(item.get("notification_revision") or 1)
+        if requested_revision not in (None, ""):
+            try:
+                if int(requested_revision) != revision:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        seen.add(announcement_id)
+        if announcement_read_record(reads, announcement_id, user_id, revision):
+            continue
+        reads.append({
+            "announcement_id": announcement_id,
+            "user_id": user_id,
+            "username": user.get("username"),
+            "read_time": now_iso(),
+            "notification_revision": revision,
+        })
+        marked += 1
+    return marked
 
 
 def client_build_cleanup_settings():
@@ -4537,7 +4576,7 @@ class Handler(BaseHTTPRequestHandler):
                 public_rows = [public_admin_announcement(item, user_id, reads) for item in visible]
                 public_rows.sort(key=lambda item: item.get("publish_time") or item.get("updated_time") or "", reverse=True)
                 if path.endswith("/unread"):
-                    public_rows = [item for item in public_rows if announcement_is_available(item) and (not item.get("read") or item.get("force_popup"))]
+                    public_rows = [item for item in public_rows if announcement_is_available(item) and not item.get("read")]
                 return self.send_json({
                     "announcements": public_rows,
                     "unreadCount": sum(1 for item in public_rows if not item.get("read") and announcement_is_available(item)),
@@ -4560,6 +4599,16 @@ class Handler(BaseHTTPRequestHandler):
                 rows.insert(0, item)
                 write_json(ADMIN_ANNOUNCEMENTS_PATH, store)
                 return self.send_json(public_admin_announcement(item, user_id, reads), 201)
+
+            if path == "/api/admin/announcements/read-batch" and method == "POST":
+                body = self.read_body()
+                references = body.get("announcements") if isinstance(body, dict) else []
+                if not isinstance(references, list):
+                    return self.send_json({"error": "公告已读参数格式错误。"}, 400)
+                marked = mark_admin_announcement_batch_read(rows, reads, user, references)
+                if marked:
+                    write_json(ADMIN_ANNOUNCEMENT_READS_PATH, reads_store)
+                return self.send_json({"ok": True, "marked": marked})
 
             if path == "/api/admin/announcements/read-all" and method == "POST":
                 for item in rows:

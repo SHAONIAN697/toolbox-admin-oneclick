@@ -18,7 +18,8 @@
   announcements: [],
   announcementUnreadCount: 0,
   announcementPopupItems: [],
-  announcementPopupIndex: 0,
+  announcementPopupNewItems: [],
+  announcementPopupMarking: false,
   config: null,
   buttons: [],
   inviteCurrency: 'CNY',
@@ -5488,13 +5489,18 @@ async function loadAdminAnnouncementsSafe() {
     ]);
     state.announcements = Array.isArray(list?.announcements) ? list.announcements : [];
     state.announcementUnreadCount = Number(list?.unreadCount || 0);
-    state.announcementPopupItems = (popup?.announcements || []).filter((item) => item.popup_enabled !== false);
-    state.announcementPopupIndex = 0;
+    state.announcementPopupNewItems = (popup?.announcements || []).filter((item) => item.popup_enabled !== false);
+    state.announcementPopupItems = state.announcementPopupNewItems.length
+      ? state.announcements.filter(announcementCanAppearInPopupHistory)
+      : [];
+    state.announcementPopupMarking = false;
   } catch (error) {
     console.warn('更新公告读取失败：', error);
     state.announcements = [];
     state.announcementUnreadCount = 0;
     state.announcementPopupItems = [];
+    state.announcementPopupNewItems = [];
+    state.announcementPopupMarking = false;
   }
 }
 
@@ -5623,7 +5629,7 @@ function ensureAnnouncementEditor() {
     <label>公告标题<input id="announcementTitleInput" maxlength="160"></label><label>版本号<input id="announcementVersionInput" maxlength="80"></label>
     <label>公告类型<select id="announcementTypeInput">${['功能更新','问题修复','系统通知','重要公告','维护公告'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>重要程度<select id="announcementImportanceInput"><option>普通</option><option>重要</option><option>紧急</option></select></label>
     <label class="wide">简短摘要<textarea id="announcementSummaryInput" rows="2" maxlength="500"></textarea></label>
-    <label class="toggle-line"><input id="announcementPopupInput" type="checkbox" checked> 登录后自动弹窗</label><label class="toggle-line"><input id="announcementForceInput" type="checkbox"> 每次登录弹出</label>
+    <label class="toggle-line"><input id="announcementPopupInput" type="checkbox" checked> 有新公告时登录后自动弹窗（每位用户仅一次）</label><p class="announcement-popup-hint">勾选后，用户下次登录会看到所有未读更新；已展示公告仍可在公告列表中查看。</p>
     <label>发布时间<input id="announcementPublishTimeInput" type="datetime-local"></label><label>过期时间<input id="announcementExpireTimeInput" type="datetime-local"></label>
     <div class="wide announcement-editor-tools"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button><button type="button" class="announcement-color-red" data-format="color-red">红色重点</button><button type="button" class="announcement-color-orange" data-format="color-orange">橙色重点</button><button type="button" class="announcement-color-green" data-format="color-green">绿色重点</button><button type="button" class="announcement-color-blue" data-format="color-blue">蓝色重点</button><button type="button" class="announcement-color-highlight" data-format="color-highlight">黄色高亮</button></div>
     <label class="wide">更新内容<textarea id="announcementContentInput" rows="12"></textarea></label><div class="wide"><strong>预览</strong><div id="announcementPreview" class="announcement-content announcement-preview"></div></div>
@@ -5662,7 +5668,6 @@ function openAnnouncementEditor(item = null) {
   $('announcementImportanceInput').value = item?.importance || '普通';
   $('announcementSummaryInput').value = item?.summary || '';
   $('announcementPopupInput').checked = item?.popup_enabled !== false;
-  $('announcementForceInput').checked = !!item?.force_popup;
   $('announcementPublishTimeInput').value = localDateTimeValue(item?.publish_time);
   $('announcementExpireTimeInput').value = localDateTimeValue(item?.expire_time);
   $('announcementContentInput').value = item?.content || '';
@@ -5672,7 +5677,7 @@ function openAnnouncementEditor(item = null) {
 function updateAnnouncementPreview() { $('announcementPreview').innerHTML = safeAnnouncementMarkdown($('announcementContentInput').value); }
 
 function announcementEditorPayload() {
-  return { title: $('announcementTitleInput').value.trim(), version: $('announcementVersionInput').value.trim(), type: $('announcementTypeInput').value, importance: $('announcementImportanceInput').value, summary: $('announcementSummaryInput').value.trim(), content: $('announcementContentInput').value.trim(), popup_enabled: $('announcementPopupInput').checked, force_popup: $('announcementForceInput').checked, publish_time: $('announcementPublishTimeInput').value ? new Date($('announcementPublishTimeInput').value).toISOString() : '', expire_time: $('announcementExpireTimeInput').value ? new Date($('announcementExpireTimeInput').value).toISOString() : '' };
+  return { title: $('announcementTitleInput').value.trim(), version: $('announcementVersionInput').value.trim(), type: $('announcementTypeInput').value, importance: $('announcementImportanceInput').value, summary: $('announcementSummaryInput').value.trim(), content: $('announcementContentInput').value.trim(), popup_enabled: $('announcementPopupInput').checked, force_popup: false, publish_time: $('announcementPublishTimeInput').value ? new Date($('announcementPublishTimeInput').value).toISOString() : '', expire_time: $('announcementExpireTimeInput').value ? new Date($('announcementExpireTimeInput').value).toISOString() : '' };
 }
 
 async function saveAdminAnnouncement(publish) {
@@ -5709,33 +5714,73 @@ async function markAllAdminAnnouncementsRead() {
 
 async function refreshAdminAnnouncements() { await loadAdminAnnouncementsSafe(); renderAdminAnnouncements(); }
 
+function announcementCanAppearInPopupHistory(item) {
+  if (!item || item.status !== 'published' || item.enabled === false || item.popup_enabled === false) return false;
+  const publishedAt = Date.parse(item.publish_time || '');
+  if (Number.isFinite(publishedAt) && publishedAt > Date.now()) return false;
+  const expiresAt = Date.parse(item.expire_time || '');
+  return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+}
+
 function ensureAdminAnnouncementPopup() {
   let overlay = $('adminAnnouncementPopup'); if (overlay) return overlay;
   overlay = document.createElement('div'); overlay.id = 'adminAnnouncementPopup'; overlay.className = 'modal-overlay'; overlay.hidden = true;
-  overlay.innerHTML = `<div class="modal-card announcement-popup-card" role="dialog" aria-modal="true"><div class="panel-head"><h2>更新公告</h2><button id="announcementPopupLater" type="button">稍后查看</button></div><div id="announcementPopupBody"></div><div class="announcement-popup-actions"><button id="announcementPopupPrev" type="button">上一条</button><span id="announcementPopupPosition"></span><button id="announcementPopupNext" type="button">下一条</button><button id="announcementPopupRead" type="button">我知道了</button></div></div>`;
+  overlay.innerHTML = `<div class="modal-card announcement-popup-card" role="dialog" aria-modal="true" aria-labelledby="announcementPopupTitle"><div class="panel-head"><div><h2 id="announcementPopupTitle">版本更新公告</h2><small id="announcementPopupSummary"></small></div><button id="announcementPopupClose" type="button" aria-label="关闭">关闭</button></div><div id="announcementPopupBody"></div><div class="announcement-popup-actions"><span>公告弹出后自动记为已读，以后仍可在“更新公告”中查看。</span><button id="announcementPopupRead" type="button">我知道了</button></div></div>`;
   document.body.appendChild(overlay);
-  $('announcementPopupLater').onclick = () => { overlay.hidden = true; };
-  $('announcementPopupPrev').onclick = () => { state.announcementPopupIndex--; renderAdminAnnouncementPopup(); };
-  $('announcementPopupNext').onclick = () => { state.announcementPopupIndex++; renderAdminAnnouncementPopup(); };
-  $('announcementPopupRead').onclick = async () => { const item = state.announcementPopupItems[state.announcementPopupIndex]; if (item) await markAdminAnnouncementRead(item.id); state.announcementPopupItems.splice(state.announcementPopupIndex, 1); if (state.announcementPopupIndex >= state.announcementPopupItems.length) state.announcementPopupIndex = Math.max(0, state.announcementPopupItems.length - 1); if (!state.announcementPopupItems.length) overlay.hidden = true; else renderAdminAnnouncementPopup(); };
+  const closePopup = () => { overlay.hidden = true; };
+  $('announcementPopupClose').onclick = closePopup;
+  $('announcementPopupRead').onclick = closePopup;
   return overlay;
 }
 
 function renderAdminAnnouncementPopup() {
-  const overlay = ensureAdminAnnouncementPopup(); const item = state.announcementPopupItems[state.announcementPopupIndex]; if (!item) { overlay.hidden = true; return; }
-  $('announcementPopupBody').innerHTML = `<div class="announcement-detail-head"><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(item.version || '无版本号')}</span></div><h2>${escapeHtml(item.title)}</h2><small>${escapeHtml(formatDateTime(item.publish_time))}</small><p class="announcement-summary">${escapeHtml(item.summary || '')}</p><div class="announcement-content">${safeAnnouncementMarkdown(item.content)}</div>`;
-  $('announcementPopupPosition').textContent = `${state.announcementPopupIndex + 1} / ${state.announcementPopupItems.length}`;
-  $('announcementPopupPrev').disabled = state.announcementPopupIndex <= 0; $('announcementPopupNext').disabled = state.announcementPopupIndex >= state.announcementPopupItems.length - 1; overlay.hidden = false;
+  const overlay = ensureAdminAnnouncementPopup();
+  if (!state.announcementPopupNewItems.length || !state.announcementPopupItems.length) { overlay.hidden = true; return; }
+  const newIds = new Set(state.announcementPopupNewItems.map((item) => item.id));
+  $('announcementPopupSummary').textContent = `发现 ${state.announcementPopupNewItems.length} 条新公告，已合并展示未登录期间的全部更新`;
+  $('announcementPopupBody').innerHTML = `<div class="announcement-popup-list">${state.announcementPopupItems.map((item) => {
+    const isNew = newIds.has(item.id);
+    return `<article class="announcement-popup-entry ${isNew ? 'is-new' : ''}">
+      <div class="announcement-popup-version"><span class="announcement-popup-dot" aria-hidden="true"></span><strong>${escapeHtml(item.version || item.title || '更新公告')}</strong>${isNew ? '<em>本次未读</em>' : '<span>历史公告</span>'}</div>
+      <div class="announcement-popup-entry-body">
+        <div class="announcement-detail-head"><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(formatDateTime(item.publish_time || item.updated_time))}</span></div>
+        <h3>${escapeHtml(item.title)}</h3>
+        ${item.summary ? `<p class="announcement-summary">${escapeHtml(item.summary)}</p>` : ''}
+        <div class="announcement-content">${safeAnnouncementMarkdown(item.content)}</div>
+      </div>
+    </article>`;
+  }).join('')}</div>`;
+  overlay.hidden = false;
+}
+
+async function markAdminAnnouncementPopupShown() {
+  if (state.announcementPopupMarking || !state.announcementPopupNewItems.length) return;
+  const shown = state.announcementPopupNewItems.map((item) => ({ id: item.id, notification_revision: item.notification_revision || 1 }));
+  state.announcementPopupMarking = true;
+  try {
+    await api('/api/admin/announcements/read-batch', { method: 'POST', body: JSON.stringify({ announcements: shown }) });
+    const shownIds = new Set(shown.map((item) => item.id));
+    let changed = 0;
+    state.announcements.forEach((item) => { if (shownIds.has(item.id) && !item.read) { item.read = true; changed++; } });
+    state.announcementUnreadCount = Math.max(0, state.announcementUnreadCount - changed);
+    state.announcementPopupNewItems = [];
+    renderAdminAnnouncements();
+  } catch (error) {
+    console.warn('更新公告自动已读失败：', error);
+  } finally {
+    state.announcementPopupMarking = false;
+  }
 }
 
 function showAdminAnnouncementPopup() {
-  if (!state.token || !state.announcementPopupItems.length) return;
+  if (!state.token || !state.announcementPopupNewItems.length || !state.announcementPopupItems.length) return;
   const existingNotice = $('unreadNoticeOverlay');
   if (existingNotice && !existingNotice.hidden) {
     window.setTimeout(showAdminAnnouncementPopup, 500);
     return;
   }
   renderAdminAnnouncementPopup();
+  markAdminAnnouncementPopupShown();
 }
 
 function escapeHtml(value) {
