@@ -3321,6 +3321,11 @@ namespace ToolboxClient
                     AddAudioNavButton(id, NavLabel(row, id, audioPages), GetText(row, "icon", ""));
                     audioAdded.Add(id);
                 }
+                if (AsList(Get(config, "toolbox_tabs")).Count > 0 && !audioAdded.Contains("toolbox"))
+                {
+                    AddAudioNavButton("toolbox", "系统工具", "toolbox");
+                    audioAdded.Add("toolbox");
+                }
                 FitAudioNavButtons();
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
                 else foreach (string key in navButtons.Keys) { ShowPage(key); break; }

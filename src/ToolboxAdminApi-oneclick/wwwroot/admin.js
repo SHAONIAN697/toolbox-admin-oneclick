@@ -2925,7 +2925,7 @@ function getPositions() {
       scope: 'toolbox',
       tabIndex: index,
       orderIndex: positions.length,
-      label: `系统工具 / ${tab.name || index + 1}`,
+      label: `系统工具分组 / ${tab.name || index + 1}`,
       name: tab.name || `系统工具 ${index + 1}`,
       container: tab
     });
