@@ -483,6 +483,9 @@ def should_write_generic_audit(path, method):
         return False
     if path in ("/api/admin/announcements/read-all", "/api/admin/announcements/read-batch"):
         return False
+    # Client builds are downloads, not configuration additions.
+    if path == "/api/admin/client/build":
+        return False
     if re.fullmatch(r"/api/admin/announcements/[^/]+/read", path):
         return False
     return True
@@ -1198,6 +1201,14 @@ def request_client_variant(handler, body=None):
 
 def client_variant_file_suffix(variant):
     return client_variant_info(variant).get("file") or normalize_client_variant(variant)
+
+
+def client_variant_download_title(variant):
+    normalized = normalize_client_variant(variant)
+    order = ("original", "studio", "tuner", "audio", "portal")
+    number = order.index(normalized) + 1
+    label = client_variant_info(normalized).get("label") or normalized
+    return f"下载第 {number} 个工具箱：{label}"
 
 
 def find_csharp_compiler():
@@ -4697,6 +4708,9 @@ class Handler(BaseHTTPRequestHandler):
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
             record_client_build_download(job_id, auth["user"])
+            audit_event("client_download", auth["user"], job.get("variant") or "original", self,
+                        {"title": client_variant_download_title(job.get("variant") or "original"),
+                         "method": "GET", "path": path, "variant": job.get("variant") or "original"})
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
             user = find_user_by_id(user_id) or auth["user"]
