@@ -3318,6 +3318,7 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
                     AddAudioNavButton(id, NavLabel(row, id, audioPages), GetText(row, "icon", ""));
                     audioAdded.Add(id);
                 }
