@@ -3590,7 +3590,11 @@ function renderButtonFilterOptions() {
   const action = $('buttonActionFilter');
   if (!area || !section || !action) return;
   fillFilterOptions(area, '全部位置', uniqueSorted(state.buttons.map((button) => button.area || '')));
-  fillFilterOptions(section, '全部分组', uniqueSorted(state.buttons.map((button) => button.section || '')));
+  const selectedArea = area.value || '';
+  const sections = state.buttons
+    .filter((button) => !selectedArea || button.area === selectedArea)
+    .map((button) => button.section || '');
+  fillFilterOptions(section, '全部分组', uniqueSorted(sections));
   fillFilterOptions(action, '全部动作', ACTIONS.map(([value, label]) => ({ value, label })));
 }
 
