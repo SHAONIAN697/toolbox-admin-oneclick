@@ -4092,10 +4092,6 @@ namespace ToolboxClient
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
                 int width = Math.Max(600, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
-                int pageButtonCount = 0;
-                foreach (object pageSectionObj in currentSections)
-                    pageButtonCount += AsList(Get(AsDict(pageSectionObj), "buttons")).Count;
-                bool expandedLayout = pageButtonCount > 10;
                 int sectionIndex = 0;
                 foreach (object sectionObj in currentSections)
                 {
@@ -4104,7 +4100,7 @@ namespace ToolboxClient
                     foreach (object buttonObj in AsList(Get(section, "buttons"))) buttons.Add(AsDict(buttonObj));
                     if (buttons.Count == 0) continue;
                     SortButtonsByConfiguredPosition(buttons);
-                    content.Controls.Add(CreateAudioSection(section, buttons, width, sectionIndex++, expandedLayout));
+                    content.Controls.Add(CreateAudioSection(section, buttons, width, sectionIndex++));
                 }
                 if (content.Controls.Count == 0) AddAudioEmptyMessage();
             }
@@ -4115,9 +4111,10 @@ namespace ToolboxClient
             }
         }
 
-        private Control CreateAudioSection(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index, bool expandedLayout)
+        private Control CreateAudioSection(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index)
         {
-            // The whole page uses one layout so sections line up consistently.
+            bool expandedLayout = buttons.Count > 10;
+            // Each section chooses its layout independently based on its own button count.
             int columns = expandedLayout ? 4 : 5;
             int gap = expandedLayout ? 10 : 5;
             bool pageUsesConfiguredLayout = ButtonContentLayoutAppliesToCurrentPage();
