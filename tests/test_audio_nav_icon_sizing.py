@@ -40,10 +40,11 @@ class AudioNavIconSizingTests(unittest.TestCase):
             source = (ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
             self.assertIn("TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding", source)
             if source_dir == "ToolboxAdminApi-oneclick":
-                self.assertIn("int columns = width >= 900 ? 4 : 3;", source)
+                self.assertIn("bool expandedLayout = buttons.Count > 10;", source)
+                self.assertIn("int columns = expandedLayout ? 4 : 5;", source)
                 self.assertIn("Math.Min(72, measured.Height + 14)", source)
-                self.assertIn("const int gap = 10;", source)
-                self.assertIn("Font(Font.FontFamily, 9.5F)", source)
+                self.assertIn("int gap = expandedLayout ? 10 : 5;", source)
+                self.assertIn("expandedLayout ? 9.5F : 8.5F", source)
             else:
                 self.assertIn("Math.Min(62, measured.Height + 10)", source)
             self.assertIn("int buttonHeight = useIconLayout ? 104 : rowHeights[row];", source)
