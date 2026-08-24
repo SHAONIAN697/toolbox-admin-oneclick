@@ -4092,6 +4092,15 @@ namespace ToolboxClient
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
                 int width = Math.Max(600, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+                bool expandedLayout = false;
+                foreach (object pageSectionObj in currentSections)
+                {
+                    if (AsList(Get(AsDict(pageSectionObj), "buttons")).Count > 10)
+                    {
+                        expandedLayout = true;
+                        break;
+                    }
+                }
                 int sectionIndex = 0;
                 foreach (object sectionObj in currentSections)
                 {
@@ -4100,7 +4109,7 @@ namespace ToolboxClient
                     foreach (object buttonObj in AsList(Get(section, "buttons"))) buttons.Add(AsDict(buttonObj));
                     if (buttons.Count == 0) continue;
                     SortButtonsByConfiguredPosition(buttons);
-                    content.Controls.Add(CreateAudioSection(section, buttons, width, sectionIndex++));
+                    content.Controls.Add(CreateAudioSection(section, buttons, width, sectionIndex++, expandedLayout));
                 }
                 if (content.Controls.Count == 0) AddAudioEmptyMessage();
             }
@@ -4111,10 +4120,9 @@ namespace ToolboxClient
             }
         }
 
-        private Control CreateAudioSection(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index)
+        private Control CreateAudioSection(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index, bool expandedLayout)
         {
-            bool expandedLayout = buttons.Count > 10;
-            // Each section chooses its layout independently based on its own button count.
+            // A large group switches the entire page to the readable four-column layout.
             int columns = expandedLayout ? 4 : 5;
             int gap = expandedLayout ? 10 : 5;
             bool pageUsesConfiguredLayout = ButtonContentLayoutAppliesToCurrentPage();
