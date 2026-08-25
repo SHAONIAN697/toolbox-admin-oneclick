@@ -53,8 +53,12 @@ ask_proxy(){
 }
 
 download_source(){
-  local tmp="$1" url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${BRANCH}?_=${EPOCHSECONDS:-$(date +%s)}"
+  local tmp="$1" sha url api_url="https://api.github.com/repos/${REPO}/commits/${BRANCH}"
   mkdir -p "$tmp"
+  yellow "正在读取 GitHub 最新提交..." >&2
+  sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "${PROXY}${api_url}" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)" || return 1
+  [ "${#sha}" -ge 40 ] || return 1
+  url="https://codeload.github.com/${REPO}/tar.gz/${sha}"
   yellow "正在下载最新版源码..." >&2
   curl -fL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp/source.tar.gz" "${PROXY}${url}" || return 1
   tar -xzf "$tmp/source.tar.gz" -C "$tmp" || return 1
