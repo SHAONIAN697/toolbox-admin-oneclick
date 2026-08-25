@@ -483,9 +483,6 @@ def should_write_generic_audit(path, method):
         return False
     if path in ("/api/admin/announcements/read-all", "/api/admin/announcements/read-batch"):
         return False
-    # Client builds are downloads, not configuration additions.
-    if path == "/api/admin/client/build":
-        return False
     if re.fullmatch(r"/api/admin/announcements/[^/]+/read", path):
         return False
     return True
@@ -1203,14 +1200,6 @@ def client_variant_file_suffix(variant):
     return client_variant_info(variant).get("file") or normalize_client_variant(variant)
 
 
-def client_variant_download_title(variant):
-    normalized = normalize_client_variant(variant)
-    order = ("original", "studio", "tuner", "audio", "portal")
-    number = order.index(normalized) + 1
-    label = client_variant_info(normalized).get("label") or normalized
-    return f"下载第 {number} 个工具箱：{label}"
-
-
 def find_csharp_compiler():
     compiler = shutil.which("mcs") or shutil.which("csc")
     if compiler:
@@ -1920,6 +1909,8 @@ def handle_desktop_login(handler):
 def default_system_settings():
     return {
         "builtinFunctions": [],
+        "menuIconFolders": [{"id": "default", "name": "默认", "sort": 0}],
+        "menuIcons": [],
         "locations": {
             "noticeAreaTitle": "全部未读",
             "adminSystemName": "系统管理",
@@ -2338,6 +2329,25 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
 
 def write_system_settings(body):
     current = read_system_settings()
+    if isinstance(body.get("menuIconFolders"), list):
+        folders = []
+        used = set()
+        for index, source in enumerate(body.get("menuIconFolders")[:100]):
+            if not isinstance(source, dict):
+                continue
+            folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("folder")
+            name = str(source.get("name") or "").strip()[:80]
+            if not name or folder_id in used:
+                continue
+            used.add(folder_id)
+            try:
+                sort = max(-999999, min(999999, int(source.get("sort", index))))
+            except (TypeError, ValueError):
+                sort = index
+            folders.append({"id": folder_id, "name": name, "sort": sort})
+        if not any(item["id"] == "default" for item in folders):
+            folders.insert(0, {"id": "default", "name": "默认", "sort": -999999})
+        current["menuIconFolders"] = folders
     if "menuIconLibraryUrl" in body:
         library_url = str(body.get("menuIconLibraryUrl") or "").strip()[:1000]
         if library_url and not http_url(library_url):
@@ -2366,7 +2376,12 @@ def write_system_settings(body):
             if not name or not valid_url or icon_id in used:
                 continue
             used.add(icon_id)
-            rows.append({"id": icon_id, "name": name, "url": valid_url})
+            folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("folderId") or "default")) or "default"
+            try:
+                sort = max(-999999, min(999999, int(source.get("sort", 0))))
+            except (TypeError, ValueError):
+                sort = 0
+            rows.append({"id": icon_id, "name": name, "url": valid_url, "folderId": folder_id, "sort": sort})
         current["menuIcons"] = rows
     if isinstance(body.get("builtinFunctions"), list):
         rows = []
@@ -4708,9 +4723,6 @@ class Handler(BaseHTTPRequestHandler):
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
             record_client_build_download(job_id, auth["user"])
-            audit_event("client_download", auth["user"], job.get("variant") or "original", self,
-                        {"title": client_variant_download_title(job.get("variant") or "original"),
-                         "method": "GET", "path": path, "variant": job.get("variant") or "original"})
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
             user = find_user_by_id(user_id) or auth["user"]
