@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026082503">
+  <link rel="stylesheet" href="/styles.css?v=2026082507">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -196,7 +196,7 @@
           <label>页面<select id="addScope"></select></label>
           <label>分组<select id="addSection"></select></label>
           <label>按钮名称<input id="addName"></label>
-          <label>图标<input id="addIcon"></label>
+          <label>图标<div class="icon-picker-field"><input id="addIcon" placeholder="图标地址"><button id="openAddIconPickerBtn" class="icon-picker-trigger" data-icon-picker-open type="button">选择图标</button><div id="addIconPicker" class="icon-picker-popover" data-icon-picker-popup hidden></div></div></label>
           <label>说明<input id="addDescription"></label>
           <label>动作<select id="addAction"><option value="link">打开网页</option><option value="download">下载文件</option><option value="cmd">运行命令</option><option value="script">内置功能</option><option value="winget">安装软件</option></select></label>
           <label>网址 / 内容<input id="addTarget"></label>
@@ -512,7 +512,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026082503"></script>
+  <script src="/admin.js?v=2026082507"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>
