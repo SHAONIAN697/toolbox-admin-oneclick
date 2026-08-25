@@ -1572,17 +1572,17 @@ body.is-super-admin #appLoginPanel {
   z-index: 30;
   top: calc(100% + 6px);
   left: 0;
-  width: min(560px, calc(100vw - 330px));
+  width: min(560px, calc(100vw - 80px));
   max-height: 330px;
   padding: 10px;
   overflow: auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  gap: 8px;
+  display: block;
   background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: 0 12px 30px rgba(0, 0, 0, .35);
 }
+.icon-field { position: relative; overflow: visible; }
+.icon-field .icon-picker-popover { top: calc(100% + 6px); left: 0; }
 
 .icon-picker-popover[hidden] {
   display: none;
