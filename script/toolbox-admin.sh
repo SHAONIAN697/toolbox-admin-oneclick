@@ -53,7 +53,7 @@ ask_proxy(){
 }
 
 download_source(){
-  local tmp="$1" url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${BRANCH}"
+  local tmp="$1" url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${BRANCH}?_=${EPOCHSECONDS:-$(date +%s)}"
   mkdir -p "$tmp"
   yellow "正在下载最新版源码..." >&2
   curl -fL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp/source.tar.gz" "${PROXY}${url}" || return 1
