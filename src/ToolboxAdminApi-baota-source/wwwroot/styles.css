@@ -806,6 +806,19 @@ body.is-template-mode .template-status {
   display: grid;
   gap: 12px;
 }
+.menu-icon-breadcrumb { display:flex; align-items:center; gap:8px; margin:14px 0; color:var(--muted); }
+.menu-icon-breadcrumb button { border:0; background:none; color:var(--accent); padding:0; cursor:pointer; }
+.menu-icon-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:12px; padding:16px; border:1px solid var(--line); border-radius:6px; background:#080b0d; }
+.menu-icon-card { min-width:0; min-height:150px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:7px; padding:10px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--text); }
+.menu-icon-card:hover { border-color:var(--accent); background:var(--panel-2); }
+button.menu-icon-card { cursor:pointer; }
+.folder-glyph { width:58px; height:42px; margin:12px 0 8px; border-radius:4px; background:#1994ed; position:relative; }
+.folder-glyph:before { content:''; position:absolute; left:5px; top:-7px; width:24px; height:10px; border-radius:4px 4px 0 0; background:#1994ed; }
+.menu-icon-card small { color:var(--muted); }
+.menu-icon-thumb { width:92px; height:86px; display:flex; align-items:center; justify-content:center; margin-bottom:3px; }
+.menu-icon-thumb img { max-width:86px; max-height:80px; object-fit:contain; }
+.image-card input, .image-card select { width:100%; min-width:0; box-sizing:border-box; }
+.image-card .danger { width:100%; }
 
 .popup-config-row {
   display: grid;
