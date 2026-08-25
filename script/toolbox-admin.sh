@@ -92,7 +92,7 @@ run_install_or_update(){
   if [ "$mode" = "update" ]; then
     dir="$(app_dir)"
     yellow "正在检查当前版本..."
-    if source_matches_installed "$src" "$dir"; then
+    if [ "${FORCE_UPDATE:-0}" != "1" ] && source_matches_installed "$src" "$dir"; then
       green "当前已是最新版本，无需更新。"
       rm -rf "$tmp"
       return 0
@@ -120,7 +120,7 @@ update_app(){
     yellow "尚未检测到已安装的 Toolbox Admin，请选择 1 安装。"
     return
   fi
-  run_install_or_update update
+  FORCE_UPDATE=1 run_install_or_update update
 }
 
 show_status(){ systemctl status "$SERVICE" --no-pager -l || true; }
