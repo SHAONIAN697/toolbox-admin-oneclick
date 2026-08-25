@@ -2146,6 +2146,7 @@ function renderMenuIcons() {
   root.querySelectorAll('[data-menu-icon-sort]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].sort = Number(input.value || 0); });
   root.querySelectorAll('[data-menu-icon-folder]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].folderId = input.value; renderMenuIcons(); });
   if ($('menuIconLibraryStatus') && !state.menuIconLibraryError) $('menuIconLibraryStatus').textContent = `项目图库现有 ${icons.length} 个图标，所有用户均可看图选择。`;
+  if ($('addIconPreset')) $('addIconPreset').innerHTML = menuIconOptionsHtml($('addIcon')?.value || '');
 }
 
 function addMenuIconFolder() {
@@ -2154,6 +2155,11 @@ function addMenuIconFolder() {
   state.system.menuIconFolders = state.system.menuIconFolders || [{id:'default', name:'默认', sort:0}];
   state.system.menuIconFolders.push({id:`folder_${Date.now().toString(36)}`, name, sort:state.system.menuIconFolders.length});
   $('globalMenuIconFolderName').value = ''; renderMenuIcons();
+}
+
+function menuIconOptionsHtml(selected = '') {
+  const folders = [...(state.system?.menuIconFolders || [{ id: 'default', name: '默认', sort: 0 }])].sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  return `<option value="">不使用默认图标</option>${folders.map(folder => `<optgroup label="${escapeAttr(folder.name)}">${(state.menuIcons || []).filter(item => (item.folderId || 'default') === folder.id).sort((a, b) => (a.sort || 0) - (b.sort || 0)).map(item => `<option value="${escapeAttr(item.url)}" ${item.url === selected ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</optgroup>`).join('')}`;
 }
 
 async function uploadImage(input, endpoint) {
@@ -3535,7 +3541,7 @@ function renderButtonEditRow(tr, button) {
       <label>分组<select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select></label>
       <label>排序<input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></label>
       <label>按钮名称<input value="${escapeAttr(button.name || '')}" data-field="name"></label>
-      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"></div></label>
+      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"><select data-field="iconPreset">${menuIconOptionsHtml(icon)}</select></div></label>
       <label>说明<input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></label>
       <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     </div>
@@ -3547,6 +3553,7 @@ function renderButtonEditRow(tr, button) {
   tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
   tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
   tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
+  tr.querySelector('[data-field="iconPreset"]').onchange = (event) => { tr.querySelector('[data-field="icon"]').value = event.target.value; updateIconPreview(tr); };
   tr.querySelector('.icon-preview').ondblclick = () => {
     tr.querySelector('[data-field="icon"]').value = '';
     updateIconPreview(tr);
@@ -5999,6 +6006,7 @@ if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => s
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
 if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
 if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
+if ($('addIconPreset')) $('addIconPreset').onchange = (event) => { if ($('addIcon')) $('addIcon').value = event.target.value; };
 if ($('addMenuIconFolderBtn')) $('addMenuIconFolderBtn').onclick = () => { try { addMenuIconFolder(); } catch (error) { setStatus(error.message, true); } };
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
