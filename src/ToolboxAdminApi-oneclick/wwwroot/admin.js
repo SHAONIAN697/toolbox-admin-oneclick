@@ -3567,7 +3567,6 @@ function renderButtonEditRow(tr, button) {
   tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
   tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
   initButtonIconPicker(tr, tr.querySelector('[data-field="icon"]'), tr.querySelector('.icon-preview img') || tr.querySelector('.icon-preview'));
-  tr.querySelector('[data-field="iconPreset"]').onchange = (event) => { tr.querySelector('[data-field="icon"]').value = event.target.value; updateIconPreview(tr); };
   tr.querySelector('.icon-preview').ondblclick = () => {
     tr.querySelector('[data-field="icon"]').value = '';
     updateIconPreview(tr);
