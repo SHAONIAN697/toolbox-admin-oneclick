@@ -56,7 +56,10 @@ download_source(){
   local tmp="$1" sha url api_url="https://api.github.com/repos/${REPO}/commits/${BRANCH}"
   mkdir -p "$tmp"
   yellow "正在读取 GitHub 最新提交..." >&2
-  sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "${PROXY}${api_url}" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1)" || return 1
+  sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "${PROXY}${api_url}" 2>/dev/null | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1 || true)"
+  if [ "${#sha}" -lt 40 ]; then
+    sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "$api_url" 2>/dev/null | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1 || true)"
+  fi
   [ "${#sha}" -ge 40 ] || return 1
   url="https://codeload.github.com/${REPO}/tar.gz/${sha}"
   yellow "正在下载最新版源码..." >&2
