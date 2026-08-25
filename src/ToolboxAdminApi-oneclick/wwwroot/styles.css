@@ -1587,6 +1587,11 @@ body.is-super-admin #appLoginPanel {
 .icon-picker-popover[hidden] {
   display: none;
 }
+.icon-picker-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.icon-picker-head button { border:0; background:none; color:var(--accent); cursor:pointer; padding:2px; }
+.icon-picker-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; max-height:300px; overflow:auto; }
+.icon-picker-grid .icon-picker-item { min-height:82px; padding:7px; }
+.icon-picker-grid .icon-picker-item img { width:42px; height:42px; object-fit:contain; }
 
 .icon-picker-item {
   height: 92px;

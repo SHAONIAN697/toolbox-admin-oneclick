@@ -2146,7 +2146,6 @@ function renderMenuIcons() {
   root.querySelectorAll('[data-menu-icon-sort]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].sort = Number(input.value || 0); });
   root.querySelectorAll('[data-menu-icon-folder]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].folderId = input.value; renderMenuIcons(); });
   if ($('menuIconLibraryStatus') && !state.menuIconLibraryError) $('menuIconLibraryStatus').textContent = `项目图库现有 ${icons.length} 个图标，所有用户均可看图选择。`;
-  if ($('addIconPreset')) $('addIconPreset').innerHTML = menuIconOptionsHtml($('addIcon')?.value || '');
 }
 
 function addMenuIconFolder() {
@@ -3528,6 +3527,23 @@ function renderButtonPreviewRow(tr, button) {
   if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
 }
 
+function initButtonIconPicker(root, input, preview) {
+  const trigger = root.querySelector('[data-icon-picker-open]');
+  const picker = root.querySelector('[data-icon-picker-popup]');
+  if (!trigger || !picker) return;
+  let folderId = '';
+  const render = () => {
+    const folders = [...(state.system?.menuIconFolders || [{ id: 'default', name: '默认', sort: 0 }])].sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    const active = folders.find(item => item.id === folderId);
+    const icons = (state.menuIcons || []).filter(item => (item.folderId || 'default') === (folderId || 'default')).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    picker.innerHTML = `<div class="icon-picker-head"><button type="button" data-icon-picker-back ${folderId ? '' : 'hidden'}>返回文件夹</button><strong>${escapeHtml(active?.name || '选择图标')}</strong></div><div class="icon-picker-grid">${!folderId ? folders.map(item => `<button class="icon-picker-item" data-icon-picker-folder="${escapeAttr(item.id)}" type="button"><span class="folder-glyph"></span><strong>${escapeHtml(item.name)}</strong></button>`).join('') : icons.map(item => `<button class="icon-picker-item" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}</div>`;
+    picker.querySelector('[data-icon-picker-back]')?.addEventListener('click', () => { folderId = ''; render(); });
+    picker.querySelectorAll('[data-icon-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.iconPickerFolder; render(); });
+    picker.querySelectorAll('[data-icon-picker-value]').forEach(row => row.onclick = () => { input.value = row.dataset.iconPickerValue; input.dispatchEvent(new Event('input', { bubbles: true })); if (preview.tagName === 'IMG') { preview.src = input.value; preview.hidden = false; } picker.hidden = true; });
+  };
+  trigger.onclick = () => { picker.hidden = !picker.hidden; if (!picker.hidden) { folderId = ''; render(); } };
+}
+
 function renderButtonEditRow(tr, button) {
   const icon = button.icon || button.raw?.icon || '';
   const isScript = button.action === 'script';
@@ -3541,7 +3557,7 @@ function renderButtonEditRow(tr, button) {
       <label>分组<select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select></label>
       <label>排序<input class="sort-input" type="number" value="${escapeAttr(button.sort ?? button.raw?.sort ?? 0)}" data-field="sort" title="数字越小越靠前"></label>
       <label>按钮名称<input value="${escapeAttr(button.name || '')}" data-field="name"></label>
-      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"><select data-field="iconPreset">${menuIconOptionsHtml(icon)}</select></div></label>
+      <label>图标<div class="icon-field"><span class="icon-preview" title="${icon ? '图标预览，双击清空' : '暂无图标'}">${icon ? `<img src="${escapeAttr(icon)}" alt="">` : '<b>预览</b>'}</span><input value="${escapeAttr(icon)}" data-field="icon" placeholder="图床图片链接"><button type="button" data-icon-picker-open>选择图标</button><div class="icon-picker-popover" data-icon-picker-popup hidden></div></div></label>
       <label>说明<input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></label>
       <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     </div>
@@ -3553,6 +3569,7 @@ function renderButtonEditRow(tr, button) {
   tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
   tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
   tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
+  initButtonIconPicker(tr, tr.querySelector('[data-field="icon"]'), tr.querySelector('.icon-preview img') || tr.querySelector('.icon-preview'));
   tr.querySelector('[data-field="iconPreset"]').onchange = (event) => { tr.querySelector('[data-field="icon"]').value = event.target.value; updateIconPreview(tr); };
   tr.querySelector('.icon-preview').ondblclick = () => {
     tr.querySelector('[data-field="icon"]').value = '';
@@ -6006,7 +6023,7 @@ if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => s
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
 if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
 if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
-if ($('addIconPreset')) $('addIconPreset').onchange = (event) => { if ($('addIcon')) $('addIcon').value = event.target.value; };
+if ($('addIconPicker')) initButtonIconPicker(document, $('addIcon'), $('addIcon'));
 if ($('addMenuIconFolderBtn')) $('addMenuIconFolderBtn').onclick = () => { try { addMenuIconFolder(); } catch (error) { setStatus(error.message, true); } };
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
