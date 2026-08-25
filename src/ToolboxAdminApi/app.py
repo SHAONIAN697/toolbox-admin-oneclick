@@ -1909,6 +1909,8 @@ def handle_desktop_login(handler):
 def default_system_settings():
     return {
         "builtinFunctions": [],
+        "menuIconFolders": [{"id": "default", "name": "默认", "sort": 0}],
+        "menuIcons": [],
         "locations": {
             "noticeAreaTitle": "全部未读",
             "adminSystemName": "系统管理",
@@ -2327,6 +2329,25 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
 
 def write_system_settings(body):
     current = read_system_settings()
+    if isinstance(body.get("menuIconFolders"), list):
+        folders = []
+        used = set()
+        for index, source in enumerate(body.get("menuIconFolders")[:100]):
+            if not isinstance(source, dict):
+                continue
+            folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("folder")
+            name = str(source.get("name") or "").strip()[:80]
+            if not name or folder_id in used:
+                continue
+            used.add(folder_id)
+            try:
+                sort = max(-999999, min(999999, int(source.get("sort", index))))
+            except (TypeError, ValueError):
+                sort = index
+            folders.append({"id": folder_id, "name": name, "sort": sort})
+        if not any(item["id"] == "default" for item in folders):
+            folders.insert(0, {"id": "default", "name": "默认", "sort": -999999})
+        current["menuIconFolders"] = folders
     if "menuIconLibraryUrl" in body:
         library_url = str(body.get("menuIconLibraryUrl") or "").strip()[:1000]
         if library_url and not http_url(library_url):
@@ -2355,7 +2376,12 @@ def write_system_settings(body):
             if not name or not valid_url or icon_id in used:
                 continue
             used.add(icon_id)
-            rows.append({"id": icon_id, "name": name, "url": valid_url})
+            folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("folderId") or "default")) or "default"
+            try:
+                sort = max(-999999, min(999999, int(source.get("sort", 0))))
+            except (TypeError, ValueError):
+                sort = 0
+            rows.append({"id": icon_id, "name": name, "url": valid_url, "folderId": folder_id, "sort": sort})
         current["menuIcons"] = rows
     if isinstance(body.get("builtinFunctions"), list):
         rows = []

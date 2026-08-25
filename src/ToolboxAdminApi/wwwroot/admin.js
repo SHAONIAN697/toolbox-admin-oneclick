@@ -2124,15 +2124,36 @@ async function loadMenuIcons() {
   const result = await api('/api/admin/menu-icons');
   state.menuIcons = result.icons || [];
   state.menuIconLibraryError = result.libraryError || '';
+  if (state.system && !Array.isArray(state.system.menuIconFolders)) state.system.menuIconFolders = [{ id: 'default', name: '默认', sort: 0 }];
 }
 
 function renderMenuIcons() {
   const root = $('menuIconRows');
   if (!root || !isSuper()) return;
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
-  root.innerHTML = icons.length ? icons.map((item, index) => `<div class="button-edit-panel" data-menu-icon-index="${index}"><img src="${escapeAttr(item.url)}" alt="" style="width:32px;height:32px;object-fit:contain"><input data-menu-icon-name value="${escapeAttr(item.name)}"><input data-menu-icon-url value="${escapeAttr(item.url)}"><button data-menu-icon-delete type="button">删除</button></div>`).join('') : '<p class="empty">暂无管理员手工添加的菜单图标。</p>';
+  const folders = [...(state.system?.menuIconFolders || [{id:'default', name:'默认', sort:0}])].sort((a,b)=>(a.sort||0)-(b.sort||0));
+  const activeId = state.menuIconFolderView || '';
+  const active = folders.find(folder => folder.id === activeId);
+  const visibleIcons = icons.map((item,index) => ({ item, index })).filter(row => (row.item.folderId || 'default') === (activeId || 'default')).sort((a,b) => (a.item.sort || 0) - (b.item.sort || 0));
+  const crumbs = `<div class="menu-icon-breadcrumb"><button type="button" data-menu-folder-home>首页</button><span>/</span><strong>图标库</strong>${active ? `<span>/</span><strong>${escapeHtml(active.name)}</strong>` : ''}</div>`;
+  const folderCards = !active ? folders.map(folder => `<button class="menu-icon-card folder-card" type="button" data-menu-folder-open="${escapeAttr(folder.id)}"><span class="folder-glyph" aria-hidden="true"></span><strong>${escapeHtml(folder.name)}</strong><small>${icons.filter(item => (item.folderId || 'default') === folder.id).length} 个图标</small></button>`).join('') : '';
+  const iconCards = active ? visibleIcons.map(({item,index}) => `<article class="menu-icon-card image-card" data-menu-icon-index="${index}"><div class="menu-icon-thumb"><img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.name)}"></div><input data-menu-icon-name value="${escapeAttr(item.name)}" aria-label="图标名称"><input data-menu-icon-sort type="number" value="${escapeAttr(item.sort || 0)}" aria-label="排序"><select data-menu-icon-folder aria-label="移动到文件夹">${folders.map(target=>`<option value="${escapeAttr(target.id)}" ${target.id === (item.folderId || 'default') ? 'selected' : ''}>移动到：${escapeHtml(target.name)}</option>`).join('')}</select><button class="danger" data-menu-icon-delete type="button">删除</button></article>`).join('') : '';
+  root.innerHTML = `${crumbs}<div class="menu-icon-grid">${folderCards}${iconCards || (!folderCards ? '<p class="empty">此文件夹暂无图片。</p>' : '')}</div>`;
+  root.querySelector('[data-menu-folder-home]').onclick = () => { state.menuIconFolderView = ''; renderMenuIcons(); };
+  root.querySelectorAll('[data-menu-folder-open]').forEach(button => button.onclick = () => { state.menuIconFolderView = button.dataset.menuFolderOpen; renderMenuIcons(); });
   root.querySelectorAll('[data-menu-icon-delete]').forEach(button => button.onclick = () => { icons.splice(Number(button.closest('[data-menu-icon-index]').dataset.menuIconIndex), 1); renderMenuIcons(); });
+  root.querySelectorAll('[data-menu-icon-name]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].name = input.value.trim(); });
+  root.querySelectorAll('[data-menu-icon-sort]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].sort = Number(input.value || 0); });
+  root.querySelectorAll('[data-menu-icon-folder]').forEach(input => input.onchange = () => { icons[Number(input.closest('[data-menu-icon-index]').dataset.menuIconIndex)].folderId = input.value; renderMenuIcons(); });
   if ($('menuIconLibraryStatus') && !state.menuIconLibraryError) $('menuIconLibraryStatus').textContent = `项目图库现有 ${icons.length} 个图标，所有用户均可看图选择。`;
+}
+
+function addMenuIconFolder() {
+  const name = $('globalMenuIconFolderName').value.trim();
+  if (!name) throw new Error('请填写文件夹名称。');
+  state.system.menuIconFolders = state.system.menuIconFolders || [{id:'default', name:'默认', sort:0}];
+  state.system.menuIconFolders.push({id:`folder_${Date.now().toString(36)}`, name, sort:state.system.menuIconFolders.length});
+  $('globalMenuIconFolderName').value = ''; renderMenuIcons();
 }
 
 async function uploadImage(input, endpoint) {
@@ -2157,7 +2178,7 @@ async function uploadMenuIconFile(file) {
   } finally {
     clearTimeout(timer);
   }
-  return { id: `icon_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, name: file.name.replace(/\.[^.]+$/, ''), url: result.url };
+  return { id: `icon_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, name: file.name.replace(/\.[^.]+$/, ''), url: result.url, folderId: state.menuIconFolderView || 'default', sort: 0 };
 }
 
 async function uploadMenuIconFolder() {
@@ -2217,8 +2238,9 @@ async function uploadMenuIconFolder() {
 
 async function saveMenuIcons() {
   const icons = Array.isArray(state.system?.menuIcons) ? state.system.menuIcons : [];
-  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); });
-  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons }) });
+  document.querySelectorAll('[data-menu-icon-index]').forEach(row => { const item = icons[Number(row.dataset.menuIconIndex)]; item.name = row.querySelector('[data-menu-icon-name]').value.trim(); item.url = row.querySelector('[data-menu-icon-url]').value.trim(); item.folderId = row.querySelector('[data-menu-icon-folder]')?.value || 'default'; item.sort = Number(row.querySelector('[data-menu-icon-sort]')?.value || 0); });
+  document.querySelectorAll('[data-menu-icon-folder]').forEach(row => { const item=(state.system.menuIconFolders||[]).find(folder=>folder.id===row.dataset.menuFolder); if(item)item.sort=Number(row.querySelector('[data-folder-sort]')?.value||0); });
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ menuIcons: icons, menuIconFolders: state.system.menuIconFolders }) });
   renderMenuIcons();
   state.menuIconLibraryError = '';
   setStatus('项目图标库已保存。');
@@ -5977,6 +5999,7 @@ if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => s
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
 if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
 if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
+if ($('addMenuIconFolderBtn')) $('addMenuIconFolderBtn').onclick = () => { try { addMenuIconFolder(); } catch (error) { setStatus(error.message, true); } };
 if ($('saveIntegritySettingsBtn')) $('saveIntegritySettingsBtn').onclick = () => saveSystemSettings('integrity').catch((error) => setStatus(error.message, true));
 bindPopupSettingsActions();
 if ($('saveAgentSettingsBtn')) $('saveAgentSettingsBtn').onclick = () => saveSystemSettings('agent').catch((error) => setStatus(error.message, true));
