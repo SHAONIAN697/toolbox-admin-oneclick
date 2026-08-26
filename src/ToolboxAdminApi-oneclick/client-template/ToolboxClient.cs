@@ -363,6 +363,7 @@ namespace ToolboxClient
                 startupRenderTimer.Start();
                 startupNetworkTimer.Start();
                 refreshTimer.Start();
+                statusClockTimer.Start();
             };
         }
 
@@ -375,9 +376,9 @@ namespace ToolboxClient
         {
             if (status == null || status.IsDisposed || String.IsNullOrWhiteSpace(status.Text)) return;
             string value = status.Text.TrimEnd();
-            if (value.Length < 9 || value[value.Length - 9] != ' ') return;
-            DateTime parsed;
-            if (!DateTime.TryParseExact(value.Substring(value.Length - 8), "HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out parsed)) return;
+            if (value.Length < 8) return;
+            string suffix = value.Substring(value.Length - 8);
+            if (suffix[2] != ':' || suffix[5] != ':') return;
             status.Text = value.Substring(0, value.Length - 8) + DateTime.Now.ToString("HH:mm:ss");
         }
 
