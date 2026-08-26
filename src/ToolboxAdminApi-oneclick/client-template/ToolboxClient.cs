@@ -140,6 +140,7 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
+        private System.Windows.Forms.Timer statusClockTimer;
         private System.Windows.Forms.Timer startupRenderTimer;
         private System.Windows.Forms.Timer startupNetworkTimer;
         private readonly object startupLoadingLock = new object();
@@ -352,6 +353,9 @@ namespace ToolboxClient
                 refreshTimer.Interval = NextConfigRefreshInterval();
                 LoadConfigAsync(false);
             };
+            statusClockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            statusClockTimer.Tick += delegate { UpdateStatusClock(); };
+            statusClockTimer.Start();
             Shown += delegate
             {
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
@@ -365,6 +369,16 @@ namespace ToolboxClient
         private int NextConfigRefreshInterval()
         {
             return ConfigRefreshBaseIntervalMs + configRefreshRandom.Next(ConfigRefreshJitterMs + 1);
+        }
+
+        private void UpdateStatusClock()
+        {
+            if (status == null || status.IsDisposed || String.IsNullOrWhiteSpace(status.Text)) return;
+            string value = status.Text.TrimEnd();
+            if (value.Length < 9 || value[value.Length - 9] != ' ') return;
+            DateTime parsed;
+            if (!DateTime.TryParseExact(value.Substring(value.Length - 8), "HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out parsed)) return;
+            status.Text = value.Substring(0, value.Length - 8) + DateTime.Now.ToString("HH:mm:ss");
         }
 
         private void BuildStartupOverlay()
