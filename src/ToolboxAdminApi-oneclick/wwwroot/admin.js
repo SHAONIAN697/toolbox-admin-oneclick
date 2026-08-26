@@ -3631,8 +3631,8 @@ function renderButtonFilterOptions() {
   const section = $('buttonSectionFilter');
   const action = $('buttonActionFilter');
   if (!area || !section || !action) return;
-  fillFilterOptions(area, '全部位置', uniqueSorted(state.buttons.map((button) => button.area || '')));
-  fillFilterOptions(section, '全部分组', uniqueSorted(state.buttons.map((button) => button.section || '')));
+  fillFilterOptions(area, '全部位置', orderedButtonAreas());
+  fillFilterOptions(section, '全部分组', orderedButtonSections());
   fillFilterOptions(action, '全部动作', ACTIONS.map(([value, label]) => ({ value, label })));
 }
 
@@ -3653,6 +3653,20 @@ function fillFilterOptions(select, allLabel, items) {
 
 function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+}
+
+function orderedButtonAreas() {
+  const present = new Set(state.buttons.map((button) => button.area || '').filter(Boolean));
+  const result = [];
+  getPositions().forEach((position) => { if (present.has(position.name) && !result.includes(position.name)) result.push(position.name); });
+  state.buttons.slice().sort((a, b) => Number(a.areaOrder ?? 0) - Number(b.areaOrder ?? 0)).forEach((button) => { if (button.area && !result.includes(button.area)) result.push(button.area); });
+  return result;
+}
+
+function orderedButtonSections() {
+  const result = [];
+  state.buttons.slice().sort((a, b) => Number(a.areaOrder ?? 0) - Number(b.areaOrder ?? 0) || Number(a.sectionOrder ?? a.sectionIndex ?? 0) - Number(b.sectionOrder ?? b.sectionIndex ?? 0)).forEach((button) => { if (button.section && !result.includes(button.section)) result.push(button.section); });
+  return result;
 }
 
 function updateIconPreview(row) {
