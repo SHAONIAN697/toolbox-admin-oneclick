@@ -100,7 +100,7 @@ namespace ToolboxClient
 
     internal sealed class ToolboxForm : Form
     {
-        private const int ConfigRefreshBaseIntervalMs = 30000;
+        private const int ConfigRefreshBaseIntervalMs = 1000;
         private const int ConfigRefreshJitterMs = 15000;
         private readonly string configUrl;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
@@ -2321,7 +2321,7 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks));
+                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "watch=1"));
                 if (downloaded == null)
                 {
                     lastSyncText = "配置无变化 " + DateTime.Now.ToString("HH:mm:ss");
@@ -14279,7 +14279,7 @@ namespace ToolboxClient
 
         private string DownloadConfigText(string url)
         {
-            return DownloadText(url, 4000, true);
+            return DownloadText(url, 35000, true);
         }
 
         private string DownloadText(string url, int timeout, bool useConfigEtag)

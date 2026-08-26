@@ -100,8 +100,7 @@ namespace ToolboxClient
 
     internal sealed class ToolboxForm : Form
     {
-        private const int ConfigRefreshBaseIntervalMs = 30000;
-        private const int ConfigRefreshJitterMs = 15000;
+        private const int ConfigRefreshBaseIntervalMs = 1000;
         private readonly string configUrl;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private readonly Random configRefreshRandom = new Random();
@@ -140,6 +139,7 @@ namespace ToolboxClient
         private Button themeButton;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
+        private System.Windows.Forms.Timer statusClockTimer;
         private System.Windows.Forms.Timer startupRenderTimer;
         private System.Windows.Forms.Timer startupNetworkTimer;
         private readonly object startupLoadingLock = new object();
@@ -346,12 +346,15 @@ namespace ToolboxClient
             BuildStartupOverlay();
             if (portalVariant) RenderPortalLoadingState("正在同步配置...");
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = NextConfigRefreshInterval();
+            refreshTimer.Interval = ConfigRefreshBaseIntervalMs;
             refreshTimer.Tick += delegate
             {
-                refreshTimer.Interval = NextConfigRefreshInterval();
+                refreshTimer.Interval = ConfigRefreshBaseIntervalMs;
                 LoadConfigAsync(false);
             };
+            statusClockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            statusClockTimer.Tick += delegate { UpdateStatusClock(); };
+            statusClockTimer.Start();
             Shown += delegate
             {
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
@@ -362,9 +365,14 @@ namespace ToolboxClient
             };
         }
 
-        private int NextConfigRefreshInterval()
+        private void UpdateStatusClock()
         {
-            return ConfigRefreshBaseIntervalMs + configRefreshRandom.Next(ConfigRefreshJitterMs + 1);
+            if (status == null || status.IsDisposed || String.IsNullOrWhiteSpace(status.Text)) return;
+            string value = status.Text.TrimEnd();
+            if (value.Length < 9 || value[value.Length - 9] != ' ') return;
+            DateTime parsed;
+            if (!DateTime.TryParseExact(value.Substring(value.Length - 8), "HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out parsed)) return;
+            status.Text = value.Substring(0, value.Length - 8) + DateTime.Now.ToString("HH:mm:ss");
         }
 
         private void BuildStartupOverlay()
@@ -2321,7 +2329,7 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "t=" + DateTime.UtcNow.Ticks));
+                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "watch=1"));
                 if (downloaded == null)
                 {
                     lastSyncText = "配置无变化 " + DateTime.Now.ToString("HH:mm:ss");
@@ -14259,7 +14267,7 @@ namespace ToolboxClient
 
         private string DownloadConfigText(string url)
         {
-            return DownloadText(url, 4000, true);
+            return DownloadText(url, 35000, true);
         }
 
         private string DownloadText(string url, int timeout, bool useConfigEtag)
