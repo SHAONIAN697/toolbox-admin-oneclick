@@ -4175,6 +4175,7 @@ class Handler(BaseHTTPRequestHandler):
                 user = mark_user_login(user["id"], self)
                 SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
                 save_sessions()
+                audit_event("register_success", actor=user, target=user.get("id"), handler=self, details={"title": "注册后台账号", "method": "POST", "path": "/api/register"})
                 return self.send_json({"token": token, "user": public_user(user)})
             if path == "/api/password/forgot" and method == "POST":
                 body = self.read_body()

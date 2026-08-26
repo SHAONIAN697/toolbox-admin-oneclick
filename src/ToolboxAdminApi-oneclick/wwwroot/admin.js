@@ -1461,12 +1461,12 @@ function auditRisk(item) {
 
 function describeAuditEntry(item) {
   const action = String(item.action || ''); const path = auditPath(item); const detailTitle = String(item?.details?.title || '').trim();
-  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置', config_basic_update: '修改基础信息', contact_settings_update: '修改联系方式' };
+  const fixed = { login_success: '登录后台成功', login_failed: '登录后台失败（账号或密码错误）', login_blocked: '登录尝试过多，已临时拦截', register_success: '注册后台账号成功', register_failed: '注册后台账号失败', account_self_update: '修改自己的账号资料', account_admin_update: '管理员修改用户资料', user_delete: '删除用户', users_batch_delete: '批量删除用户', password_reset_requested: '申请重置密码', password_reset_completed: '完成密码重置', config_basic_update: '修改基础信息', contact_settings_update: '修改联系方式' };
   if (detailTitle && detailTitle !== '后台操作') return `${detailTitle}${item.success === false ? '失败' : ''}`;
   if (fixed[action]) return fixed[action];
   const method = String(item?.details?.method || action.replace(/^backend_/, '')).toUpperCase();
   const methods = { POST: '新增', PUT: '保存', PATCH: '修改', DELETE: '删除' };
-  const targets = [[/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '联系方式'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
+  const targets = [[/\/register$/, '注册后台账号'], [/\/super\/users/, '后台账号'], [/\/buttons$/, '按钮'], [/\/account$/, '账号资料'], [/\/app$/, '基础信息'], [/\/popup$/, '联系方式'], [/\/config/, '后台配置'], [/\/announcements/, '更新公告'], [/\/users/, '用户'], [/\/invites/, '邀请码'], [/\/mail/, '邮箱设置'], [/\/system/, '系统设置'], [/\/template/, '用户模板'], [/\/orders/, '订单']];
   const target = targets.find(([pattern]) => pattern.test(path))?.[1] || '后台数据';
   return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
 }
