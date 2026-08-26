@@ -4666,7 +4666,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/menu-icons" and method == "GET":
             settings = read_system_settings()
             icons = list(settings.get("menuIcons") or [])
-            return self.send_json({"icons": icons, "libraryError": ""})
+            folders = list(settings.get("menuIconFolders") or [{"id": "default", "name": "默认", "sort": 0}])
+            return self.send_json({"icons": icons, "folders": folders, "libraryError": ""})
         if path == "/api/admin/client/download" and method == "GET":
             variant = request_client_variant(self)
             name, data = make_client_exe(find_user_by_id(user_id), self.base_url(), variant)

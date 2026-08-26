@@ -2124,6 +2124,8 @@ async function loadMenuIcons() {
   const result = await api('/api/admin/menu-icons');
   state.menuIcons = result.icons || [];
   state.menuIconLibraryError = result.libraryError || '';
+  if (!state.system) state.system = {};
+  state.system.menuIconFolders = Array.isArray(result.folders) && result.folders.length ? result.folders : [{ id: 'default', name: '默认', sort: 0 }];
 }
 
 function renderMenuIcons() {
