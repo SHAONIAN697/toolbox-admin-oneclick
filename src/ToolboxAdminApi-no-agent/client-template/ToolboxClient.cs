@@ -141,6 +141,7 @@ namespace ToolboxClient
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
         private System.Windows.Forms.Timer statusClockTimer;
+        private System.Threading.Timer statusClockThreadTimer;
         private System.Windows.Forms.Timer startupRenderTimer;
         private System.Windows.Forms.Timer startupNetworkTimer;
         private readonly object startupLoadingLock = new object();
@@ -356,6 +357,10 @@ namespace ToolboxClient
             statusClockTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             statusClockTimer.Tick += delegate { UpdateStatusClock(); };
             statusClockTimer.Start();
+            statusClockThreadTimer = new System.Threading.Timer(delegate
+            {
+                try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(delegate { UpdateStatusClock(); })); } catch { }
+            }, null, 1000, 1000);
             Shown += delegate
             {
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
