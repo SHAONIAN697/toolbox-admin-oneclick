@@ -3323,6 +3323,13 @@ namespace ToolboxClient
             }
         }
 
+        private bool IsStudioOverviewPage(string id, Dictionary<string, object> page)
+        {
+            if (String.Equals(id, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) return true;
+            string label = page == null ? "" : PageLabel(page, id);
+            return String.Equals(label.Trim(), "系统概览", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void BuildNav()
         {
             ClearChildControls(nav);
@@ -3338,6 +3345,7 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsStudioOverviewPage(id, AsDict(Get(audioPages, id)))) continue;
                     AddAudioNavButton(id, NavLabel(row, id, audioPages), GetText(row, "icon", ""));
                     audioAdded.Add(id);
                 }
@@ -3360,7 +3368,7 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsStudioOverviewPage(id, AsDict(Get(tunerPages, id)))) continue;
                     string label = NavLabel(row, id, tunerPages);
                     AddTunerNavButton(id, label, TemplateNavIcon(label, id));
                     tunerAdded.Add(id);
@@ -3370,8 +3378,8 @@ namespace ToolboxClient
                 {
                     if (tunerAdded.Contains(pageId)) continue;
                     if (pageId.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
                     Dictionary<string, object> page = AsDict(tunerPages[pageId]);
+                    if (IsStudioOverviewPage(pageId, page)) continue;
                     string label = PageLabel(page, pageId);
                     AddTunerNavButton(pageId, label, TemplateNavIcon(label, pageId));
                     tunerAdded.Add(pageId);
@@ -3427,8 +3435,8 @@ namespace ToolboxClient
                 Dictionary<string, object> row = AsDict(item);
                 string id = GetText(row, "id", "");
                 if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
-                if (studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
+                if (!studioVariant && IsStudioOverviewPage(id, AsDict(Get(pages, id)))) continue;
+                if (studioVariant && IsStudioOverviewPage(id, AsDict(Get(pages, id))) && added.Contains(StudioOverviewPageId)) continue;
                 string label = NavLabel(row, id, pages);
                 AddNavButton(id, label);
                 added.Add(id);
@@ -3437,9 +3445,9 @@ namespace ToolboxClient
             foreach (string pageId in pages.Keys)
             {
                 if (added.Contains(pageId)) continue;
-                if (!studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
-                if (studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
                 Dictionary<string, object> page = AsDict(pages[pageId]);
+                if (!studioVariant && IsStudioOverviewPage(pageId, page)) continue;
+                if (studioVariant && IsStudioOverviewPage(pageId, page) && added.Contains(StudioOverviewPageId)) continue;
                 AddNavButton(pageId, PageLabel(page, pageId));
                 added.Add(pageId);
             }
