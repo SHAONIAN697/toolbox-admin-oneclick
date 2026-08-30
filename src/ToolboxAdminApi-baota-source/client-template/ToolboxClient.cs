@@ -8488,14 +8488,14 @@ namespace ToolboxClient
         {
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
-            RunAction(action, GetTarget(entry.Item, action), GetText(entry.Item, "custom_script", ""), entry.Name);
+            RunAction(action, GetTarget(entry.Item, action), GetText(entry.Item, "custom_script", ""), entry.Name, entry.Item);
         }
 
         private void RunResourceItemAction(Dictionary<string, object> item, ActionInfo info)
         {
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
-            RunAction(info.Action, info.Target, info.CustomScript, info.Name);
+            RunAction(info.Action, info.Target, info.CustomScript, info.Name, item);
         }
 
         private void AddEmptyMessage(string message)
@@ -8943,7 +8943,7 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target, string customScript, string name)
+        private void RunAction(string action, string target, string customScript, string name, Dictionary<string, object> item = null)
         {
             try
             {
@@ -8953,7 +8953,7 @@ namespace ToolboxClient
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download") DownloadFile(ResolveServerUrl(target), name);
+                if (action == "download") DownloadFile(ResolveServerUrl(target), name, item);
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -9400,16 +9400,19 @@ namespace ToolboxClient
             return version.ToString(2);
         }
 
-        private void DownloadFile(string url, string displayName)
+        private void DownloadFile(string url, string displayName, Dictionary<string, object> item = null)
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant) ShowDownloadRecordsPanel();
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName); });
+            string customDirectory = GetText(item, "download_directory", GetText(item, "download_path", "")).Trim();
+            bool deleteOnExit = BoolValue(item, "download_delete_on_exit", false);
+            if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
@@ -9427,7 +9430,7 @@ namespace ToolboxClient
                         result.Download.FileName = fallbackName;
                     }
                     result.FileName = SafeDownloadFileName(result.Download.FileName);
-                    string dir = EnsureWritableDownloadDirectory();
+                    string dir = EnsureWritableDownloadDirectory(customDirectory);
                     result.Path = Path.Combine(dir, result.FileName);
                     result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
                 }
@@ -9436,6 +9439,9 @@ namespace ToolboxClient
             {
                 result.Error = ex;
             }
+
+            result.CustomDirectory = customDirectory;
+            result.DeleteOnExit = deleteOnExit;
 
             try
             {
@@ -9505,6 +9511,8 @@ namespace ToolboxClient
             }
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
+            task.DeleteOnExit = result.DeleteOnExit;
+            task.CustomDownloadDirectory = result.CustomDirectory;
             task.BrowserUrl = download.BrowserUrl;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
@@ -10841,7 +10849,7 @@ namespace ToolboxClient
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
                 string cancelMessage = task.Segmented ? "已取消分片下载，临时文件已清理，下次点击会重新开始下载。" : "已保留未完成文件，下次点击会继续下载。";
-                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), cancelMessage);
+                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), cancelMessage, task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
                 StartQueuedDownloads();
@@ -10855,7 +10863,7 @@ namespace ToolboxClient
                 UpdateActiveDownloadTask(task);
                 string launchStatus = LaunchDownloadedFile(task.Path);
                 status.Text = launchStatus + "：" + task.FileName;
-                AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
+                AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "", task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
                 StartQueuedDownloads();
@@ -10864,7 +10872,7 @@ namespace ToolboxClient
 
             CleanupSegmentedPart(task);
             status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
-            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。");
+            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。", task.DeleteOnExit);
             RemoveActiveDownload(task);
             FillDownloadRecords();
             StartQueuedDownloads();
@@ -10965,6 +10973,8 @@ namespace ToolboxClient
                     task.Segmented = state.Segmented;
                     task.DisableSegmentedDownload = state.DisableSegmentedDownload;
                     task.FastStartDirectDownload = state.FastStartDirectDownload;
+                    task.CustomDownloadDirectory = state.CustomDownloadDirectory ?? "";
+                    task.DeleteOnExit = state.DeleteOnExit;
                     task.PartPath = state.PartPath ?? "";
                     task.RestoredPaused = true;
                     task.StateText = PortalText("已暂停", "Paused");
@@ -11013,6 +11023,8 @@ namespace ToolboxClient
             state.Segmented = task.Segmented;
             state.DisableSegmentedDownload = task.DisableSegmentedDownload;
             state.FastStartDirectDownload = task.FastStartDirectDownload;
+            state.CustomDownloadDirectory = task.CustomDownloadDirectory;
+            state.DeleteOnExit = task.DeleteOnExit;
             state.PartPath = task.PartPath;
             state.Segments = SnapshotDownloadSegments(task);
             return state;
@@ -11247,18 +11259,20 @@ namespace ToolboxClient
             return Environment.ExpandEnvironmentVariables(dir);
         }
 
-        private string EnsureWritableDownloadDirectory()
+        private string EnsureWritableDownloadDirectory(string preferredDirectory = "")
         {
-            string configured = GetDownloadDirectory();
+            string configured = String.IsNullOrWhiteSpace(preferredDirectory) ? GetDownloadDirectory() : Environment.ExpandEnvironmentVariables(preferredDirectory.Trim());
             List<string> candidates = new List<string>();
             if (!String.IsNullOrWhiteSpace(configured)) candidates.Add(configured);
 
-            string brand = SafeFolderName(GetText(AsDict(Get(config, "app")), "title", "Toolbox"));
-            foreach (DriveInfo drive in ReadyDownloadDrives())
+            if (String.IsNullOrWhiteSpace(preferredDirectory))
             {
-                string candidate = Path.Combine(drive.RootDirectory.FullName, brand);
-                if (!candidates.Exists(delegate(string value) { return value.Equals(candidate, StringComparison.OrdinalIgnoreCase); }))
-                    candidates.Add(candidate);
+                string brand = SafeFolderName(GetText(AsDict(Get(config, "app")), "title", "Toolbox"));
+                foreach (DriveInfo drive in ReadyDownloadDrives())
+                {
+                    string candidate = Path.Combine(drive.RootDirectory.FullName, brand);
+                    if (!candidates.Exists(delegate(string value) { return value.Equals(candidate, StringComparison.OrdinalIgnoreCase); })) candidates.Add(candidate);
+                }
             }
 
             Exception lastError = null;
@@ -11405,7 +11419,7 @@ namespace ToolboxClient
             File.WriteAllText(ClientSettingsPath(), serializer.Serialize(settings), Encoding.UTF8);
         }
 
-        private void AddDownloadRecord(string name, string url, string savedPath, string result, string message)
+        private void AddDownloadRecord(string name, string url, string savedPath, string result, string message, bool deleteOnExit = false)
         {
             try
             {
@@ -11417,7 +11431,8 @@ namespace ToolboxClient
                     Url = url,
                     SavedPath = savedPath,
                     Result = result,
-                    Message = message
+                    Message = message,
+                    DeleteOnExit = deleteOnExit
                 });
                 while (records.Count > 100) records.RemoveAt(records.Count - 1);
                 SaveDownloadRecords(records);
@@ -14023,12 +14038,17 @@ namespace ToolboxClient
         private void CleanupDownloadedFilesOnExit()
         {
             ClientSettings settings = LoadClientSettings();
-            if (!DeleteDownloadsOnExitValue(settings)) return;
-            string downloadDirectory = GetDownloadDirectory();
+            bool deleteAll = DeleteDownloadsOnExitValue(settings);
             List<DownloadRecord> records = LoadDownloadRecords();
-            foreach (DownloadRecord record in records) DeleteDownloadedFile(record);
-            SaveDownloadRecords(new List<DownloadRecord>());
-            DeleteDownloadDirectoryOnExit(downloadDirectory);
+            if (!deleteAll && !records.Exists(delegate(DownloadRecord record) { return record != null && record.DeleteOnExit; })) return;
+            List<DownloadRecord> remaining = new List<DownloadRecord>();
+            foreach (DownloadRecord record in records)
+            {
+                if (deleteAll || (record != null && record.DeleteOnExit)) DeleteDownloadedFile(record);
+                else remaining.Add(record);
+            }
+            SaveDownloadRecords(remaining);
+            if (deleteAll) DeleteDownloadDirectoryOnExit(GetDownloadDirectory());
         }
 
         private void DeleteDownloadDirectoryOnExit(string directory)
@@ -16759,6 +16779,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string SavedPath { get; set; }
             public string Result { get; set; }
             public string Message { get; set; }
+            public bool DeleteOnExit { get; set; }
         }
 
         internal sealed class PausedDownloadTaskState
@@ -16774,6 +16795,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public bool Segmented { get; set; }
             public bool DisableSegmentedDownload { get; set; }
             public bool FastStartDirectDownload { get; set; }
+            public string CustomDownloadDirectory { get; set; }
+            public bool DeleteOnExit { get; set; }
             public string PartPath { get; set; }
             public List<DownloadSegmentState> Segments { get; set; }
         }
@@ -16807,6 +16830,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string Path = "";
             public DownloadRecord ExistingRecord;
             public Exception Error;
+            public string CustomDirectory = "";
+            public bool DeleteOnExit;
         }
 
         private sealed class CommandRunResult
@@ -16863,6 +16888,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public readonly string OriginalUrl;
             public readonly string FileName;
             public string Path;
+            public string CustomDownloadDirectory = "";
+            public bool DeleteOnExit;
             public string BrowserUrl = "";
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);

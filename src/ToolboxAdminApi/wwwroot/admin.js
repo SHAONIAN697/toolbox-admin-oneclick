@@ -3741,6 +3741,8 @@ function downloadFileRowHtml(file = {}, index = 0) {
 function downloadControlHtml(target = '', data = {}) {
   const files = Array.isArray(data.files) && data.files.length ? data.files : [{ name: '', url: target || '', primary: true }];
   const multiple = data.download_mode === 'multiple' || files.length > 1;
+  const downloadDirectory = data.download_directory || data.download_path || '';
+  const deleteOnExit = data.download_delete_on_exit === true || data.delete_download_on_exit === true;
   return `<div class="download-target-control">
     <select data-download-mode><option value="single" ${multiple ? '' : 'selected'}>单文件</option><option value="multiple" ${multiple ? 'selected' : ''}>多文件安装包</option></select>
     <div data-download-single ${multiple ? 'hidden' : ''}><input data-field="target" value="${escapeAttr(target || files[0]?.url || '')}" placeholder="文件下载地址"></div>
@@ -3750,6 +3752,7 @@ function downloadControlHtml(target = '', data = {}) {
       <button type="button" data-add-download>＋ 添加文件</button>
       <small>所有文件下载到同一目录；全部成功后运行标记为主程序的文件。</small>
     </div>
+    <div class="download-custom-options"><label>自定义下载位置<input data-download-directory value="${escapeAttr(downloadDirectory)}" placeholder="留空使用工具箱默认下载目录"></label><label class="checkline"><input type="checkbox" data-download-delete-on-exit ${deleteOnExit ? 'checked' : ''}> 关闭工具箱时删除此按钮下载的文件</label></div>
   </div>`;
 }
 
@@ -3760,7 +3763,10 @@ function bindDownloadControl(root) {
   const mode = control.querySelector('[data-download-mode]');
   const single = control.querySelector('[data-download-single]');
   const multiple = control.querySelector('[data-download-multiple]');
+  const directory = control.querySelector('[data-download-directory]');
+  const deleteOnExit = control.querySelector('[data-download-delete-on-exit]');
   const sync = () => { single.hidden = mode.value !== 'single'; multiple.hidden = mode.value !== 'multiple'; };
+  const syncCleanup = () => { if (!directory || !deleteOnExit) return; const enabled = !!directory.value.trim(); deleteOnExit.disabled = !enabled; if (!enabled) deleteOnExit.checked = false; };
   const bindRows = () => {
     [...control.querySelectorAll('.download-file-row')].forEach((row) => {
       row.querySelector('[data-remove-download]').onclick = () => {
@@ -3776,15 +3782,20 @@ function bindDownloadControl(root) {
     });
   };
   mode.onchange = sync;
+  directory?.addEventListener('input', syncCleanup);
   control.querySelector('[data-add-download]').onclick = () => { control.querySelector('[data-download-files]').insertAdjacentHTML('beforeend', downloadFileRowHtml({}, 1)); bindRows(); };
-  bindRows(); sync();
+  bindRows(); sync(); syncCleanup();
 }
 
 function readDownloadConfig(root) {
   const control = root.querySelector('.download-target-control');
-  if (!control || control.querySelector('[data-download-mode]').value !== 'multiple') return {};
+  if (!control) return {};
+  const downloadDirectory = control.querySelector('[data-download-directory]')?.value.trim() || '';
+  const deleteOnExit = control.querySelector('[data-download-delete-on-exit]')?.checked === true;
+  const result = { download_directory: downloadDirectory, download_delete_on_exit: deleteOnExit };
+  if (control.querySelector('[data-download-mode]').value !== 'multiple') return result;
   const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
-  return { download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
+  return { ...result, download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
 }
 
 function targetControlHtml(action, target = '', data = {}) {
@@ -4409,7 +4420,7 @@ async function toggleButtonEnabled(ref) {
       enabled: nextEnabled
     }
   };
-  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; }
+  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; request.button.download_directory = ref.raw?.download_directory || ref.raw?.download_path || ''; request.button.download_delete_on_exit = ref.raw?.download_delete_on_exit === true || ref.raw?.delete_download_on_exit === true; }
 
   await api(buttonsApiPath(), {
     method: 'PATCH',

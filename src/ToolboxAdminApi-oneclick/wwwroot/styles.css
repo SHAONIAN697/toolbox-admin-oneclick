@@ -2154,6 +2154,9 @@ tr.row-highlight {
 @media (max-width: 800px) { .variant-setting { grid-template-columns: 1fr; } .variant-setting-fields { grid-template-columns: 1fr; } .variant-setting-fields .wide, .variant-upload-row { grid-column: auto; } }
 
 .download-target-control { display: grid; gap: 8px; min-width: 420px; }
+.download-custom-options { display: grid; gap: 8px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.download-custom-options label { display: grid; gap: 4px; }
+.download-custom-options .checkline { display: flex; align-items: center; gap: 6px; }
 #view-buttons .form-grid > label.download-config-field { grid-column: 1 / -1; min-width: 0; }
 #view-buttons .form-grid > label.download-config-field .download-target-control { min-width: 0; width: 100%; }
 .download-multiple { display: grid; gap: 8px; }

@@ -1693,6 +1693,14 @@ def normalize_client_config(cfg, user_id=""):
                 button["files"] = files
                 button["download_mode"] = "multiple" if len(files) > 1 or button.get("download_mode") == "multiple" else "single"
             button["download_url"] = target
+            download_directory = str(button.get("download_directory") or button.get("download_path") or "").strip()[:1000]
+            if download_directory:
+                button["download_directory"] = download_directory
+                button["download_delete_on_exit"] = button.get("download_delete_on_exit") is True
+            else:
+                button.pop("download_directory", None)
+                button.pop("download_path", None)
+                button.pop("download_delete_on_exit", None)
             button.setdefault("url", target)
             button.setdefault("target", target)
         elif action == "script":
@@ -3184,6 +3192,10 @@ def new_button(body):
         item["description"] = body.get("description") or body.get("intro") or body.get("remark")
     if action == "download":
         item["download_url"] = target
+        download_directory = str(body.get("download_directory") or body.get("download_path") or "").strip()[:1000]
+        if download_directory:
+            item["download_directory"] = download_directory
+            item["download_delete_on_exit"] = body.get("download_delete_on_exit") is True
         files = normalize_download_files(body.get("files"))
         if (body.get("download_mode") == "multiple" or len(files) > 1) and files:
             item["download_mode"] = "multiple"
