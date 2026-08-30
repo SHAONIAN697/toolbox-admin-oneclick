@@ -4257,6 +4257,10 @@ async function moveSection() {
   if (fromIndex < 0 || fromIndex >= sections.length) return;
   moveArrayItem(sections, fromIndex, desired - 1);
   await saveWholeConfig('分组位置已保存。');
+  if ($('manageSection')) {
+    $('manageSection').value = String(desired - 1);
+    renderManagedSectionName();
+  }
 }
 
 async function deleteSection() {
