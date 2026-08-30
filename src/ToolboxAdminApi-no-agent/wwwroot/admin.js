@@ -3592,7 +3592,7 @@ function renderButtonFilterOptions() {
   const action = $('buttonActionFilter');
   if (!area || !section || !action) return;
   fillFilterOptions(area, '全部位置', orderedButtonAreas());
-  fillFilterOptions(section, '全部分组', orderedButtonSections());
+  fillFilterOptions(section, '全部分组', orderedButtonSections(area.value));
   fillFilterOptions(action, '全部动作', ACTIONS.map(([value, label]) => ({ value, label })));
 }
 
@@ -3623,9 +3623,9 @@ function orderedButtonAreas() {
   return result;
 }
 
-function orderedButtonSections() {
+function orderedButtonSections(areaFilter = '') {
   const result = [];
-  state.buttons.slice().sort((a, b) => Number(a.areaOrder ?? 0) - Number(b.areaOrder ?? 0) || Number(a.sectionOrder ?? a.sectionIndex ?? 0) - Number(b.sectionOrder ?? b.sectionIndex ?? 0)).forEach((button) => { if (button.section && !result.includes(button.section)) result.push(button.section); });
+  state.buttons.slice().filter((button) => !areaFilter || button.area === areaFilter).sort((a, b) => Number(a.areaOrder ?? 0) - Number(b.areaOrder ?? 0) || Number(a.sectionOrder ?? a.sectionIndex ?? 0) - Number(b.sectionOrder ?? b.sectionIndex ?? 0)).forEach((button) => { if (button.section && !result.includes(button.section)) result.push(button.section); });
   return result;
 }
 
