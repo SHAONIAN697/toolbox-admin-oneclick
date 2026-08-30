@@ -4496,21 +4496,22 @@ class Handler(BaseHTTPRequestHandler):
             variant_id = str(body.get("variantId") or "").strip()
             if variant_id not in CLIENT_VARIANTS:
                 return self.send_json({"error": "工具箱版本不存在。"}, 400)
-            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif|x-icon|vnd\.microsoft\.icon);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
             if not match:
-                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP、GIF 或 ICO 图片。"}, 400)
             try:
                 image_data = base64.b64decode(match.group(2), validate=True)
             except Exception:
                 return self.send_json({"error": "封面图片数据无效。"}, 400)
             if not image_data or len(image_data) > 5 * 1024 * 1024:
                 return self.send_json({"error": "封面图片不能超过 5MB。"}, 400)
-            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            extension = {"jpeg": "jpg", "x-icon": "ico", "vnd.microsoft.icon": "ico"}.get(match.group(1).lower(), match.group(1).lower())
             signatures = {
                 "png": image_data.startswith(b"\x89PNG\r\n\x1a\n"),
                 "jpg": image_data.startswith(b"\xff\xd8\xff"),
                 "webp": image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP",
                 "gif": image_data.startswith((b"GIF87a", b"GIF89a")),
+                "ico": image_data.startswith(b"\x00\x00\x01\x00"),
             }
             if not signatures.get(extension, False):
                 return self.send_json({"error": "图片内容与文件格式不匹配。"}, 400)
@@ -4522,16 +4523,25 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/super/") and not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以上传全局菜单图标。"}, 403)
             body = self.read_body()
-            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
+            match = re.fullmatch(r"data:image/(png|jpeg|webp|gif|x-icon|vnd\.microsoft\.icon);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
             if not match:
-                return self.send_json({"error": "仅支持 PNG、JPG、WEBP 或 GIF 图片。"}, 400)
+                return self.send_json({"error": "仅支持 PNG、JPG、WEBP、GIF 或 ICO 图片。"}, 400)
             try:
                 image_data = base64.b64decode(match.group(2), validate=True)
             except Exception:
                 return self.send_json({"error": "图标图片数据无效。"}, 400)
             if not image_data or len(image_data) > 2 * 1024 * 1024:
                 return self.send_json({"error": "图标图片不能超过 2MB。"}, 400)
-            extension = {"jpeg": "jpg"}.get(match.group(1).lower(), match.group(1).lower())
+            extension = {"jpeg": "jpg", "x-icon": "ico", "vnd.microsoft.icon": "ico"}.get(match.group(1).lower(), match.group(1).lower())
+            signatures = {
+                "png": image_data.startswith(b"\x89PNG\r\n\x1a\n"),
+                "jpg": image_data.startswith(b"\xff\xd8\xff"),
+                "webp": image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP",
+                "gif": image_data.startswith((b"GIF87a", b"GIF89a")),
+                "ico": image_data.startswith(b"\x00\x00\x01\x00"),
+            }
+            if not signatures.get(extension, False):
+                return self.send_json({"error": "图片内容与文件格式不匹配。"}, 400)
             MENU_ICON_DIR.mkdir(parents=True, exist_ok=True)
             owner = "global" if path.startswith("/api/super/") else re.sub(r"[^a-zA-Z0-9_-]", "", str(user_id))
             file_name = f"{owner}-{int(time.time())}-{random_hex(4)}.{extension}"
@@ -4950,7 +4960,7 @@ class Handler(BaseHTTPRequestHandler):
         file_path = (WWW / rel).resolve()
         if not str(file_path).startswith(str(WWW.resolve())) or not file_path.exists() or not file_path.is_file():
             return self.send_json({"error": "接口不存在"}, 404)
-        ctype = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        ctype = "image/x-icon" if file_path.suffix.lower() == ".ico" else (mimetypes.guess_type(str(file_path))[0] or "application/octet-stream")
         if ctype.startswith("text/") or file_path.suffix in (".js", ".json"):
             ctype += "; charset=utf-8"
         return self.send_bytes(file_path.read_bytes(), ctype)

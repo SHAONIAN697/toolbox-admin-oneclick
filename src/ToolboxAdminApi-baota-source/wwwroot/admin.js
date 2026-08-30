@@ -2185,7 +2185,7 @@ async function uploadMenuIconFile(file) {
 async function uploadMenuIconFolder() {
   const input = $('globalMenuIconFolder');
   const uploadButton = $('uploadMenuIconFolderBtn');
-  let files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif)$/i.test(file.type) || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+  let files = [...(input?.files || [])].filter((file) => /^image\/(png|jpeg|webp|gif|x-icon|vnd\.microsoft\.icon)$/i.test(file.type) || /\.(png|jpe?g|webp|gif|ico)$/i.test(file.name));
   if (!files.length) throw new Error('请选择包含图片的文件夹。');
   if (files.length > 500) throw new Error('一次最多上传 500 个图标。');
   if (!Array.isArray(state.system.menuIcons)) state.system.menuIcons = [];
@@ -2352,7 +2352,7 @@ function renderClientVariantSettings() {
         <label class="wide">介绍<textarea data-variant-field="description" rows="3">${escapeHtml(config.description || variant.description)}</textarea></label>
         <label>封面来源<select data-variant-field="coverMode"><option value="default" ${mode === 'default' ? 'selected' : ''}>默认封面</option><option value="upload" ${mode === 'upload' ? 'selected' : ''}>上传服务器</option><option value="url" ${mode === 'url' ? 'selected' : ''}>图床地址</option></select></label>
         <label class="wide variant-cover-url">图床 / 封面地址<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/cover.png"></label>
-        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif"><button data-variant-upload-btn type="button">上传图片</button></div>
+        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/vnd.microsoft.icon,.ico"><button data-variant-upload-btn type="button">上传图片</button></div>
       </div>
     </article>`;
   }).join('');

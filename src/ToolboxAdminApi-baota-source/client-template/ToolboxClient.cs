@@ -4078,16 +4078,13 @@ namespace ToolboxClient
                     Control card = CreateActionButton(buttons[i], i, cardWidth, cardHeight);
                     content.Controls.Add(card);
                 }
-                if (listMode)
+                content.Controls.Add(new Panel
                 {
-                    content.Controls.Add(new Panel
-                    {
-                        Width = available,
-                        Height = 34,
-                        Margin = Padding.Empty,
-                        BackColor = Color.Transparent
-                    });
-                }
+                    Width = available,
+                    Height = listMode ? 34 : 48,
+                    Margin = Padding.Empty,
+                    BackColor = Color.Transparent
+                });
             }
             finally
             {
@@ -8699,6 +8696,27 @@ namespace ToolboxClient
             businessIconRefreshTimer.Start();
         }
 
+        private Image LoadImageFromStream(Stream stream)
+        {
+            if (stream == null)
+                return null;
+
+            if (stream.CanSeek)
+            {
+                stream.Position = 0;
+                byte[] header = new byte[4];
+                int read = stream.Read(header, 0, header.Length);
+                stream.Position = 0;
+                if (read == 4 && header[0] == 0 && header[1] == 0 && header[2] == 1 && header[3] == 0)
+                {
+                    using (Icon icon = new Icon(stream))
+                        return icon.ToBitmap();
+                }
+            }
+
+            return Image.FromStream(stream);
+        }
+
         private Image LoadRemoteImage(
             string url,
             int maxWidth,
@@ -8754,19 +8772,23 @@ namespace ToolboxClient
                     request.GetResponse())
                 using (Stream stream =
                     response.GetResponseStream())
-                using (Image original =
-                    Image.FromStream(stream))
+                using (MemoryStream imageStream = new MemoryStream())
                 {
-                    Image resized =
-                        ResizeImage(
-                            original,
-                            maxWidth,
-                            maxHeight);
+                    stream.CopyTo(imageStream);
+                    imageStream.Position = 0;
+                    using (Image original = LoadImageFromStream(imageStream))
+                    {
+                        Image resized =
+                            ResizeImage(
+                                original,
+                                maxWidth,
+                                maxHeight);
 
-                    lock (iconCacheLock)
-                        iconCache[cacheKey] = resized;
+                        lock (iconCacheLock)
+                            iconCache[cacheKey] = resized;
 
-                    return resized;
+                        return resized;
+                    }
                 }
             }
             catch
