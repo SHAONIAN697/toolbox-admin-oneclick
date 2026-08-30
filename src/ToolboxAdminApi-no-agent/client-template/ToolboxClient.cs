@@ -4125,7 +4125,20 @@ namespace ToolboxClient
                     SortButtonsByConfiguredPosition(buttons);
                     content.Controls.Add(CreateAudioSection(section, buttons, width, sectionIndex++));
                 }
-                if (content.Controls.Count == 0) AddAudioEmptyMessage();
+                if (content.Controls.Count == 0)
+                {
+                    AddAudioEmptyMessage();
+                }
+                else
+                {
+                    content.Controls.Add(new Panel
+                    {
+                        Width = width,
+                        Height = 48,
+                        Margin = Padding.Empty,
+                        BackColor = Color.Transparent
+                    });
+                }
             }
             finally
             {
