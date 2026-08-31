@@ -830,10 +830,14 @@ def announcement_read_record(reads, announcement_id, user_id, revision):
     return next((row for row in reads if row.get("announcement_id") == announcement_id and row.get("user_id") == user_id and int(row.get("notification_revision") or 1) == revision), None)
 
 
-def public_admin_announcement(item, user_id, reads):
+def public_admin_announcement(item, user_id, reads, include_readers=False):
     result = dict(item)
     revision = int(item.get("notification_revision") or 1)
     result["read"] = announcement_read_record(reads, item.get("id"), user_id, revision) is not None
+    if include_readers:
+        matching = [row for row in reads if row.get("announcement_id") == item.get("id") and int(row.get("notification_revision") or 1) == revision]
+        result["readCount"] = len({row.get("user_id") for row in matching})
+        result["readUsers"] = [{"userId": row.get("user_id"), "username": row.get("username") or "", "readTime": row.get("read_time") or ""} for row in matching]
     return result
 
 
@@ -2709,6 +2713,32 @@ def public_notice(notice, user_id=""):
         "refType": notice.get("refType", ""),
         "refId": notice.get("refId", ""),
     }
+
+
+def announcement_notice_rows(user_id, include_unavailable=False):
+    """Expose published announcements through the notification bell."""
+    store = read_admin_announcements()
+    reads = read_admin_announcement_reads().get("reads", [])
+    rows = []
+    for item in store.get("announcements", []):
+        if not include_unavailable and not announcement_is_available(item):
+            continue
+        public = public_admin_announcement(item, user_id, reads)
+        rows.append({
+            "id": f"announcement:{item.get('id')}",
+            "title": item.get("title") or "更新公告",
+            "content": item.get("summary") or item.get("content") or "",
+            "level": "warning" if item.get("importance") in ("重要", "紧急") else "info",
+            "createdAt": item.get("publish_time") or item.get("updated_time") or item.get("created_time") or "",
+            "createdBy": item.get("author") or "系统",
+            "createdByName": item.get("author") or "系统",
+            "createdById": item.get("author") or "system",
+            "read": bool(public.get("read")),
+            "refType": "announcement",
+            "refId": item.get("id") or "",
+            "announcement": public,
+        })
+    return rows
 
 
 def notice_visible_to_user(notice, user):
@@ -4681,6 +4711,7 @@ class Handler(BaseHTTPRequestHandler):
             owner = "global" if path.startswith("/api/super/") else re.sub(r"[^a-zA-Z0-9_-]", "", str(user_id))
             file_name = f"{owner}-{int(time.time())}-{random_hex(4)}.{extension}"
             (MENU_ICON_DIR / file_name).write_bytes(image_data)
+            audit_event("menu_icon_upload", auth["user"], owner, self, {"fileName": file_name, "scope": "global" if path.startswith("/api/super/") else "user"})
             return self.send_json({"url": f"/uploads/menu-icons/{file_name}"})
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
@@ -4729,7 +4760,10 @@ class Handler(BaseHTTPRequestHandler):
             data = read_notices()
             if method == "GET":
                 notices = [n for n in data.get("notices", []) if notice_visible_to_user(n, auth["user"])]
-                return self.send_json({"notices": [public_notice(n, auth["user"]["id"]) for n in notices[:80]]})
+                projected = [public_notice(n, auth["user"]["id"]) for n in notices[:80]]
+                projected.extend(announcement_notice_rows(auth["user"].get("id")))
+                projected.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
+                return self.send_json({"notices": projected[:100]})
             if method == "POST":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "只有总管理员可以发送通知。"}, 403)
@@ -4764,12 +4798,22 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PATCH":
                 body = self.read_body()
                 notice = next((n for n in data.get("notices", []) if n.get("id") == body.get("id")), None)
+                if not notice and str(body.get("id") or "").startswith("announcement:"):
+                    announcement_id = str(body.get("id"))[len("announcement:"):]
+                    if body.get("read"):
+                        item = next((x for x in read_admin_announcements().get("announcements", []) if x.get("id") == announcement_id), None)
+                        if item and announcement_is_available(item):
+                            revision = int(item.get("notification_revision") or 1)
+                            mark_admin_announcement_read(announcement_id, auth["user"], revision)
+                            audit_event("announcement_read", auth["user"], announcement_id, self, {"title": item.get("title"), "revision": revision})
+                            return self.send_json(next((x for x in announcement_notice_rows(auth["user"].get("id")) if x.get("refId") == announcement_id), {"ok": True}))
                 if not notice:
                     raise ValueError("通知不存在。")
                 if body.get("read"):
                     notice.setdefault("readBy", [])
                     if auth["user"]["id"] not in notice["readBy"]:
                         notice["readBy"].append(auth["user"]["id"])
+                        audit_event("notice_read", auth["user"], notice.get("id"), self, {"title": notice.get("title")})
                 if body.get("hide") and (is_super(auth["user"]) or notice.get("createdById") == auth["user"].get("id")):
                     notice["active"] = False
                 write_notices(data)
@@ -4838,7 +4882,9 @@ class Handler(BaseHTTPRequestHandler):
             user = find_user_by_id(user_id)
             if not user:
                 return self.send_json({"error": "目标用户不存在。"}, 404)
-            return self.send_json(start_client_build_job(user, self.base_url(), request_client_variant(self, body)))
+            variant = request_client_variant(self, body); result = start_client_build_job(user, self.base_url(), variant)
+            audit_event("client_build_start", auth["user"], user_id, self, {"variant": variant, "variantLabel": client_variant_info(variant).get("label")})
+            return self.send_json(result)
         if path == "/api/admin/client/build/status" and method == "GET":
             job_id = self.query.get("id", [""])[0]
             job = public_client_build_job(job_id)
@@ -4861,6 +4907,7 @@ class Handler(BaseHTTPRequestHandler):
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
             record_client_build_download(job_id, auth["user"])
+            audit_event("client_build_download", auth["user"], user_id, self, {"jobId": job_id, "variant": job.get("variant"), "variantLabel": job.get("variantLabel"), "fileName": job.get("fileName")})
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
             user = find_user_by_id(user_id) or auth["user"]
@@ -4971,7 +5018,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if path in ("/api/admin/announcements", "/api/admin/announcements/unread") and method == "GET":
                 visible = rows if is_super(user) else [item for item in rows if announcement_is_available(item)]
-                public_rows = [public_admin_announcement(item, user_id, reads) for item in visible]
+                public_rows = [public_admin_announcement(item, user_id, reads, is_super(user)) for item in visible]
                 public_rows.sort(key=lambda item: item.get("publish_time") or item.get("updated_time") or "", reverse=True)
                 if path.endswith("/unread"):
                     public_rows = [item for item in public_rows if announcement_is_available(item) and not item.get("read")]
@@ -5036,6 +5083,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not announcement_read_record(reads, announcement_id, user_id, revision):
                     reads.append({"announcement_id": announcement_id, "user_id": user_id, "username": user.get("username"), "read_time": now_iso(), "notification_revision": revision})
                     write_json(ADMIN_ANNOUNCEMENT_READS_PATH, reads_store)
+                    audit_event("announcement_read", user, announcement_id, self, {"title": item.get("title"), "revision": revision})
                 return self.send_json({"ok": True})
 
             if not is_super(user):
