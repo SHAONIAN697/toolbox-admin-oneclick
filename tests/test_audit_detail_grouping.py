@@ -140,12 +140,7 @@ class AuditDetailGroupingTests(unittest.TestCase):
             APP.AUDIT_LOG_KEEP_EVENTS = original_keep_events
 
     def test_all_distributed_sources_include_detail_dialog_and_single_basic_save(self):
-        for source_dir in (
-            "ToolboxAdminApi",
-            "ToolboxAdminApi-baota-source",
-            "ToolboxAdminApi-no-agent",
-            "ToolboxAdminApi-oneclick",
-        ):
+        for source_dir in ("ToolboxAdminApi-oneclick",):
             base = ROOT / "src" / source_dir
             app_source = (base / "app.py").read_text(encoding="utf-8")
             js_source = (base / "wwwroot" / "admin.js").read_text(encoding="utf-8")

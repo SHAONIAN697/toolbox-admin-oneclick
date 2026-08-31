@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT = ROOT / "src" / "ToolboxAdminApi-baota-source"
+PROJECT = ROOT / "src" / "ToolboxAdminApi-oneclick"
 
 
 def load_app():

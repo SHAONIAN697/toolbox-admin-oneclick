@@ -64,12 +64,7 @@ class AnnouncementPopupTests(unittest.TestCase):
         self.assertFalse(edited["force_popup"])
 
     def test_all_distributed_copies_use_one_time_aggregate_popup(self):
-        for source_dir in (
-            "ToolboxAdminApi",
-            "ToolboxAdminApi-baota-source",
-            "ToolboxAdminApi-no-agent",
-            "ToolboxAdminApi-oneclick",
-        ):
+        for source_dir in ("ToolboxAdminApi-oneclick",):
             base = ROOT / "src" / source_dir
             app_source = (base / "app.py").read_text(encoding="utf-8")
             js_source = (base / "wwwroot" / "admin.js").read_text(encoding="utf-8")

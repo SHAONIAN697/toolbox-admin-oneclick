@@ -1628,6 +1628,9 @@ def builtin_function_rows(include_urls=False):
         if include_urls:
             row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
             row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+            if row["action"] == "download":
+                row["backup_url"] = get_backup_url(item)
+                row["backup_page_url"] = get_backup_url(item, True)
         rows.append(row)
     for function_id, item in configured.items():
         if item.get("enabled", True) is False:
@@ -1637,6 +1640,9 @@ def builtin_function_rows(include_urls=False):
         if include_urls:
             row["target"] = str(item.get("target") or item.get("downloadUrl") or "")
             row["downloadUrl"] = row["target"] if row["action"] == "download" else ""
+            if row["action"] == "download":
+                row["backup_url"] = get_backup_url(item)
+                row["backup_page_url"] = get_backup_url(item, True)
         rows.append(row)
     return rows
 
@@ -1655,11 +1661,27 @@ def proxy_builtin_download(handler):
     headers = {"User-Agent": "ToolboxClient/1.0"}
     if handler.headers.get("Range"):
         headers["Range"] = handler.headers.get("Range")
-    request = urllib.request.Request(item.get("target") or item.get("downloadUrl"), headers=headers)
-    try:
-        upstream = urllib.request.urlopen(request, timeout=60)
-    except urllib.error.HTTPError as exc:
-        upstream = exc
+    urls = [item.get("target") or item.get("downloadUrl")]
+    backup_url = get_backup_url(item)
+    if backup_url and backup_url not in urls:
+        urls.append(backup_url)
+    upstream = None
+    for target_url in urls:
+        request = urllib.request.Request(target_url, headers=headers)
+        try:
+            upstream = urllib.request.urlopen(request, timeout=60)
+        except urllib.error.HTTPError as exc:
+            upstream = exc
+        except Exception:
+            upstream = None
+        if upstream is not None:
+            status = getattr(upstream, "status", None) or upstream.getcode()
+            if status < 400:
+                break
+            upstream.close()
+            upstream = None
+    if upstream is None:
+        return handler.send_json({"error": "下载源暂时不可用。"}, 502)
     status = getattr(upstream, "status", None) or upstream.getcode()
     if status >= 400:
         upstream.close()
@@ -1692,7 +1714,11 @@ def normalize_client_config(cfg, user_id=""):
             if files:
                 button["files"] = files
                 button["download_mode"] = "multiple" if len(files) > 1 or button.get("download_mode") == "multiple" else "single"
+                if not get_backup_url(button) and get_backup_url(files[0]): button["backup_url"] = get_backup_url(files[0])
+                if not get_backup_url(button, True) and get_backup_url(files[0], True): button["backup_page_url"] = get_backup_url(files[0], True)
             button["download_url"] = target
+            if get_backup_url(button): button["backup_url"] = get_backup_url(button)
+            if get_backup_url(button, True): button["backup_page_url"] = get_backup_url(button, True)
             download_directory = str(button.get("download_directory") or button.get("download_path") or "").strip()[:1000]
             if download_directory:
                 button["download_directory"] = download_directory
@@ -1714,6 +1740,7 @@ def normalize_client_config(cfg, user_id=""):
                     button["download_url"] = "/api/toolbox/builtin-download?id=" + quote(function_id) + "&key=" + quote(api_key)
                     button["url"] = button["download_url"]
                     button["target"] = button["download_url"]
+                    if get_backup_url(item, True): button["backup_page_url"] = get_backup_url(item, True)
                     button["name"] = button.get("name") or item.get("name")
                     return
                 if item and item.get("action") not in ("", "script") and item.get("target"):
@@ -2414,9 +2441,13 @@ def write_system_settings(body):
             if action == "script" and function_id not in SCRIPT_LABELS and not target:
                 raise ValueError("自定义内置功能请选择或填写要执行的内置功能。")
             used.add(function_id)
-            rows.append({"id": function_id, "name": name, "action": action, "target": target,
-                         "downloadUrl": target if action == "download" else "",
-                         "enabled": source.get("enabled", True) is not False})
+            row = {"id": function_id, "name": name, "action": action, "target": target,
+                   "downloadUrl": target if action == "download" else "",
+                   "enabled": source.get("enabled", True) is not False}
+            if action == "download":
+                if get_backup_url(source): row["backup_url"] = get_backup_url(source)
+                if get_backup_url(source, True): row["backup_page_url"] = get_backup_url(source, True)
+            rows.append(row)
         current["builtinFunctions"] = rows
     for section in ("locations", "pay", "integrity", "clientBuild", "clientVariants", "ipLocation"):
         patch = body.get(section)
@@ -3180,6 +3211,17 @@ def get_target(button):
     return button.get("url") or button.get("target") or ""
 
 
+def get_backup_url(button, page=False):
+    if not isinstance(button, dict):
+        return ""
+    keys = ("backup_page_url", "backup_webpage", "fallback_page_url", "backupPageUrl") if page else ("backup_url", "backup_download_url", "fallback_url", "backupUrl")
+    for key in keys:
+        value = str(button.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def normalize_download_files(value):
     files = []
     if not isinstance(value, list):
@@ -3190,7 +3232,10 @@ def normalize_download_files(value):
         url = str(raw.get("url") or raw.get("download_url") or "").strip()
         name = Path(str(raw.get("name") or raw.get("filename") or "").strip()).name
         if url:
-            files.append({"name": name, "url": url, "primary": raw.get("primary") is True})
+            item = {"name": name, "url": url, "primary": raw.get("primary") is True}
+            if get_backup_url(raw): item["backup_url"] = get_backup_url(raw)
+            if get_backup_url(raw, True): item["backup_page_url"] = get_backup_url(raw, True)
+            files.append(item)
     if files and not any(item["primary"] for item in files):
         files[0]["primary"] = True
     primary_seen = False
@@ -3218,6 +3263,8 @@ def new_button(body):
         item["description"] = body.get("description") or body.get("intro") or body.get("remark")
     if action == "download":
         item["download_url"] = target
+        if get_backup_url(body): item["backup_url"] = get_backup_url(body)
+        if get_backup_url(body, True): item["backup_page_url"] = get_backup_url(body, True)
         download_directory = str(body.get("download_directory") or body.get("download_path") or "").strip()[:1000]
         if download_directory:
             item["download_directory"] = download_directory

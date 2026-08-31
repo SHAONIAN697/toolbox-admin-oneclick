@@ -205,13 +205,16 @@
       var action = btn.action || (btn.url ? "link" : "cmd");
       var label = action === "download" ? "下载文件" : action === "script" ? "内置功能" : action === "cmd" ? "运行命令" : "打开网页";
       var target = btn.url || btn.command || btn.script || btn.winget || "";
-      return '<button class="btn" onclick="runAction(\\'' + esc(action) + '\\',\\'' + esc(target).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + '\\')">' + esc(btn.name || "未命名") + '<span class="badge">' + label + '</span></button>';
+      var backupUrl = btn.backup_url || btn.backup_download_url || btn.fallback_url || "";
+      var backupPageUrl = btn.backup_page_url || btn.backup_webpage || btn.fallback_page_url || "";
+      function jsArg(value) { return esc(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'"); }
+      return '<button class="btn" onclick="runAction(\\'' + jsArg(action) + '\\',\\'' + jsArg(target) + '\\',\\'' + jsArg(backupUrl) + '\\',\\'' + jsArg(backupPageUrl) + '\\')">' + esc(btn.name || "未命名") + '<span class="badge">' + label + '</span></button>';
     }
 
-    function runAction(action, target) {
+    function runAction(action, target, backupUrl, backupPageUrl) {
       try {
         if (action === "link") openUrl(target);
-        else if (action === "download") downloadUrl(target);
+        else if (action === "download") downloadUrl(target, backupUrl, backupPageUrl);
         else if (action === "cmd") runCommand(target);
         else if (action === "script") runScript(target);
         else if (action === "winget") runCommand("cmd.exe /c winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause");
@@ -240,19 +243,37 @@
       }
     }
 
-    function downloadUrl(url) {
-      if (!url) return;
+    function downloadUrl(url, backupUrl, backupPageUrl) {
+      if (!url && backupUrl) { downloadUrl(backupUrl, "", backupPageUrl); return; }
+      if (!url) {
+        if (backupPageUrl) openUrl(backupPageUrl);
+        $("status").innerHTML = backupPageUrl ? "下载地址未配置，已打开备用网页。" : "下载地址未配置。";
+        return;
+      }
       var fileName = url.split("?")[0].split("/").pop() || "download.bin";
       fileName = decodeURIComponent(fileName).replace(/[\\\\/:*?"<>|]/g, "_");
       var path = shell().ExpandEnvironmentStrings("%USERPROFILE%") + "\\\\Downloads\\\\" + fileName;
       $("status").innerHTML = "正在下载：" + esc(fileName);
+      function failed(message) {
+        if (backupUrl && backupUrl !== url) {
+          $("status").innerHTML = "主下载地址不可用，正在切换备用地址。";
+          downloadUrl(backupUrl, "", backupPageUrl);
+          return;
+        }
+        if (backupPageUrl) {
+          openUrl(backupPageUrl);
+          $("status").innerHTML = message + "，已打开备用网页。";
+        } else {
+          $("status").innerHTML = message;
+        }
+      }
       var xhr = new ActiveXObject("MSXML2.XMLHTTP");
       xhr.open("GET", url, true);
       xhr.timeout = 30000;
       xhr.onreadystatechange = function () {
         if (xhr.readyState !== 4) return;
         if (xhr.status < 200 || xhr.status >= 300) {
-          $("status").innerHTML = "下载失败（HTTP " + xhr.status + "），请检查文件地址。";
+          failed("下载失败（HTTP " + xhr.status + "），请检查文件地址。");
           return;
         }
         try {
@@ -265,12 +286,12 @@
           $("status").innerHTML = "已下载到：" + esc(path);
           shell().Run('explorer.exe /select,"' + path + '"', 1, false);
         } catch (saveError) {
-          $("status").innerHTML = "保存下载文件失败：" + esc(saveError.message || saveError);
+          failed("保存下载文件失败：" + esc(saveError.message || saveError));
         }
       };
-      xhr.onerror = function () { $("status").innerHTML = "下载连接失败，请检查文件地址。"; };
-      xhr.ontimeout = function () { $("status").innerHTML = "下载连接超时，请稍后重试。"; };
-      try { xhr.send(); } catch (error) { $("status").innerHTML = "下载连接失败：" + esc(error.message || error); }
+      xhr.onerror = function () { failed("下载连接失败，请检查文件地址。"); };
+      xhr.ontimeout = function () { failed("下载连接超时，请稍后重试。"); };
+      try { xhr.send(); } catch (error) { failed("下载连接失败：" + esc(error.message || error)); }
     }
 
     function sha256(ascii) {

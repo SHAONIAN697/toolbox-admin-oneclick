@@ -1,1 +1,1 @@
-﻿SHA256 toolbox-admin-baota-oneclick.tar.gz  546b1558a534322878607684cd468b72f0dcef5e707bbe241e4e3aeb3a625bd3
+SHA256 toolbox-admin-local-latest.tar.gz  f9d80c5498352f194dfd81a1a0f6dd14e63b0959698d9e8de79a7be08e172099

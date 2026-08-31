@@ -4,8 +4,9 @@
 
 项目适合软件资源分发、装机工具箱、音频工作站工具包和客户专属工具集合等场景。后台配置完成后，客户端会自动同步最新内容，无需为每次内容调整重新开发界面。
 
-## 2026-07-26 更新
+## 2026-08-31 更新
 
+- 下载按钮支持主下载地址、备用下载地址和备用网页地址。主地址无法访问时，客户端会自动切换到备用地址；备用地址仍失败时会打开备用网页。
 - 下载按钮新增“单文件”和“多文件安装包”两种模式。
 - 多文件安装包支持通过“添加文件”配置多个直链，并选择下载完成后运行的主程序。
 - 同一安装包的 `.exe`、`.pak` 等文件会下载到同一个独立目录。
@@ -21,13 +22,10 @@
 ## 源码与发布包
 
 - 最新源码：`main` 分支的 `src/ToolboxAdminApi-oneclick`
-- 本次功能提交：`e450135` 及后续 README 更新
-- 下列 2026-06-29 压缩包为历史稳定发布包，不包含 2026-07-26 多文件下载更新。
-
-- 一键包：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz`
-- 一键包 Base64：`packages/toolbox-admin-baota-oneclick-20260629-portal-english-login-fix.tar.gz.b64`
-- 源码目录：`src/ToolboxAdminApi-oneclick`
-- SHA256 清单：`docs/更新包SHA256清单.txt`
+- 仓库仅保留一份正式源码：`src/ToolboxAdminApi-oneclick`
+- 最新一键包：`packages/toolbox-admin-local-latest.tar.gz`
+- 最新一键包 Base64：`packages/toolbox-admin-local-latest.tar.gz.b64`
+- SHA256 清单：`packages/toolbox-admin-local-latest.tar.gz.sha256`
 - 首次部署命令：`docs/首次部署命令.txt`
 - 已部署服务器保留数据更新命令：`docs/已部署服务器保留数据更新命令.txt`
 
@@ -51,8 +49,9 @@
 2. 将动作设置为“下载文件”。
 3. 在下载配置中选择“多文件安装包”。
 4. 填写安装包文件夹名称，并逐条添加文件下载地址。
-5. 将需要在全部下载完成后启动的 `.exe` 标记为“完成后运行”。
-6. 保存配置后，重新生成并下载客户工具箱 EXE 进行测试。
+5. 可为每个文件填写备用下载地址和备用网页地址。
+6. 将需要在全部下载完成后启动的 `.exe` 标记为“完成后运行”。
+7. 保存配置后，重新生成并下载客户工具箱 EXE 进行测试。
 
 客户端会把同一按钮下的全部文件保存到 `Toolbox/<安装包文件夹名称>/`。文件名由客户端自动识别，后台不需要重复填写。
 

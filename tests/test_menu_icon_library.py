@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick")
+SOURCES = ("ToolboxAdminApi-oneclick",)
 
 
 class FakeResponse:

@@ -65,7 +65,7 @@ download_source(){
   yellow "正在下载最新版源码..." >&2
   curl -fL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp/source.tar.gz" "${PROXY}${url}" || return 1
   tar -xzf "$tmp/source.tar.gz" -C "$tmp" || return 1
-  find "$tmp" -path '*/src/ToolboxAdminApi/install-baota.sh' -print -quit | xargs -r dirname
+  find "$tmp" -path '*/src/ToolboxAdminApi-oneclick/install-baota.sh' -print -quit | xargs -r dirname
 }
 
 source_matches_installed(){

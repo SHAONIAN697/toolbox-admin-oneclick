@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class VariantCoverPersistenceTests(unittest.TestCase):
     def test_upload_updates_state_and_save_reloads_server_values(self):
-        for source_dir in ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick"):
+        for source_dir in ("ToolboxAdminApi-oneclick",):
             script = (ROOT / "src" / source_dir / "wwwroot" / "admin.js").read_text(encoding="utf-8")
             self.assertIn("state.system.clientVariants[card.dataset.variantSetting] = {", script)
             self.assertIn("coverMode: 'upload'", script)

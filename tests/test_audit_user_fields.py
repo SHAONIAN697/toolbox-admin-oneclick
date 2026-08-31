@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class AuditUserFieldsTests(unittest.TestCase):
     def test_audit_shows_and_searches_display_name_username_email(self):
-        for source_dir in ("ToolboxAdminApi-baota-source", "ToolboxAdminApi-oneclick"):
+        for source_dir in ("ToolboxAdminApi-oneclick",):
             script = (ROOT / "src" / source_dir / "wwwroot" / "admin.js").read_text(encoding="utf-8")
             self.assertIn("user.displayName, user.username, user.email", script)
             self.assertIn("item.actorDisplayName || user?.displayName", script)

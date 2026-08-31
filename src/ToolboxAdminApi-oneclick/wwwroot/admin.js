@@ -3720,6 +3720,8 @@ function scriptOptionsHtml(selected = '') {
 function downloadFileRowHtml(file = {}, index = 0) {
   return `<div class="download-file-row">
     <input data-download-url value="${escapeAttr(file.url || '')}" placeholder="文件下载地址">
+    <input data-download-backup-url value="${escapeAttr(file.backup_url || file.backup_download_url || '')}" placeholder="备用下载地址（可选）">
+    <input data-download-backup-page value="${escapeAttr(file.backup_page_url || file.backup_webpage || '')}" placeholder="备用网页地址（可选）">
     <label class="download-primary" title="全部文件下载完成后自动运行此文件"><input type="radio" data-download-primary name="download-primary-${Date.now()}-${Math.random()}" ${file.primary || index === 0 ? 'checked' : ''}> 完成后运行</label>
     <button type="button" class="danger" data-remove-download title="删除此文件">×</button>
   </div>`;
@@ -3732,7 +3734,11 @@ function downloadControlHtml(target = '', data = {}) {
   const deleteOnExit = data.download_delete_on_exit === true || data.delete_download_on_exit === true;
   return `<div class="download-target-control">
     <select data-download-mode><option value="single" ${multiple ? '' : 'selected'}>单文件</option><option value="multiple" ${multiple ? 'selected' : ''}>多文件安装包</option></select>
-    <div data-download-single ${multiple ? 'hidden' : ''}><input data-field="target" value="${escapeAttr(target || files[0]?.url || '')}" placeholder="文件下载地址"></div>
+    <div data-download-single ${multiple ? 'hidden' : ''}>
+      <input data-field="target" value="${escapeAttr(target || files[0]?.url || '')}" placeholder="主下载地址">
+      <input data-field="backup-url" value="${escapeAttr(data.backup_url || data.backup_download_url || '')}" placeholder="备用下载地址（主地址失败时使用）">
+      <input data-field="backup-page-url" value="${escapeAttr(data.backup_page_url || data.backup_webpage || '')}" placeholder="备用网页地址（下载失败时打开）">
+    </div>
     <div class="download-multiple" data-download-multiple ${multiple ? '' : 'hidden'}>
       <input data-package-name value="${escapeAttr(data.package_name || data.name || '')}" placeholder="安装包文件夹名称">
       <div data-download-files>${files.map(downloadFileRowHtml).join('')}</div>
@@ -3788,8 +3794,12 @@ function readDownloadConfig(root) {
   const downloadDirectory = control.querySelector('[data-download-directory]')?.value.trim() || '';
   const deleteOnExit = control.querySelector('[data-download-delete-on-exit]')?.checked === true;
   const result = { download_directory: downloadDirectory, download_delete_on_exit: deleteOnExit };
+  const backupUrl = control.querySelector('[data-field="backup-url"]')?.value.trim() || '';
+  const backupPageUrl = control.querySelector('[data-field="backup-page-url"]')?.value.trim() || '';
+  if (backupUrl) result.backup_url = backupUrl;
+  if (backupPageUrl) result.backup_page_url = backupPageUrl;
   if (control.querySelector('[data-download-mode]').value !== 'multiple') return result;
-  const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
+  const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), backup_url: row.querySelector('[data-download-backup-url]')?.value.trim() || '', backup_page_url: row.querySelector('[data-download-backup-page]')?.value.trim() || '', primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
   return { ...result, download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
 }
 
@@ -4415,7 +4425,7 @@ async function toggleButtonEnabled(ref) {
       enabled: nextEnabled
     }
   };
-  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; request.button.download_directory = ref.raw?.download_directory || ref.raw?.download_path || ''; request.button.download_delete_on_exit = ref.raw?.download_delete_on_exit === true || ref.raw?.delete_download_on_exit === true; }
+  if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; request.button.download_directory = ref.raw?.download_directory || ref.raw?.download_path || ''; request.button.download_delete_on_exit = ref.raw?.download_delete_on_exit === true || ref.raw?.delete_download_on_exit === true; request.button.backup_url = ref.raw?.backup_url || ref.raw?.backup_download_url || ''; request.button.backup_page_url = ref.raw?.backup_page_url || ref.raw?.backup_webpage || ''; }
 
   await api(buttonsApiPath(), {
     method: 'PATCH',

@@ -3,12 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIRS = (
-    "ToolboxAdminApi",
-    "ToolboxAdminApi-baota-source",
-    "ToolboxAdminApi-no-agent",
-    "ToolboxAdminApi-oneclick",
-)
+SOURCE_DIRS = ("ToolboxAdminApi-oneclick",)
 
 
 class ConfigDeliveryPerformanceTests(unittest.TestCase):

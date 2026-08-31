@@ -4648,7 +4648,7 @@ namespace ToolboxClient
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
@@ -7986,7 +7986,7 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
@@ -8575,7 +8575,7 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名") }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
             };
             ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl));
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
@@ -9015,12 +9015,17 @@ namespace ToolboxClient
             try
             {
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
-                if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(customScript))
+                if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(GetBackupUrl(item)) && String.IsNullOrWhiteSpace(customScript))
                 {
                     status.Text = "按钮没有配置网址或命令。";
                     return;
                 }
-                if (action == "download") DownloadFile(ResolveServerUrl(target), name, item);
+                if (action == "download")
+                {
+                    string backupUrl = GetBackupUrl(item);
+                    string primary = String.IsNullOrWhiteSpace(target) ? backupUrl : target;
+                    DownloadFile(ResolveServerUrl(primary), name, item);
+                }
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
                 else if (action == "winget") RunCommand("winget install --id " + target + " -e --accept-source-agreements --accept-package-agreements & pause", false);
@@ -9476,17 +9481,26 @@ namespace ToolboxClient
             string customDirectory = GetText(item, "download_directory", GetText(item, "download_path", "")).Trim();
             bool deleteOnExit = BoolValue(item, "download_delete_on_exit", false);
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit); });
+            string backupUrl = ResolveServerUrl(GetBackupUrl(item));
+            string backupPageUrl = ResolveServerUrl(GetBackupPageUrl(item));
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
+            result.BackupUrl = (backupUrl ?? "").Trim();
+            result.BackupPageUrl = (backupPageUrl ?? "").Trim();
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
+                if ((result.Download == null || result.Download.BrowserOnly) && !String.IsNullOrWhiteSpace(result.BackupUrl) && !String.Equals(result.BackupUrl, originalUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    DownloadRequest backup = ResolveDownloadRequest(result.BackupUrl);
+                    if (backup != null && !backup.BrowserOnly) { result.Download = backup; result.UsingBackup = true; }
+                }
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
                     if (IsServerDownloadEndpoint(result.Download.Url) && !IsUsefulDownloadFileName(result.Download.FileName))
@@ -9504,7 +9518,16 @@ namespace ToolboxClient
             }
             catch (Exception ex)
             {
-                result.Error = ex;
+                if (!String.IsNullOrWhiteSpace(result.BackupUrl) && !String.Equals(result.BackupUrl, originalUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        DownloadRequest backup = ResolveDownloadRequest(result.BackupUrl);
+                        if (backup != null) { result.Download = backup; result.UsingBackup = true; result.Error = null; }
+                    }
+                    catch { }
+                }
+                if (result.Download == null) result.Error = ex;
             }
 
             result.CustomDirectory = customDirectory;
@@ -9525,6 +9548,7 @@ namespace ToolboxClient
             if (result.Error != null)
             {
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
+                if (!String.IsNullOrWhiteSpace(result.BackupPageUrl)) Open(result.BackupPageUrl);
                 if (result.Error is IOException || result.Error is UnauthorizedAccessException)
                 {
                     status.Text = PortalText("下载目录不可用，且没有找到其他可写磁盘。", "No writable download folder is available.");
@@ -9537,6 +9561,7 @@ namespace ToolboxClient
             if (download == null)
             {
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
+                if (!String.IsNullOrWhiteSpace(result.BackupPageUrl)) Open(result.BackupPageUrl);
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
@@ -9546,7 +9571,7 @@ namespace ToolboxClient
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(browserOnlyTask)) return;
-                Open(String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl);
+                Open(String.IsNullOrWhiteSpace(result.BackupPageUrl) ? (String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl) : result.BackupPageUrl);
                 status.Text = String.IsNullOrWhiteSpace(download.Message) ? "该链接需要在浏览器中完成下载。" : download.Message;
                 return;
             }
@@ -9581,6 +9606,9 @@ namespace ToolboxClient
             task.DeleteOnExit = result.DeleteOnExit;
             task.CustomDownloadDirectory = result.CustomDirectory;
             task.BrowserUrl = download.BrowserUrl;
+            task.BackupUrl = result.BackupUrl;
+            task.BackupPageUrl = result.BackupPageUrl;
+            task.UsingBackup = result.UsingBackup;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
@@ -10222,6 +10250,12 @@ namespace ToolboxClient
                     {
                         failure = ex;
                         task.AbortActiveRequests();
+                        if (!(ex is OperationCanceledException) && !task.CancelRequested && TrySwitchToBackupDownload(task))
+                        {
+                            failure = null;
+                            attempt = 1;
+                            continue;
+                        }
                         if (!(ex is OperationCanceledException) && !task.CancelRequested && task.Segmented)
                         {
                             List<DownloadSegmentState> restoredSegments = SnapshotDownloadSegments(task);
@@ -10235,6 +10269,8 @@ namespace ToolboxClient
                             }
                         }
                         if (ex is OperationCanceledException || task.CancelRequested) break;
+                        if (String.IsNullOrWhiteSpace(task.BackupUrl) && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;
+                        if (task.UsingBackup && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;
                         if (task.DisableSegmentedDownload) CleanupSegmentedPart(task);
                         int nextAttempt = attempt == Int32.MaxValue ? attempt : attempt + 1;
                         task.StateText = "下载中断，自动续传第 " + nextAttempt + " 次";
@@ -10255,6 +10291,26 @@ namespace ToolboxClient
                 task.AbortActiveRequests();
                 FinishControlledDownload(task, failure);
             });
+        }
+
+        private bool TrySwitchToBackupDownload(DownloadTask task)
+        {
+            if (task == null || task.UsingBackup || String.IsNullOrWhiteSpace(task.BackupUrl)) return false;
+            if (String.Equals(task.BackupUrl, task.Url, StringComparison.OrdinalIgnoreCase)) return false;
+            task.AbortActiveRequests();
+            CleanupSegmentedPart(task);
+            try { if (File.Exists(task.Path)) File.Delete(task.Path); } catch { }
+            task.Url = task.BackupUrl;
+            task.UsingBackup = true;
+            task.LastResolvedUrl = "";
+            task.Segmented = false;
+            task.DisableSegmentedDownload = false;
+            task.PartPath = "";
+            task.Received = 0;
+            task.Total = -1;
+            task.StateText = "主下载地址不可用，正在切换备用地址";
+            QueueDownloadTaskRowUpdate(task);
+            return true;
         }
 
         private void DownloadFileSingleConnection(DownloadTask task, int attempt)
@@ -10556,6 +10612,7 @@ namespace ToolboxClient
                 catch (Exception ex)
                 {
                     if (ex is OperationCanceledException || task.CancelRequested || run.StopRequested != 0) throw;
+                    if (!task.UsingBackup && !String.IsNullOrWhiteSpace(task.BackupUrl)) throw;
                     failuresWithoutProgress = received > receivedBeforeRequest ? 0 : failuresWithoutProgress + 1;
                     if (failuresWithoutProgress >= 6) throw;
                     Thread.Sleep(Math.Min(2000, 250 * (failuresWithoutProgress + 1)));
@@ -10939,7 +10996,15 @@ namespace ToolboxClient
             }
 
             CleanupSegmentedPart(task);
-            status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
+            if (!String.IsNullOrWhiteSpace(task.BackupPageUrl))
+            {
+                Open(task.BackupPageUrl);
+                status.Text = "下载地址不可用，已打开备用网页：" + task.FileName;
+            }
+            else
+            {
+                status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
+            }
             AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。", task.DeleteOnExit);
             RemoveActiveDownload(task);
             FillDownloadRecords();
@@ -11043,6 +11108,9 @@ namespace ToolboxClient
                     task.FastStartDirectDownload = state.FastStartDirectDownload;
                     task.CustomDownloadDirectory = state.CustomDownloadDirectory ?? "";
                     task.DeleteOnExit = state.DeleteOnExit;
+                    task.BackupUrl = state.BackupUrl ?? "";
+                    task.BackupPageUrl = state.BackupPageUrl ?? "";
+                    task.UsingBackup = state.UsingBackup;
                     task.PartPath = state.PartPath ?? "";
                     task.RestoredPaused = true;
                     task.StateText = PortalText("已暂停", "Paused");
@@ -11093,6 +11161,9 @@ namespace ToolboxClient
             state.FastStartDirectDownload = task.FastStartDirectDownload;
             state.CustomDownloadDirectory = task.CustomDownloadDirectory;
             state.DeleteOnExit = task.DeleteOnExit;
+            state.BackupUrl = task.BackupUrl;
+            state.BackupPageUrl = task.BackupPageUrl;
+            state.UsingBackup = task.UsingBackup;
             state.PartPath = task.PartPath;
             state.Segments = SnapshotDownloadSegments(task);
             return state;
@@ -15045,6 +15116,27 @@ namespace ToolboxClient
             return GetText(item, "url", GetText(item, "command", GetText(item, "target", "")));
         }
 
+        private static string GetBackupUrl(Dictionary<string, object> item)
+        {
+            return FirstText(item, new string[] { "backup_url", "backup_download_url", "fallback_url", "backupUrl" });
+        }
+
+        private static string GetBackupPageUrl(Dictionary<string, object> item)
+        {
+            return FirstText(item, new string[] { "backup_page_url", "backup_webpage", "fallback_page_url", "backupPageUrl" });
+        }
+
+        private static string FirstText(Dictionary<string, object> item, string[] keys)
+        {
+            if (item == null || keys == null) return "";
+            foreach (string key in keys)
+            {
+                string value = GetText(item, key, "").Trim();
+                if (!String.IsNullOrWhiteSpace(value)) return value;
+            }
+            return "";
+        }
+
         private static string NavLabel(Dictionary<string, object> row, string id, Dictionary<string, object> pages)
         {
             string label = GetText(row, "name", "");
@@ -16361,6 +16453,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string Target;
             public string CustomScript;
             public string Name;
+            public string BackupUrl;
+            public string BackupPageUrl;
         }
 
         private sealed class SoftwareCatalogEntry
@@ -16866,6 +16960,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public bool FastStartDirectDownload { get; set; }
             public string CustomDownloadDirectory { get; set; }
             public bool DeleteOnExit { get; set; }
+            public string BackupUrl { get; set; }
+            public string BackupPageUrl { get; set; }
+            public bool UsingBackup { get; set; }
             public string PartPath { get; set; }
             public List<DownloadSegmentState> Segments { get; set; }
         }
@@ -16901,6 +16998,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public Exception Error;
             public string CustomDirectory = "";
             public bool DeleteOnExit;
+            public string BackupUrl = "";
+            public string BackupPageUrl = "";
+            public bool UsingBackup;
         }
 
         private sealed class CommandRunResult
@@ -16953,13 +17053,16 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
         private sealed class DownloadTask
         {
             public readonly string Id;
-            public readonly string Url;
+            public string Url;
             public readonly string OriginalUrl;
             public readonly string FileName;
             public string Path;
             public string CustomDownloadDirectory = "";
             public bool DeleteOnExit;
             public string BrowserUrl = "";
+            public string BackupUrl = "";
+            public string BackupPageUrl = "";
+            public bool UsingBackup;
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
             public volatile bool CancelRequested;
