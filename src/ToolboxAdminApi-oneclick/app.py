@@ -713,12 +713,12 @@ def write_json(path, value):
                     pass
 
 
-def read_toolbox_config_json(path, fallback):
+def read_json_recover_extra(path, fallback, label="JSON 文件"):
     try:
         return read_json(path, fallback)
     except json.JSONDecodeError as exc:
         if exc.msg != "Extra data":
-            raise RuntimeError(f"工具箱配置 JSON 已损坏：{exc}") from exc
+            raise RuntimeError(f"{label} 已损坏：{exc}") from exc
 
     text = path.read_text(encoding="utf-8-sig")
     decoder = json.JSONDecoder()
@@ -736,9 +736,9 @@ def read_toolbox_config_json(path, fallback):
         if isinstance(value, dict):
             values.append(value)
     if not values:
-        raise RuntimeError("工具箱配置 JSON 已损坏，且没有找到可恢复的完整配置。")
+        raise RuntimeError(f"{label} 已损坏，且没有找到可恢复的完整数据。")
 
-    backup_dir = path.parent / "config-recovery-backups"
+    backup_dir = path.parent / "json-recovery-backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     backup_path = backup_dir / f"{path.stem}-extra-data-{stamp}-{random_hex(4)}{path.suffix}"
@@ -746,6 +746,10 @@ def read_toolbox_config_json(path, fallback):
     recovered = values[-1]
     write_json(path, recovered)
     return recovered
+
+
+def read_toolbox_config_json(path, fallback):
+    return read_json_recover_extra(path, fallback, "工具箱配置 JSON")
 
 
 ANNOUNCEMENT_TYPES = ("功能更新", "问题修复", "系统通知", "重要公告", "维护公告")
@@ -915,7 +919,11 @@ def client_build_cleanup_settings():
 
 
 def read_client_integrity():
-    data = read_json(CLIENT_INTEGRITY_PATH, {"builds": {}, "tokens": {}})
+    data = read_json_recover_extra(
+        CLIENT_INTEGRITY_PATH,
+        {"builds": {}, "tokens": {}},
+        "客户端完整性记录 JSON",
+    )
     if not isinstance(data, dict):
         data = {"builds": {}, "tokens": {}}
     data.setdefault("builds", {})

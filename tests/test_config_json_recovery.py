@@ -22,7 +22,7 @@ class ConfigJsonRecoveryTests(unittest.TestCase):
 
             self.assertEqual("latest", recovered["app"]["title"])
             self.assertEqual(recovered, app.read_json(path, {}))
-            backups = list((path.parent / "config-recovery-backups").glob("*.json"))
+            backups = list((path.parent / "json-recovery-backups").glob("*.json"))
             self.assertEqual(1, len(backups))
             self.assertIn('"old"', backups[0].read_text(encoding="utf-8"))
 
@@ -33,6 +33,25 @@ class ConfigJsonRecoveryTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "工具箱配置 JSON 已损坏"):
                 app.read_toolbox_config_json(path, {})
+
+    def test_client_integrity_recovers_concatenated_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_path = app.CLIENT_INTEGRITY_PATH
+            app.CLIENT_INTEGRITY_PATH = Path(temp_dir) / "client-integrity.json"
+            try:
+                app.CLIENT_INTEGRITY_PATH.write_text(
+                    '{"builds":{"old":{}},"tokens":{}}\n'
+                    '{"builds":{"latest":{}},"tokens":{}}',
+                    encoding="utf-8",
+                )
+
+                recovered = app.read_client_integrity()
+
+                self.assertIn("latest", recovered["builds"])
+                self.assertNotIn("old", recovered["builds"])
+                self.assertEqual(1, len(list((Path(temp_dir) / "json-recovery-backups").glob("*.json"))))
+            finally:
+                app.CLIENT_INTEGRITY_PATH = original_path
 
 
 if __name__ == "__main__":
