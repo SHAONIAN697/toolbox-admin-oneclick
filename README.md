@@ -26,6 +26,7 @@
 - 最新一键包：`packages/toolbox-admin-local-latest.tar.gz`
 - 最新一键包 Base64：`packages/toolbox-admin-local-latest.tar.gz.b64`
 - SHA256 清单：`packages/toolbox-admin-local-latest.tar.gz.sha256`
+- 更新日志：`docs/更新日志.md`
 - 首次部署命令：`docs/首次部署命令.txt`
 - 已部署服务器保留数据更新命令：`docs/已部署服务器保留数据更新命令.txt`
 
