@@ -1619,6 +1619,16 @@ def public_toolbox_config(user_id):
         if isinstance(lock, dict): lock.pop("password_plain", None)
     for group in (cfg.get("page_lock_groups") or {}).values():
         if isinstance(group, dict): group.pop("password_plain", None)
+    for page in (cfg.get("pages") or {}).values():
+        for section in (page or {}).get("sections") or []:
+            for button in (section or {}).get("buttons") or []:
+                if isinstance(button, dict) and isinstance(button.get("guard"), dict):
+                    button["guard"].pop("password_plain", None)
+    for tab in cfg.get("toolbox_tabs") or []:
+        for section in (tab or {}).get("sections") or []:
+            for button in (section or {}).get("buttons") or []:
+                if isinstance(button, dict) and isinstance(button.get("guard"), dict):
+                    button["guard"].pop("password_plain", None)
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg, user_id=user_id)
@@ -3361,7 +3371,7 @@ def new_button(body):
     if require_password and not guard_hash:
         raise ValueError("启用按钮密码验证时必须设置密码。")
     if require_password or require_confirm or guard_hash or confirm_message != "确定要继续执行此操作吗？":
-        item["guard"] = {"requirePassword": require_password, "passwordHash": guard_hash if require_password else "", "requireConfirm": require_confirm, "confirmMessage": confirm_message}
+        item["guard"] = {"requirePassword": require_password, "passwordHash": guard_hash if require_password else "", "password_plain": guard_password or guard_input.get("password_plain") or "", "requireConfirm": require_confirm, "confirmMessage": confirm_message}
     try:
         item["sort"] = int(body.get("sort") if body.get("sort") not in (None, "") else 0)
     except Exception:

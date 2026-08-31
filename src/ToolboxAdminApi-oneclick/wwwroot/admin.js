@@ -3564,6 +3564,8 @@ function renderButtonEditRow(tr, button) {
   </div></td>`;
 
   updateRowTargetState(tr, button);
+  const guardToggle = tr.querySelector('[data-guard-password-toggle]');
+  if (guardToggle) guardToggle.onclick = () => { const input = tr.querySelector('[data-guard-password-value]'); input.type = input.type === 'password' ? 'text' : 'password'; guardToggle.textContent = input.type === 'password' ? '显示' : '隐藏'; };
   tr.querySelector('[data-field="moveScope"]').onchange = () => syncRowSectionOptions(tr);
   tr.querySelector('[data-field="action"]').onchange = () => updateRowTargetState(tr, button);
   tr.querySelector('[data-field="icon"]').oninput = () => updateIconPreview(tr);
@@ -3754,7 +3756,7 @@ function downloadControlHtml(target = '', data = {}) {
 
 function buttonGuardHtml(data = {}) {
   const guard = data.guard || {};
-  return `<div class="button-guard-control"><label class="checkline"><input type="checkbox" data-guard-password ${guard.requirePassword ? 'checked' : ''}> 点击前输入单独密码</label><input type="password" data-guard-password-value placeholder="${guard.passwordHash ? '留空保持原密码' : '输入按钮密码'}"><label class="checkline"><input type="checkbox" data-guard-confirm ${guard.requireConfirm ? 'checked' : ''}> 点击前显示确认信息框</label><input data-guard-message value="${escapeAttr(guard.confirmMessage || '确定要继续执行此操作吗？')}" placeholder="确认提示内容"></div>`;
+  return `<div class="button-guard-control"><label class="checkline"><input type="checkbox" data-guard-password ${guard.requirePassword ? 'checked' : ''}> 点击前输入单独密码</label><div class="password-field"><input type="password" data-guard-password-value value="${escapeAttr(guard.password_plain || '')}" placeholder="${guard.passwordHash ? '留空保持原密码' : '输入按钮密码'}"><button type="button" data-guard-password-toggle>显示</button></div><label class="checkline"><input type="checkbox" data-guard-confirm ${guard.requireConfirm ? 'checked' : ''}> 点击前显示确认信息框</label><input data-guard-message value="${escapeAttr(guard.confirmMessage || '确定要继续执行此操作吗？')}" placeholder="确认提示内容"></div>`;
 }
 
 function readButtonGuard(root, existing = {}) {
@@ -4356,7 +4358,6 @@ async function addButton() {
   };
   request.button.guard = { requirePassword: $('addGuardPassword')?.checked === true, password: $('addGuardPasswordValue')?.value.trim() || '', requireConfirm: $('addGuardConfirm')?.checked === true, confirmMessage: $('addGuardMessage')?.value.trim() || '确定要继续执行此操作吗？' };
   if (action === 'download') Object.assign(request.button, readDownloadConfig($('addTarget').closest('label')));
-  request.button.guard = readButtonGuard(document, {});
   if (request.button.download_mode === 'multiple' && request.button.files.length < 2) { setStatus('多文件安装包请至少填写两个有效下载地址。', true); return; }
 
   if (scope === 'toolbox') request.tabIndex = Number(id);
