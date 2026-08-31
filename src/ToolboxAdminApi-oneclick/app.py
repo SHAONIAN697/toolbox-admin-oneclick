@@ -124,6 +124,7 @@ PUBLIC_CONFIG_CACHE_LOCK = threading.RLock()
 PUBLIC_CONFIG_CACHE = {}
 API_KEY_CACHE_LOCK = threading.RLock()
 API_KEY_CACHE = {"signature": None, "users": {}}
+JSON_WRITE_LOCK = threading.RLock()
 CLIENT_RUNTIME_TOKEN_TTL = 7 * 24 * 60 * 60
 RESET_CODES = {}
 RESET_CODE_REQUESTS = {}
@@ -688,10 +689,63 @@ def read_json(path, fallback):
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(value, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
+    tmp = None
+    with JSON_WRITE_LOCK:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp = Path(f.name)
+                json.dump(value, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(tmp), str(path))
+        finally:
+            if tmp and tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+
+def read_toolbox_config_json(path, fallback):
+    try:
+        return read_json(path, fallback)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise RuntimeError(f"工具箱配置 JSON 已损坏：{exc}") from exc
+
+    text = path.read_text(encoding="utf-8-sig")
+    decoder = json.JSONDecoder()
+    values = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            value, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            break
+        if isinstance(value, dict):
+            values.append(value)
+    if not values:
+        raise RuntimeError("工具箱配置 JSON 已损坏，且没有找到可恢复的完整配置。")
+
+    backup_dir = path.parent / "config-recovery-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    backup_path = backup_dir / f"{path.stem}-extra-data-{stamp}-{random_hex(4)}{path.suffix}"
+    shutil.copy2(path, backup_path)
+    recovered = values[-1]
+    write_json(path, recovered)
+    return recovered
 
 
 ANNOUNCEMENT_TYPES = ("功能更新", "问题修复", "系统通知", "重要公告", "维护公告")
@@ -1309,7 +1363,7 @@ def read_config(user_id=""):
             shutil.copyfile(DATA / "config.json", path)
         else:
             write_json(path, default_config())
-    config = read_json(path, default_config())
+    config = read_toolbox_config_json(path, default_config())
     changed = ensure_config_defaults(config)
     if changed:
         write_json(path, config)
