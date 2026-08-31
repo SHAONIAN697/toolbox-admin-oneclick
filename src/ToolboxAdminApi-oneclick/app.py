@@ -583,7 +583,7 @@ def popup_settings_audit_details(before, after, path):
 
 BUTTON_AUDIT_FIELDS = {
     "name": "按钮名称", "enabled": "启用状态", "sort": "排序", "icon": "按钮图标",
-    "description": "按钮说明", "action": "操作类型", "download_mode": "下载模式", "package_name": "安装包名称",
+    "description": "按钮说明", "action": "操作类型", "download_mode": "下载模式", "package_name": "安装包名称", "guard": "按钮安全验证",
 }
 BUTTON_ACTION_LABELS = {"link": "打开链接", "download": "下载文件", "cmd": "执行命令", "script": "内置功能", "winget": "Winget 安装"}
 
@@ -614,6 +614,9 @@ def button_location_text(row):
 def button_audit_value(key, value):
     if key == "action":
         return BUTTON_ACTION_LABELS.get(str(value or ""), audit_display_value(value))
+    if key == "guard":
+        guard = value if isinstance(value, dict) else {}
+        return "密码验证：%s；确认提示：%s" % ("开启" if guard.get("requirePassword") else "关闭", "开启" if guard.get("requireConfirm") else "关闭")
     return audit_display_value(value)
 
 
@@ -3347,6 +3350,18 @@ def new_button(body):
     item = {"name": body.get("name", "未命名"), "icon": body.get("icon", ""), "action": action}
     item["id"] = body.get("id") or new_id("btn")
     item["enabled"] = body.get("enabled", True) is not False
+    guard_input = body.get("guard") if isinstance(body.get("guard"), dict) else {}
+    guard_password = str(guard_input.get("password") or body.get("guard_password") or "").strip()
+    guard_hash = str(guard_input.get("passwordHash") or guard_input.get("password_hash") or "").strip()
+    require_password = bool(guard_input.get("requirePassword", guard_input.get("password_enabled", False)))
+    require_confirm = bool(guard_input.get("requireConfirm", guard_input.get("confirm_enabled", False)))
+    confirm_message = str(guard_input.get("confirmMessage") or "确定要继续执行此操作吗？").strip()[:300]
+    if guard_password:
+        guard_hash = stored_password(guard_password)
+    if require_password and not guard_hash:
+        raise ValueError("启用按钮密码验证时必须设置密码。")
+    if require_password or require_confirm or guard_hash or confirm_message != "确定要继续执行此操作吗？":
+        item["guard"] = {"requirePassword": require_password, "passwordHash": guard_hash if require_password else "", "requireConfirm": require_confirm, "confirmMessage": confirm_message}
     try:
         item["sort"] = int(body.get("sort") if body.get("sort") not in (None, "") else 0)
     except Exception:

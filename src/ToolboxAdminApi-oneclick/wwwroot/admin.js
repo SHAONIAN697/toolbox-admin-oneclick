@@ -3559,7 +3559,7 @@ function renderButtonEditRow(tr, button) {
       <label>说明<input value="${escapeAttr(button.raw?.description || button.raw?.intro || button.raw?.remark || '')}" data-field="description" placeholder="鼠标悬停说明"></label>
       <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     </div>
-    <label class="button-edit-target">下载 / 目标<span class="target-control">${targetControlHtml(button.action, button.target, button.raw || button)}</span><small class="target-note"></small></label>
+    <label class="button-edit-target">下载 / 目标<span class="target-control">${targetControlHtml(button.action, button.target, button.raw || button)}</span><small class="target-note"></small></label>${buttonGuardHtml(button.raw || button)}
     <div class="button-edit-actions"><button data-action="save">保存</button><button data-action="cancel">取消</button><button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}</div>
   </div></td>`;
 
@@ -3750,6 +3750,19 @@ function downloadControlHtml(target = '', data = {}) {
       <label class="checkline"><input type="checkbox" data-download-delete-on-exit ${deleteOnExit ? 'checked' : ''}> 关闭工具箱时删除此按钮下载的文件</label>
     </div>
   </div>`;
+}
+
+function buttonGuardHtml(data = {}) {
+  const guard = data.guard || {};
+  return `<div class="button-guard-control"><label class="checkline"><input type="checkbox" data-guard-password ${guard.requirePassword ? 'checked' : ''}> 点击前输入单独密码</label><input type="password" data-guard-password-value placeholder="${guard.passwordHash ? '留空保持原密码' : '输入按钮密码'}"><label class="checkline"><input type="checkbox" data-guard-confirm ${guard.requireConfirm ? 'checked' : ''}> 点击前显示确认信息框</label><input data-guard-message value="${escapeAttr(guard.confirmMessage || '确定要继续执行此操作吗？')}" placeholder="确认提示内容"></div>`;
+}
+
+function readButtonGuard(root, existing = {}) {
+  const old = existing.guard || {};
+  const password = root.querySelector('[data-guard-password-value]')?.value.trim() || '';
+  const result = { requirePassword: root.querySelector('[data-guard-password]')?.checked === true, passwordHash: old.passwordHash || '', requireConfirm: root.querySelector('[data-guard-confirm]')?.checked === true, confirmMessage: root.querySelector('[data-guard-message]')?.value.trim() || '确定要继续执行此操作吗？' };
+  if (password) result.password = password;
+  return result;
 }
 
 function bindDownloadControl(root) {
@@ -4341,7 +4354,9 @@ async function addButton() {
       enabled: true
     }
   };
+  request.button.guard = { requirePassword: $('addGuardPassword')?.checked === true, password: $('addGuardPasswordValue')?.value.trim() || '', requireConfirm: $('addGuardConfirm')?.checked === true, confirmMessage: $('addGuardMessage')?.value.trim() || '确定要继续执行此操作吗？' };
   if (action === 'download') Object.assign(request.button, readDownloadConfig($('addTarget').closest('label')));
+  request.button.guard = readButtonGuard(document, {});
   if (request.button.download_mode === 'multiple' && request.button.files.length < 2) { setStatus('多文件安装包请至少填写两个有效下载地址。', true); return; }
 
   if (scope === 'toolbox') request.tabIndex = Number(id);
@@ -4356,6 +4371,9 @@ async function addButton() {
   if ($('addSort')) $('addSort').value = '0';
   $('addIcon').value = '';
   $('addDescription').value = '';
+  if ($('addGuardPassword')) $('addGuardPassword').checked = false;
+  if ($('addGuardConfirm')) $('addGuardConfirm').checked = false;
+  if ($('addGuardPasswordValue')) $('addGuardPasswordValue').value = '';
   const addTargetLabel = $('addTarget')?.closest('label');
   if (addTargetLabel && $('addAction').value === 'download') { addTargetLabel.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">'; updateAddTargetState(); }
   else if ($('addTarget')) $('addTarget').value = '';
@@ -4382,6 +4400,7 @@ async function saveButton(ref, row) {
     }
   };
   if (request.button.action === 'download') Object.assign(request.button, readDownloadConfig(row));
+  request.button.guard = readButtonGuard(row, ref.raw || {});
 
   await api(buttonsApiPath(), {
     method: 'PATCH',
@@ -4425,6 +4444,7 @@ async function toggleButtonEnabled(ref) {
       enabled: nextEnabled
     }
   };
+  request.button.guard = ref.raw?.guard || {};
   if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; request.button.download_directory = ref.raw?.download_directory || ref.raw?.download_path || ''; request.button.download_delete_on_exit = ref.raw?.download_delete_on_exit === true || ref.raw?.delete_download_on_exit === true; request.button.backup_url = ref.raw?.backup_url || ref.raw?.backup_download_url || ''; request.button.backup_page_url = ref.raw?.backup_page_url || ref.raw?.backup_webpage || ''; }
 
   await api(buttonsApiPath(), {

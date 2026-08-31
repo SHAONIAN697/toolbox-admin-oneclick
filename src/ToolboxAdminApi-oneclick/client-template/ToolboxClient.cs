@@ -4224,7 +4224,7 @@ namespace ToolboxClient
                     Action = action,
                     Target = GetTarget(item, action),
                     CustomScript = GetText(item, "custom_script", ""),
-                    Name = GetText(item, "name", "未命名")
+                    Name = GetText(item, "name", "未命名"), Guard = AsDict(Get(item, "guard"))
                 };
                 RoundButton button = new RoundButton
                 {
@@ -4648,7 +4648,7 @@ namespace ToolboxClient
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                    ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), Guard = AsDict(Get(item, "guard")) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
@@ -7986,7 +7986,7 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                    ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), Guard = AsDict(Get(item, "guard")) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
@@ -8529,6 +8529,7 @@ namespace ToolboxClient
         private void ExecuteResourceSearchResult(ResourceSearchEntry entry)
         {
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
+            if (!ConfirmButtonGuard(AsDict(Get(entry.Item, "guard")), entry.Name)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
             RunAction(action, GetTarget(entry.Item, action), GetText(entry.Item, "custom_script", ""), entry.Name, entry.Item);
         }
@@ -8537,7 +8538,28 @@ namespace ToolboxClient
         {
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
+            if (!ConfirmButtonGuard(info.Guard, info.Name)) return;
             RunAction(info.Action, info.Target, info.CustomScript, info.Name, item);
+        }
+
+        private bool ConfirmButtonGuard(Dictionary<string, object> guard, string name)
+        {
+            if (guard == null || guard.Count == 0) return true;
+            if (BoolValue(guard, "requirePassword", false) && !PromptPassword(GetText(guard, "passwordHash", ""), "访问验证", "请输入此按钮的专用密码")) return false;
+            if (BoolValue(guard, "requireConfirm", false) && !ShowStyledConfirm(GetText(guard, "confirmMessage", "确定要继续执行此操作吗？"), name)) return false;
+            return true;
+        }
+
+        private bool ShowStyledConfirm(string message, string title)
+        {
+            using (Form dialog = new Form { Text = title, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ClientSize = new Size(420, 170), Font = new Font("Microsoft YaHei UI", 9F) })
+            {
+                Label text = new Label { Left = 22, Top = 22, Width = 376, Height = 62, Text = message, AutoEllipsis = true };
+                Button ok = new Button { Left = 220, Top = 112, Width = 82, Height = 30, Text = "继续", DialogResult = DialogResult.OK };
+                Button cancel = new Button { Left = 312, Top = 112, Width = 82, Height = 30, Text = "取消", DialogResult = DialogResult.Cancel };
+                dialog.Controls.Add(text); dialog.Controls.Add(ok); dialog.Controls.Add(cancel); dialog.AcceptButton = ok; dialog.CancelButton = cancel;
+                return dialog.ShowDialog(this) == DialogResult.OK;
+            }
         }
 
         private void AddEmptyMessage(string message)
@@ -8575,7 +8597,7 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), Guard = AsDict(Get(item, "guard")) }
             };
             ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl));
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
@@ -14347,7 +14369,7 @@ namespace ToolboxClient
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return false;
                     if (VerifyPassword(dialog.Password, stored)) return true;
-                    MessageBox.Show("密码不正确。", String.IsNullOrWhiteSpace(title) ? "密码验证" : title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ShowStyledConfirm("密码不正确，请重新输入。", String.IsNullOrWhiteSpace(title) ? "密码验证" : title);
                 }
             }
         }
@@ -16455,6 +16477,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string Name;
             public string BackupUrl;
             public string BackupPageUrl;
+            public Dictionary<string, object> Guard;
         }
 
         private sealed class SoftwareCatalogEntry
