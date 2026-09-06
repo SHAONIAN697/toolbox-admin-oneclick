@@ -4598,11 +4598,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 data, compressed, etag = public_toolbox_config_payload(user["id"])
-                if self.query.get("watch", [""])[0] == "1":
-                    deadline = time.time() + 5
-                    while self.headers.get("If-None-Match", "").strip() == etag and time.time() < deadline:
-                        time.sleep(1)
-                        data, compressed, etag = public_toolbox_config_payload(user["id"])
                 return self.send_cached_json(data, compressed, etag)
             if path in ("/api/client/software-catalog/home", "/api/client/software-catalog/search", "/api/client/software-catalog/resolve"):
                 api_key = (self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", "")).strip()

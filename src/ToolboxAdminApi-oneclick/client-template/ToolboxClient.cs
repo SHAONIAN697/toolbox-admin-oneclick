@@ -100,11 +100,12 @@ namespace ToolboxClient
 
     internal sealed class ToolboxForm : Form
     {
-        private const int ConfigRefreshBaseIntervalMs = 1000;
-        private const int ConfigRefreshJitterMs = 15000;
+        private const int ConfigRefreshBaseIntervalMs = 5000;
+        private const int ConfigRefreshJitterMs = 3000;
         private readonly string configUrl;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private readonly Random configRefreshRandom = new Random();
+        private int configRefreshFailureCount = 0;
         private string configResponseEtag = "";
         private Dictionary<string, object> config = new Dictionary<string, object>();
         private Panel side;
@@ -402,7 +403,9 @@ namespace ToolboxClient
 
         private int NextConfigRefreshInterval()
         {
-            return ConfigRefreshBaseIntervalMs + configRefreshRandom.Next(ConfigRefreshJitterMs + 1);
+            int multiplier = 1 << Math.Min(3, Math.Max(0, configRefreshFailureCount));
+            int baseInterval = Math.Min(60000, ConfigRefreshBaseIntervalMs * multiplier);
+            return Math.Min(60000, baseInterval + configRefreshRandom.Next(ConfigRefreshJitterMs + 1));
         }
 
         private void UpdateStatusClock()
@@ -2464,7 +2467,8 @@ namespace ToolboxClient
             string errorMessage = null;
             try
             {
-                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl + (configUrl.IndexOf("?") >= 0 ? "&" : "?") + "watch=1"));
+                string downloaded = DownloadConfigText(WithRuntimeToken(configUrl));
+                configRefreshFailureCount = 0;
                 if (downloaded == null)
                 {
                     lastSyncText = "配置无变化 " + DateTime.Now.ToString("HH:mm:ss");
@@ -2495,6 +2499,7 @@ namespace ToolboxClient
             }
             catch (Exception ex)
             {
+                configRefreshFailureCount = Math.Min(8, configRefreshFailureCount + 1);
                 if (IsIntegrityFailure(ex))
                 {
                     errorMessage = ex.Message;
@@ -2508,8 +2513,11 @@ namespace ToolboxClient
                 }
                 if (!String.IsNullOrWhiteSpace(lastConfigJson))
                 {
-                    string keepMessage = "后台连接较慢，保留当前配置并稍后重试";
-                    BeginInvoke(new Action(delegate { status.Text = keepMessage; }));
+                    if (configRefreshFailureCount >= 3)
+                    {
+                        string keepMessage = "网络波动，正在重试，当前配置可正常使用";
+                        BeginInvoke(new Action(delegate { status.Text = keepMessage; }));
+                    }
                     return;
                 }
                 json = ReadUsableFallbackConfig();
@@ -3504,8 +3512,15 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsStudioOverviewPage(id, AsDict(Get(audioPages, id)))) continue;
+                    if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled()) continue;
                     AddAudioNavButton(id, NavLabel(row, id, audioPages), GetText(row, "icon", ""));
                     audioAdded.Add(id);
+                }
+                if (SoftwareCatalogEnabled() && !audioAdded.Contains(SoftwareCatalogPageId))
+                {
+                    AddAudioNavButton(SoftwareCatalogPageId, "软件大全", "");
+                    audioAdded.Add(SoftwareCatalogPageId);
                 }
                 FitAudioNavButtons();
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
@@ -3532,6 +3547,11 @@ namespace ToolboxClient
                         string label = NavLabel(row, id, tunerPages);
                         AddTunerNavButton(id, label, TemplateNavIcon(label, id));
                         tunerAdded.Add(id);
+                    }
+                    if (SoftwareCatalogEnabled() && !tunerAdded.Contains(SoftwareCatalogPageId))
+                    {
+                        AddTunerNavButton(SoftwareCatalogPageId, "软件大全", TemplateNavIcon("软件大全", SoftwareCatalogPageId));
+                        tunerAdded.Add(SoftwareCatalogPageId);
                     }
                     if (tunerAdded.Count == 0)
                     {
@@ -4829,11 +4849,10 @@ namespace ToolboxClient
         private Panel CreateTunerGroup(Dictionary<string, object> section, List<Dictionary<string, object>> buttons, int width, int index)
         {
             int columns = Math.Max(2, Math.Min(4, width / 150));
-            int gap = 8;
-            int buttonHeight = 42;
-            int progressHeight = vst76Variant ? 18 : 0;
+            int gap = vst76Variant ? 12 : 8;
+            int buttonHeight = vst76Variant ? 150 : 42;
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
-            int groupHeight = 56 + 16 + rows * (buttonHeight + progressHeight) + Math.Max(0, rows - 1) * gap + 16;
+            int groupHeight = 56 + 16 + rows * buttonHeight + Math.Max(0, rows - 1) * gap + 16;
 
             RoundedPanel panel = new RoundedPanel
             {
@@ -4867,22 +4886,155 @@ namespace ToolboxClient
             {
                 int row = i / columns;
                 int col = i % columns;
-                int buttonTop = top + row * (buttonHeight + progressHeight + gap);
-                Control button = CreateTunerActionButton(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
+                int buttonTop = top + row * (buttonHeight + gap);
+                Control button = vst76Variant
+                    ? CreateVst76ConfiguredActionCard(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i)
+                    : CreateTunerActionButton(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
                 panel.Controls.Add(button);
-                string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
-                if (vst76Variant && action == "download")
-                {
-                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false);
-                    progress.Left = button.Left;
-                    progress.Top = button.Bottom;
-                    progress.Width = button.Width;
-                    progress.Height = progressHeight;
-                    panel.Controls.Add(progress);
-                    RegisterVst76InlineDownloadProgress(progress);
-                }
             }
             return panel;
+        }
+
+        private Control CreateVst76ConfiguredActionCard(Dictionary<string, object> item, int left, int top, int width, int height, int index)
+        {
+            string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
+            string target = GetTarget(item, action);
+            string nameText = GetText(item, "name", "未命名");
+            string descriptionText = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
+            if (String.IsNullOrWhiteSpace(descriptionText))
+            {
+                descriptionText = action == "download"
+                    ? "下载到工具箱设置的保存目录"
+                    : (action == "link" ? "打开后台配置的网址" : "执行后台配置的工具操作");
+            }
+            string iconUrl = GetText(item, "icon", "");
+            Color accent = CardAccent(action, nameText, index);
+            ActionInfo info = new ActionInfo
+            {
+                Action = action,
+                Target = target,
+                CustomScript = GetText(item, "custom_script", ""),
+                Name = nameText,
+                BackupUrl = GetBackupUrl(item),
+                BackupPageUrl = GetBackupPageUrl(item)
+            };
+            RoundedPanel card = new RoundedPanel
+            {
+                Left = left,
+                Top = top,
+                Width = width,
+                Height = height,
+                BackColor = PanelBg,
+                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                Radius = 8,
+                Cursor = Cursors.Hand
+            };
+            SoftwareCatalogEntry iconEntry = new SoftwareCatalogEntry
+            {
+                Name = nameText,
+                Category = ActionLabel(action),
+                Description = descriptionText,
+                IconUrl = iconUrl
+            };
+            PictureBox icon = new PictureBox
+            {
+                Left = 16,
+                Top = 14,
+                Width = 44,
+                Height = 44,
+                BackColor = Color.Transparent,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                Image = CreateSoftwareCatalogIconImage(iconEntry, accent, 44),
+                Cursor = Cursors.Hand
+            };
+            icon.Disposed += delegate
+            {
+                Image image = icon.Image;
+                icon.Image = null;
+                if (image != null) image.Dispose();
+                IDisposable stream = icon.Tag as IDisposable;
+                icon.Tag = null;
+                if (stream != null) stream.Dispose();
+            };
+            Label name = new Label
+            {
+                Left = 72,
+                Top = 12,
+                Width = Math.Max(80, width - 88),
+                Height = 28,
+                Text = nameText,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 10F, FontStyle.Bold),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Cursor = Cursors.Hand
+            };
+            Label meta = new Label
+            {
+                Left = 72,
+                Top = 38,
+                Width = Math.Max(80, width - 88),
+                Height = 20,
+                Text = ActionLabel(action),
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 8.2F),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Cursor = Cursors.Hand
+            };
+            Label description = new Label
+            {
+                Left = 16,
+                Top = 66,
+                Width = Math.Max(100, width - 32),
+                Height = 36,
+                Text = descriptionText,
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Font = new Font(Font.FontFamily, 8.5F),
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Cursor = Cursors.Hand
+            };
+            Button actionButton = MakeCatalogButton(action == "download" ? "下载" : (action == "winget" ? "安装" : (action == "link" ? "打开" : "执行")), 72, true);
+            actionButton.Left = 16;
+            actionButton.Top = height - 40;
+            EventHandler runAction = delegate { RunResourceItemAction(item, info); };
+            actionButton.Click += runAction;
+            card.Click += runAction;
+            icon.Click += runAction;
+            name.Click += runAction;
+            meta.Click += runAction;
+            description.Click += runAction;
+            card.Controls.Add(icon);
+            card.Controls.Add(name);
+            card.Controls.Add(meta);
+            card.Controls.Add(description);
+            card.Controls.Add(actionButton);
+            if (action == "download")
+            {
+                Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(nameText, true);
+                progress.Left = actionButton.Left;
+                progress.Top = actionButton.Top + 4;
+                progress.Width = actionButton.Width;
+                progress.Height = 24;
+                progress.DownloadButton = actionButton;
+                progress.CardHost = card;
+                card.Controls.Add(progress);
+                progress.BringToFront();
+                RegisterVst76InlineDownloadProgress(progress);
+            }
+            string tip = BuildActionTip(nameText, action, target, descriptionText);
+            if (topToolTip != null)
+            {
+                topToolTip.SetToolTip(card, tip);
+                topToolTip.SetToolTip(icon, tip);
+                topToolTip.SetToolTip(name, tip);
+                topToolTip.SetToolTip(description, tip);
+            }
+            QueueSoftwareCatalogIconLoad(iconUrl, icon);
+            return card;
         }
 
         private Control CreateTunerActionButton(Dictionary<string, object> item, int left, int top, int width, int height, int index)
@@ -15857,7 +16009,7 @@ namespace ToolboxClient
 
         private string DownloadConfigText(string url)
         {
-            return DownloadText(url, 35000, true);
+            return DownloadText(url, 8000, true);
         }
 
         private string DownloadText(string url, int timeout, bool useConfigEtag)

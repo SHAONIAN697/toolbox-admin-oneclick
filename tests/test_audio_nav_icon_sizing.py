@@ -26,7 +26,7 @@ class AudioNavIconSizingTests(unittest.TestCase):
         for source_dir in ("ToolboxAdminApi-oneclick",):
             source = (ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
             self.assertRegex(source, r"ConfigRefreshBaseIntervalMs = [1-9][0-9]*;")
-            self.assertIn("ConfigRefreshJitterMs = 15000", source)
+            self.assertIn("ConfigRefreshJitterMs = 3000", source)
             self.assertRegex(
                 source,
                 r"refreshTimer\.Interval = (?:NextConfigRefreshInterval\(\)|ConfigRefreshBaseIntervalMs);",
@@ -36,7 +36,8 @@ class AudioNavIconSizingTests(unittest.TestCase):
             self.assertRegex(source, r"return DownloadText\(url, [1-9][0-9]*, true\);")
             self.assertIn('request.Headers["If-None-Match"] = configResponseEtag;', source)
             self.assertIn("HttpStatusCode.NotModified", source)
-            self.assertIn("后台连接较慢，保留当前配置并稍后重试", source)
+            self.assertIn("configRefreshFailureCount >= 3", source)
+            self.assertIn("网络波动，正在重试，当前配置可正常使用", source)
 
     def test_audio_text_buttons_grow_for_wrapped_labels(self):
         for source_dir in ("ToolboxAdminApi-oneclick",):

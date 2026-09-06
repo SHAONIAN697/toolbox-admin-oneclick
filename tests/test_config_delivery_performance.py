@@ -16,6 +16,8 @@ class ConfigDeliveryPerformanceTests(unittest.TestCase):
             self.assertIn('self.send_response(304)', source)
             self.assertIn('self.send_header("Content-Encoding", "gzip")', source)
             self.assertIn('TOOLBOX_MAX_REQUEST_THREADS', source)
+            config_route = source[source.index('if path in ("/api/toolbox/config", "/api/config")'):source.index('if path in ("/api/client/software-catalog/home"')]
+            self.assertNotIn('time.sleep(', config_route)
 
     def test_service_restart_loop_is_rate_limited(self):
         for source_dir in SOURCE_DIRS:

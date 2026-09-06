@@ -26,6 +26,8 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         audio_branch = build_nav[build_nav.index("if (audioVariant)"):build_nav.index("if (tunerVariant || vst76Variant)")]
         self.assertIn('foreach (object item in AsList(Get(config, "sidebar")))', audio_branch)
         self.assertNotIn('AddAudioNavButton("toolbox"', audio_branch)
+        self.assertIn("IsStudioOverviewPage(id, AsDict(Get(audioPages, id)))", audio_branch)
+        self.assertIn('AddAudioNavButton(SoftwareCatalogPageId, "软件大全", "")', audio_branch)
 
     def test_vst76_sidebar_uses_backend_order_without_legacy_fixed_menu(self):
         build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
@@ -37,12 +39,20 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("NavLabel(row, id, tunerPages)", vst_branch)
         for legacy_call in (
             'AddTunerNavButton("toolbox"',
-            "AddTunerNavButton(SoftwareCatalogPageId",
             'AddTunerNavButton("driver"',
             'AddTunerNavButton("plugins"',
             'AddTunerNavButton("websites"',
         ):
             self.assertNotIn(legacy_call, vst_branch)
+        self.assertIn('AddTunerNavButton(SoftwareCatalogPageId, "软件大全"', vst_branch)
+
+    def test_flagship_configured_buttons_use_catalog_style_icon_cards(self):
+        self.assertIn("CreateVst76ConfiguredActionCard", self.source)
+        card = self.method("private Control CreateVst76ConfiguredActionCard", "private Control CreateTunerActionButton")
+        self.assertIn("CreateSoftwareCatalogIconImage(iconEntry, accent, 44)", card)
+        self.assertIn("QueueSoftwareCatalogIconLoad(iconUrl, icon)", card)
+        self.assertIn("RunResourceItemAction(item, info)", card)
+        self.assertIn("CreateVst76InlineProgress(nameText, true)", card)
 
     def test_configured_home_label_renders_flagship_home(self):
         self.assertIn('String.Equals(label, "首页", StringComparison.OrdinalIgnoreCase)', self.source)
