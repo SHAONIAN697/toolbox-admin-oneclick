@@ -580,6 +580,21 @@ namespace ToolboxClient
             }
         }
 
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            if (!audioVariant) return;
+            ActiveControl = null;
+            DeactivateNavButtons();
+        }
+
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            if (!audioVariant || String.IsNullOrWhiteSpace(currentPage)) return;
+            MarkNavButtonActive(currentPage);
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -1009,6 +1024,7 @@ namespace ToolboxClient
                 Cursor = Cursors.Hand
             };
             button.FlatAppearance.BorderSize = 0;
+            button.TabStop = false;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 235, 238);
             if (topToolTip == null) topToolTip = new ToolTip();
             topToolTip.SetToolTip(button, tip);
@@ -1289,7 +1305,9 @@ namespace ToolboxClient
         {
             unlockedPagePasswords.Clear();
             passwordUnlocked = false;
-            ShowPage(Vst76HomePageId);
+            string homePageId = ConfiguredVst76HomePageId();
+            if (!String.IsNullOrWhiteSpace(homePageId)) ShowPage(homePageId);
+            else foreach (string key in navButtons.Keys) { ShowPage(key); break; }
             status.Text = "已锁定受保护页面";
         }
 
@@ -1302,7 +1320,8 @@ namespace ToolboxClient
             studioOverviewTimer.Interval = 1000;
             studioOverviewTimer.Tick += delegate
             {
-                if (vst76Variant && IsHandleCreated && content != null && !content.IsDisposed && currentPage.Equals(Vst76HomePageId, StringComparison.OrdinalIgnoreCase)) QueueVst76MetricRefresh();
+                Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+                if (vst76Variant && IsHandleCreated && content != null && !content.IsDisposed && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage)))) QueueVst76MetricRefresh();
             };
             studioOverviewTimer.Start();
             vst76MemoryCleanupTimer = new System.Windows.Forms.Timer();
@@ -3434,6 +3453,42 @@ namespace ToolboxClient
             }
         }
 
+        private bool IsStudioOverviewPage(string id, Dictionary<string, object> page)
+        {
+            if (String.Equals(id, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) return true;
+            string label = page == null ? "" : PageLabel(page, id);
+            return String.Equals(label.Trim(), "系统概览", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsVst76HomePage(string id, Dictionary<string, object> page)
+        {
+            if (String.Equals(id, Vst76HomePageId, StringComparison.OrdinalIgnoreCase)) return true;
+            string label = page == null ? "" : PageLabel(page, id);
+            foreach (object item in AsList(Get(config, "sidebar")))
+            {
+                Dictionary<string, object> row = AsDict(item);
+                if (!String.Equals(GetText(row, "id", ""), id, StringComparison.OrdinalIgnoreCase)) continue;
+                label = NavLabel(row, id, AsDict(Get(config, "pages")));
+                break;
+            }
+            label = (label ?? "").Trim();
+            return String.Equals(label, "首页", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(label, "软件首页", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string ConfiguredVst76HomePageId()
+        {
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            foreach (object item in AsList(Get(config, "sidebar")))
+            {
+                Dictionary<string, object> row = AsDict(item);
+                string id = GetText(row, "id", "");
+                if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsVst76HomePage(id, AsDict(Get(pages, id)))) return id;
+            }
+            return navButtons.ContainsKey(Vst76HomePageId) ? Vst76HomePageId : "";
+        }
+
         private void BuildNav()
         {
             ClearChildControls(nav);
@@ -3467,14 +3522,24 @@ namespace ToolboxClient
 
                 if (vst76Variant)
                 {
-                    AddTunerNavButton(Vst76HomePageId, "软件首页", TemplateNavIcon("软件首页", Vst76HomePageId));
-                    AddTunerNavButton("toolbox", "系统工具", TemplateNavIcon("系统工具", "toolbox"));
-                    if (SoftwareCatalogEnabled()) AddTunerNavButton(SoftwareCatalogPageId, "系统软件", TemplateNavIcon("系统软件", SoftwareCatalogPageId));
-                    AddTunerNavButton("driver", "声卡驱动", TemplateNavIcon("声卡驱动", "driver"));
-                    AddTunerNavButton("plugins", "宿主插件", TemplateNavIcon("宿主插件", "plugins"));
-                    AddTunerNavButton("websites", "常用网址", TemplateNavIcon("常用网址", "websites"));
+                    foreach (object item in tunerSidebar)
+                    {
+                        Dictionary<string, object> row = AsDict(item);
+                        string id = GetText(row, "id", "");
+                        if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (tunerAdded.Contains(id) || IsStudioOverviewPage(id, AsDict(Get(tunerPages, id)))) continue;
+                        if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled()) continue;
+                        string label = NavLabel(row, id, tunerPages);
+                        AddTunerNavButton(id, label, TemplateNavIcon(label, id));
+                        tunerAdded.Add(id);
+                    }
+                    if (tunerAdded.Count == 0)
+                    {
+                        AddTunerNavButton(Vst76HomePageId, "软件首页", TemplateNavIcon("软件首页", Vst76HomePageId));
+                        tunerAdded.Add(Vst76HomePageId);
+                    }
                     if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
-                    else ShowPage(Vst76HomePageId);
+                    else foreach (string key in navButtons.Keys) { ShowPage(key); break; }
                     nav.HorizontalScroll.Visible = false;
                     nav.HorizontalScroll.Enabled = false;
                     return;
@@ -3486,7 +3551,7 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsStudioOverviewPage(id, AsDict(Get(tunerPages, id)))) continue;
                     string label = NavLabel(row, id, tunerPages);
                     AddTunerNavButton(id, label, TemplateNavIcon(label, id));
                     tunerAdded.Add(id);
@@ -3496,8 +3561,8 @@ namespace ToolboxClient
                 {
                     if (tunerAdded.Contains(pageId)) continue;
                     if (pageId.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
                     Dictionary<string, object> page = AsDict(tunerPages[pageId]);
+                    if (IsStudioOverviewPage(pageId, page)) continue;
                     string label = PageLabel(page, pageId);
                     AddTunerNavButton(pageId, label, TemplateNavIcon(label, pageId));
                     tunerAdded.Add(pageId);
@@ -3553,8 +3618,8 @@ namespace ToolboxClient
                 Dictionary<string, object> row = AsDict(item);
                 string id = GetText(row, "id", "");
                 if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
-                if (studioVariant && id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
+                if (!studioVariant && IsStudioOverviewPage(id, AsDict(Get(pages, id)))) continue;
+                if (studioVariant && IsStudioOverviewPage(id, AsDict(Get(pages, id))) && added.Contains(StudioOverviewPageId)) continue;
                 string label = NavLabel(row, id, pages);
                 AddNavButton(id, label);
                 added.Add(id);
@@ -3563,9 +3628,9 @@ namespace ToolboxClient
             foreach (string pageId in pages.Keys)
             {
                 if (added.Contains(pageId)) continue;
-                if (!studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
-                if (studioVariant && pageId.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) && added.Contains(StudioOverviewPageId)) continue;
                 Dictionary<string, object> page = AsDict(pages[pageId]);
+                if (!studioVariant && IsStudioOverviewPage(pageId, page)) continue;
+                if (studioVariant && IsStudioOverviewPage(pageId, page) && added.Contains(StudioOverviewPageId)) continue;
                 AddNavButton(pageId, PageLabel(page, pageId));
                 added.Add(pageId);
             }
@@ -3869,7 +3934,8 @@ namespace ToolboxClient
                 if (!softwareCatalogLayoutUpdating) RenderSoftwareCatalogPage();
                 return;
             }
-            if (vst76Variant && currentPage.Equals(Vst76HomePageId, StringComparison.OrdinalIgnoreCase))
+            Dictionary<string, object> configuredPages = AsDict(Get(config, "pages"));
+            if (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(configuredPages, currentPage))))
             {
                 RenderVst76HomePage();
                 status.Text = "服务器已连接  |  运行时长 " + LocalUptimeText();
@@ -4055,9 +4121,11 @@ namespace ToolboxClient
             currentPage = id;
             MarkNavButtonActive(id);
 
-            if (vst76Variant && id.Equals(Vst76HomePageId, StringComparison.OrdinalIgnoreCase))
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            if (vst76Variant && IsVst76HomePage(id, AsDict(Get(pages, id))))
             {
-                title.Text = "软件首页";
+                Dictionary<string, object> homePage = AsDict(Get(pages, id));
+                title.Text = homePage.Count == 0 ? "软件首页" : PageLabel(homePage, id);
                 RenderVst76HomePage();
                 status.Text = "服务器已连接  |  运行时长 " + LocalUptimeText();
                 return;
@@ -4100,7 +4168,6 @@ namespace ToolboxClient
                 return;
             }
 
-            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             if (!pages.ContainsKey(id))
             {
                 title.Text = portalVariant ? PortalLabel(FriendlyId(id), id) : FriendlyId(id);
@@ -5318,7 +5385,8 @@ namespace ToolboxClient
         private List<Dictionary<string, object>> Vst76HomeButtons()
         {
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            Dictionary<string, object> page = pages.ContainsKey(Vst76HomePageId) ? AsDict(pages[Vst76HomePageId]) : new Dictionary<string, object>();
+            string homePageId = IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage))) ? currentPage : ConfiguredVst76HomePageId();
+            Dictionary<string, object> page = pages.ContainsKey(homePageId) ? AsDict(pages[homePageId]) : new Dictionary<string, object>();
             IList<object> sections = AsList(Get(page, "sections"));
             if (sections.Count == 0 && pages.ContainsKey(StudioOverviewPageId)) sections = AsList(Get(AsDict(pages[StudioOverviewPageId]), "sections"));
             List<Dictionary<string, object>> buttons = new List<Dictionary<string, object>>();
@@ -5353,7 +5421,8 @@ namespace ToolboxClient
                     BeginInvoke(new Action(delegate
                     {
                         vst76MetricsLoading = false;
-                        if (version != vst76MetricsRequestVersion || !currentPage.Equals(Vst76HomePageId, StringComparison.OrdinalIgnoreCase)) return;
+                        Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+                        if (version != vst76MetricsRequestVersion || !IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage)))) return;
                         ApplyVst76MetricSnapshot(snapshot);
                     }));
                 }
@@ -9409,15 +9478,57 @@ namespace ToolboxClient
         private void ExecuteResourceSearchResult(ResourceSearchEntry entry)
         {
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
+            if (!ConfirmButtonGuard(AsDict(Get(entry.Item, "guard")), entry.Name)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
-            RunAction(action, GetTarget(entry.Item, action), GetText(entry.Item, "custom_script", ""), entry.Name, GetBackupUrl(entry.Item), GetBackupPageUrl(entry.Item));
+            RunAction(
+                action,
+                GetTarget(entry.Item, action),
+                GetText(entry.Item, "custom_script", ""),
+                entry.Name,
+                GetBackupUrl(entry.Item),
+                GetBackupPageUrl(entry.Item),
+                GetText(entry.Item, "download_directory", GetText(entry.Item, "download_path", "")),
+                BoolValue(entry.Item, "download_delete_on_exit", false));
         }
 
         private void RunResourceItemAction(Dictionary<string, object> item, ActionInfo info)
         {
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
-            RunAction(info.Action, info.Target, info.CustomScript, info.Name, info.BackupUrl, info.BackupPageUrl);
+            if (!ConfirmButtonGuard(AsDict(Get(item, "guard")), info.Name)) return;
+            RunAction(
+                info.Action,
+                info.Target,
+                info.CustomScript,
+                info.Name,
+                info.BackupUrl,
+                info.BackupPageUrl,
+                GetText(item, "download_directory", GetText(item, "download_path", "")),
+                BoolValue(item, "download_delete_on_exit", false));
+        }
+
+        private bool ConfirmButtonGuard(Dictionary<string, object> guard, string name)
+        {
+            if (guard == null || guard.Count == 0) return true;
+            if (BoolValue(guard, "requirePassword", false) && !PromptPassword(GetText(guard, "passwordHash", ""), "访问验证", "请输入此按钮的专用密码")) return false;
+            if (BoolValue(guard, "requireConfirm", false) && !ShowStyledConfirm(GetText(guard, "confirmMessage", "确定要继续执行此操作吗？"), name)) return false;
+            return true;
+        }
+
+        private bool ShowStyledConfirm(string message, string title)
+        {
+            using (Form dialog = new Form { Text = title, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, ClientSize = new Size(420, 170), Font = new Font("Microsoft YaHei UI", 9F), BackColor = DialogBodyBack(), ForeColor = TextColor })
+            {
+                Label text = new Label { Left = 22, Top = 22, Width = 376, Height = 62, Text = message, AutoEllipsis = true, BackColor = Color.Transparent, ForeColor = TextColor };
+                Button ok = MakeDialogButton("继续");
+                Button cancel = MakeDialogButton("取消");
+                ok.SetBounds(220, 112, 82, 30);
+                cancel.SetBounds(312, 112, 82, 30);
+                ok.DialogResult = DialogResult.OK;
+                cancel.DialogResult = DialogResult.Cancel;
+                dialog.Controls.Add(text); dialog.Controls.Add(ok); dialog.Controls.Add(cancel); dialog.AcceptButton = ok; dialog.CancelButton = cancel;
+                return dialog.ShowDialog(this) == DialogResult.OK;
+            }
         }
 
         private void AddEmptyMessage(string message)
@@ -9470,12 +9581,13 @@ namespace ToolboxClient
 
         private static string NormalizeButtonContentLayout(string value)
         {
-            return String.Equals((value ?? "").Trim(), "icon_top", StringComparison.OrdinalIgnoreCase) ? "icon_top" : "icon_left";
+            string normalized = (value ?? "").Trim().ToLowerInvariant();
+            return normalized == "none" || normalized == "icon_top" ? normalized : "icon_left";
         }
 
         private bool ButtonContentLayoutAppliesToCurrentPage()
         {
-            return !buttonContentLayoutScopeEnabled || buttonContentLayoutPages.Count == 0 || buttonContentLayoutPages.Contains(currentPage ?? "");
+            return buttonContentLayout != "none" && (!buttonContentLayoutScopeEnabled || buttonContentLayoutPages.Count == 0 || buttonContentLayoutPages.Contains(currentPage ?? ""));
         }
 
         private void ApplyBusinessButtonLayout(Control control, bool hasConfiguredIcon)
@@ -9881,7 +9993,7 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target, string customScript, string name, string backupUrl = "", string backupPageUrl = "")
+        private void RunAction(string action, string target, string customScript, string name, string backupUrl = "", string backupPageUrl = "", string customDownloadDirectory = "", bool deleteOnExit = false)
         {
             try
             {
@@ -9895,7 +10007,7 @@ namespace ToolboxClient
                 {
                     string primary = String.IsNullOrWhiteSpace(target) ? backupUrl : target;
                     string fallback = String.IsNullOrWhiteSpace(target) ? "" : backupUrl;
-                    DownloadFile(ResolveServerUrl(primary), name, ResolveServerUrl(fallback), ResolveServerUrl(backupPageUrl));
+                    DownloadFile(ResolveServerUrl(primary), name, ResolveServerUrl(fallback), ResolveServerUrl(backupPageUrl), customDownloadDirectory, deleteOnExit);
                 }
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
@@ -10345,24 +10457,33 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName)
         {
-            DownloadFile(url, displayName, "", "");
+            DownloadFile(url, displayName, "", "", "", false);
         }
 
         private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl)
+        {
+            DownloadFile(url, displayName, backupUrl, backupPageUrl, "", false);
+        }
+
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit)
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             ShowVst76InlineDownloadPreparing(displayName);
             if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
             status.Text = PortalText("正在解析下载地址...", "Preparing download...");
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, backupUrl, backupPageUrl); });
+            customDirectory = (customDirectory ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string backupUrl, string backupPageUrl)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
+            result.CustomDirectory = customDirectory;
+            result.DeleteOnExit = deleteOnExit;
             result.BackupUrl = (backupUrl ?? "").Trim();
             result.BackupPageUrl = (backupPageUrl ?? "").Trim();
             try
@@ -10380,9 +10501,15 @@ namespace ToolboxClient
                 }
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
+                    if (IsServerDownloadEndpoint(result.Download.Url) && !IsUsefulDownloadFileName(result.Download.FileName))
+                    {
+                        string fallbackName = SafeDownloadFileName(result.DisplayName);
+                        if (String.IsNullOrWhiteSpace(fallbackName)) fallbackName = "download";
+                        if (!Path.HasExtension(fallbackName)) fallbackName += ".exe";
+                        result.Download.FileName = fallbackName;
+                    }
                     result.FileName = SafeDownloadFileName(result.Download.FileName);
-                    string dir = GetDownloadDirectory();
-                    Directory.CreateDirectory(dir);
+                    string dir = EnsureWritableDownloadDirectory(customDirectory);
                     result.Path = Path.Combine(dir, result.FileName);
                     result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
                 }
@@ -10408,6 +10535,27 @@ namespace ToolboxClient
                 if (result.Download == null) result.Error = ex;
             }
 
+            if (result.Error == null && result.Download != null && !result.Download.BrowserOnly && String.IsNullOrWhiteSpace(result.Path))
+            {
+                try
+                {
+                    if (IsServerDownloadEndpoint(result.Download.Url) && !IsUsefulDownloadFileName(result.Download.FileName))
+                    {
+                        string fallbackName = SafeDownloadFileName(result.DisplayName);
+                        if (String.IsNullOrWhiteSpace(fallbackName)) fallbackName = "download";
+                        if (!Path.HasExtension(fallbackName)) fallbackName += ".exe";
+                        result.Download.FileName = fallbackName;
+                    }
+                    result.FileName = SafeDownloadFileName(result.Download.FileName);
+                    result.Path = Path.Combine(EnsureWritableDownloadDirectory(customDirectory), result.FileName);
+                    result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
+                }
+                catch (Exception ex)
+                {
+                    result.Error = ex;
+                }
+            }
+
             try
             {
                 BeginInvoke(new Action(delegate { FinishDownloadRequest(result); }));
@@ -10425,6 +10573,11 @@ namespace ToolboxClient
                 if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
                 ResetVst76InlineDownloadProgress(result.DisplayName);
                 if (!String.IsNullOrWhiteSpace(result.BackupPageUrl)) Open(result.BackupPageUrl);
+                if (result.Error is IOException || result.Error is UnauthorizedAccessException)
+                {
+                    status.Text = PortalText("下载目录不可用，且没有找到其他可写磁盘。", "No writable download folder is available.");
+                    return;
+                }
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
@@ -10453,8 +10606,7 @@ namespace ToolboxClient
             string path = result.Path;
             if (String.IsNullOrWhiteSpace(path))
             {
-                string dir = GetDownloadDirectory();
-                Directory.CreateDirectory(dir);
+                string dir = EnsureWritableDownloadDirectory(result.CustomDirectory);
                 path = Path.Combine(dir, fileName);
             }
 
@@ -10478,6 +10630,8 @@ namespace ToolboxClient
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
             task.DisplayName = result.DisplayName;
+            task.CustomDownloadDirectory = result.CustomDirectory;
+            task.DeleteOnExit = result.DeleteOnExit;
             task.BrowserUrl = download.BrowserUrl;
             task.BackupUrl = result.BackupUrl;
             task.BackupPageUrl = result.BackupPageUrl;
@@ -10534,9 +10688,17 @@ namespace ToolboxClient
             return request;
         }
 
+        private static bool IsServerDownloadEndpoint(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return false;
+            return uri.AbsolutePath.Equals("/api/toolbox/builtin-download", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool ShouldFastStartDownload(DownloadRequest request)
         {
             if (request == null || request.BrowserOnly) return false;
+            if (IsServerDownloadEndpoint(request.Url)) return true;
 
             string directName = DirectDownloadFileNameFromText(request.Url);
             if (String.IsNullOrWhiteSpace(directName)) directName = DirectDownloadFileNameFromText(request.OriginalUrl);
@@ -11848,7 +12010,7 @@ namespace ToolboxClient
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
                 string cancelMessage = task.Segmented ? "已取消分片下载，临时文件已清理，下次点击会重新开始下载。" : "已保留未完成文件，下次点击会继续下载。";
-                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), cancelMessage);
+                AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("已取消", "Canceled"), cancelMessage, task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
                 StartQueuedDownloads();
@@ -11864,7 +12026,7 @@ namespace ToolboxClient
                     ? LaunchDownloadedFile(task.Path)
                     : "已下载";
                 status.Text = launchStatus + "：" + task.FileName;
-                AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "");
+                AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "", task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
                 StartQueuedDownloads();
@@ -11882,7 +12044,7 @@ namespace ToolboxClient
             {
                 status.Text = PortalText("下载失败，请检查网络或文件地址。", "Download failed. Please check the network or file URL.");
             }
-            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。");
+            AddDownloadRecord(task.FileName, task.OriginalUrl, File.Exists(task.Path) ? task.Path : "", PortalText("下载失败", "Failed"), CleanDownloadError(failure.Message) + "；已多次自动续传重试。", task.DeleteOnExit);
             RemoveActiveDownload(task);
             FillDownloadRecords();
             StartQueuedDownloads();
@@ -11984,6 +12146,8 @@ namespace ToolboxClient
                     task.Segmented = state.Segmented;
                     task.DisableSegmentedDownload = state.DisableSegmentedDownload;
                     task.FastStartDirectDownload = state.FastStartDirectDownload;
+                    task.CustomDownloadDirectory = state.CustomDownloadDirectory ?? "";
+                    task.DeleteOnExit = state.DeleteOnExit;
                     task.BackupUrl = state.BackupUrl ?? "";
                     task.BackupPageUrl = state.BackupPageUrl ?? "";
                     task.UsingBackup = state.UsingBackup;
@@ -12036,6 +12200,8 @@ namespace ToolboxClient
             state.Segmented = task.Segmented;
             state.DisableSegmentedDownload = task.DisableSegmentedDownload;
             state.FastStartDirectDownload = task.FastStartDirectDownload;
+            state.CustomDownloadDirectory = task.CustomDownloadDirectory;
+            state.DeleteOnExit = task.DeleteOnExit;
             state.BackupUrl = task.BackupUrl;
             state.BackupPageUrl = task.BackupPageUrl;
             state.UsingBackup = task.UsingBackup;
@@ -12273,6 +12439,49 @@ namespace ToolboxClient
             return Environment.ExpandEnvironmentVariables(dir);
         }
 
+        private string EnsureWritableDownloadDirectory(string preferredDirectory = "")
+        {
+            string configured = String.IsNullOrWhiteSpace(preferredDirectory) ? GetDownloadDirectory() : Environment.ExpandEnvironmentVariables(preferredDirectory.Trim());
+            List<string> candidates = new List<string>();
+            if (!String.IsNullOrWhiteSpace(configured)) candidates.Add(configured);
+
+            if (String.IsNullOrWhiteSpace(preferredDirectory))
+            {
+                string brand = SafeFolderName(GetText(AsDict(Get(config, "app")), "title", "Toolbox"));
+                foreach (DriveInfo drive in ReadyDownloadDrives())
+                {
+                    string candidate = Path.Combine(drive.RootDirectory.FullName, brand);
+                    if (!candidates.Exists(delegate(string value) { return value.Equals(candidate, StringComparison.OrdinalIgnoreCase); }))
+                        candidates.Add(candidate);
+                }
+            }
+
+            Exception lastError = null;
+            foreach (string candidate in candidates)
+            {
+                try
+                {
+                    string expanded = Environment.ExpandEnvironmentVariables(candidate);
+                    Directory.CreateDirectory(expanded);
+                    string probe = Path.Combine(expanded, ".toolbox-write-test-" + Guid.NewGuid().ToString("N") + ".tmp");
+                    using (FileStream stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    File.Delete(probe);
+                    if (!expanded.Equals(configured, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ClientSettings settings = LoadClientSettings();
+                        settings.DownloadDirectory = expanded;
+                        SaveClientSettings(settings);
+                    }
+                    return expanded;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+            }
+            throw new IOException("没有可写的下载目录。", lastError);
+        }
+
         private bool IsOldAutomaticRemovableDirectory(string dir)
         {
             try
@@ -12391,7 +12600,7 @@ namespace ToolboxClient
             File.WriteAllText(ClientSettingsPath(), serializer.Serialize(settings), Encoding.UTF8);
         }
 
-        private void AddDownloadRecord(string name, string url, string savedPath, string result, string message)
+        private void AddDownloadRecord(string name, string url, string savedPath, string result, string message, bool deleteOnExit = false)
         {
             try
             {
@@ -12403,7 +12612,8 @@ namespace ToolboxClient
                     Url = url,
                     SavedPath = savedPath,
                     Result = result,
-                    Message = message
+                    Message = message,
+                    DeleteOnExit = deleteOnExit
                 });
                 while (records.Count > 100) records.RemoveAt(records.Count - 1);
                 SaveDownloadRecords(records);
@@ -14241,7 +14451,10 @@ namespace ToolboxClient
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             SavePausedDownloadTasks();
-            CleanupDownloadedFilesOnExit();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { CleanupDownloadedFilesOnExit(); } catch { }
+            });
             base.OnFormClosing(e);
         }
 
@@ -15389,12 +15602,17 @@ namespace ToolboxClient
         private void CleanupDownloadedFilesOnExit()
         {
             ClientSettings settings = LoadClientSettings();
-            if (!DeleteDownloadsOnExitValue(settings)) return;
-            string downloadDirectory = GetDownloadDirectory();
+            bool deleteAll = DeleteDownloadsOnExitValue(settings);
             List<DownloadRecord> records = LoadDownloadRecords();
-            foreach (DownloadRecord record in records) DeleteDownloadedFile(record);
-            SaveDownloadRecords(new List<DownloadRecord>());
-            DeleteDownloadDirectoryOnExit(downloadDirectory);
+            if (!deleteAll && !records.Exists(delegate(DownloadRecord record) { return record != null && record.DeleteOnExit; })) return;
+            List<DownloadRecord> remaining = new List<DownloadRecord>();
+            foreach (DownloadRecord record in records)
+            {
+                if (deleteAll || (record != null && record.DeleteOnExit)) DeleteDownloadedFile(record);
+                else remaining.Add(record);
+            }
+            SaveDownloadRecords(remaining);
+            if (deleteAll) DeleteDownloadDirectoryOnExit(GetDownloadDirectory());
         }
 
         private void DeleteDownloadDirectoryOnExit(string directory)
@@ -18220,6 +18438,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string SavedPath { get; set; }
             public string Result { get; set; }
             public string Message { get; set; }
+            public bool DeleteOnExit { get; set; }
         }
 
         internal sealed class PausedDownloadTaskState
@@ -18236,6 +18455,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public bool Segmented { get; set; }
             public bool DisableSegmentedDownload { get; set; }
             public bool FastStartDirectDownload { get; set; }
+            public string CustomDownloadDirectory { get; set; }
+            public bool DeleteOnExit { get; set; }
             public string BackupUrl { get; set; }
             public string BackupPageUrl { get; set; }
             public bool UsingBackup { get; set; }
@@ -18272,6 +18493,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string Path = "";
             public DownloadRecord ExistingRecord;
             public Exception Error;
+            public string CustomDirectory = "";
+            public bool DeleteOnExit;
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public bool UsingBackup;
@@ -18332,6 +18555,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public readonly string FileName;
             public string DisplayName = "";
             public string Path;
+            public string CustomDownloadDirectory = "";
+            public bool DeleteOnExit;
             public string BrowserUrl = "";
             public string BackupUrl = "";
             public string BackupPageUrl = "";

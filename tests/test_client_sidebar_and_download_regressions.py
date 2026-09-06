@@ -1,0 +1,81 @@
+import unittest
+from pathlib import Path
+
+
+CLIENT_SOURCE = (
+    Path(__file__).parents[1]
+    / "src"
+    / "ToolboxAdminApi-oneclick"
+    / "client-template"
+    / "ToolboxClient.cs"
+)
+
+
+class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")
+
+    def method(self, start, end):
+        begin = self.source.index(start)
+        finish = self.source.index(end, begin)
+        return self.source[begin:finish]
+
+    def test_audio_sidebar_does_not_inject_unconfigured_pages(self):
+        build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
+        audio_branch = build_nav[build_nav.index("if (audioVariant)"):build_nav.index("if (tunerVariant || vst76Variant)")]
+        self.assertIn('foreach (object item in AsList(Get(config, "sidebar")))', audio_branch)
+        self.assertNotIn('AddAudioNavButton("toolbox"', audio_branch)
+
+    def test_vst76_sidebar_uses_backend_order_without_legacy_fixed_menu(self):
+        build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
+        vst_start = build_nav.index("if (vst76Variant)")
+        first_loop = build_nav.index("foreach (object item in tunerSidebar)", vst_start)
+        vst_end = build_nav.index("foreach (object item in tunerSidebar)", first_loop + 1)
+        vst_branch = build_nav[vst_start:vst_end]
+        self.assertIn("foreach (object item in tunerSidebar)", vst_branch)
+        self.assertIn("NavLabel(row, id, tunerPages)", vst_branch)
+        for legacy_call in (
+            'AddTunerNavButton("toolbox"',
+            "AddTunerNavButton(SoftwareCatalogPageId",
+            'AddTunerNavButton("driver"',
+            'AddTunerNavButton("plugins"',
+            'AddTunerNavButton("websites"',
+        ):
+            self.assertNotIn(legacy_call, vst_branch)
+
+    def test_configured_home_label_renders_flagship_home(self):
+        self.assertIn('String.Equals(label, "首页", StringComparison.OrdinalIgnoreCase)', self.source)
+        self.assertIn('String.Equals(label, "软件首页", StringComparison.OrdinalIgnoreCase)', self.source)
+        show_page = self.method("private void ShowPage(string id)", "private void ShowTemplateUtilityPage(")
+        self.assertIn("IsVst76HomePage(id, AsDict(Get(pages, id)))", show_page)
+        self.assertIn("RenderVst76HomePage();", show_page)
+
+    def test_non_studio_variants_hide_overview_by_id_or_label(self):
+        self.assertIn("private bool IsStudioOverviewPage", self.source)
+        self.assertIn('String.Equals(label.Trim(), "系统概览", StringComparison.OrdinalIgnoreCase)', self.source)
+        self.assertIn("if (!studioVariant && IsStudioOverviewPage", self.source)
+
+    def test_button_download_policy_reaches_tasks_records_and_paused_state(self):
+        required = (
+            'GetText(item, "download_directory", GetText(item, "download_path", ""))',
+            'BoolValue(item, "download_delete_on_exit", false)',
+            "EnsureWritableDownloadDirectory(customDirectory)",
+            "task.CustomDownloadDirectory = result.CustomDirectory;",
+            "task.DeleteOnExit = result.DeleteOnExit;",
+            "state.CustomDownloadDirectory = task.CustomDownloadDirectory;",
+            "task.CustomDownloadDirectory = state.CustomDownloadDirectory ?? \"\";",
+            "DeleteOnExit = deleteOnExit",
+            "record != null && record.DeleteOnExit",
+        )
+        for value in required:
+            self.assertIn(value, self.source)
+
+    def test_download_cleanup_is_not_blocking_form_close(self):
+        closing = self.method("protected override void OnFormClosing", "private void PositionSettingsPanel")
+        self.assertIn("ThreadPool.QueueUserWorkItem", closing)
+        self.assertIn("CleanupDownloadedFilesOnExit", closing)
+
+
+if __name__ == "__main__":
+    unittest.main()
