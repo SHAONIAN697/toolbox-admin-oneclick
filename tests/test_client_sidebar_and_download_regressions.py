@@ -48,18 +48,32 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
 
     def test_flagship_configured_buttons_use_catalog_style_icon_cards(self):
         self.assertIn("CreateVst76ConfiguredActionCard", self.source)
+        group = self.method("private Panel CreateTunerGroup", "private Control CreateVst76ConfiguredActionCard")
+        self.assertIn("Vst76ConfiguredButtonUsesCard(buttons[i])", group)
+        self.assertIn("Control button = useCard", group)
+        self.assertIn('vst76Variant && !useCard && action == "download"', group)
         card = self.method("private Control CreateVst76ConfiguredActionCard", "private Control CreateTunerActionButton")
         self.assertIn("CreateSoftwareCatalogIconImage(iconEntry, accent, 44)", card)
         self.assertIn("QueueSoftwareCatalogIconLoad(iconUrl, icon)", card)
         self.assertIn("RunResourceItemAction(item, info)", card)
         self.assertIn("CreateVst76InlineProgress(nameText, true)", card)
 
-    def test_configured_home_label_renders_flagship_home(self):
-        self.assertIn('String.Equals(label, "首页", StringComparison.OrdinalIgnoreCase)', self.source)
-        self.assertIn('String.Equals(label, "软件首页", StringComparison.OrdinalIgnoreCase)', self.source)
+    def test_configured_home_label_is_not_replaced_by_flagship_overview(self):
+        home_match = self.method("private bool IsVst76HomePage", "private bool IsConfiguredVst76HomeLabel")
+        self.assertIn("Vst76HomePageId", home_match)
+        self.assertIn("StudioOverviewPageId", home_match)
+        self.assertNotIn('String.Equals(label, "首页"', home_match)
         show_page = self.method("private void ShowPage(string id)", "private void ShowTemplateUtilityPage(")
         self.assertIn("IsVst76HomePage(id, AsDict(Get(pages, id)))", show_page)
         self.assertIn("RenderVst76HomePage();", show_page)
+        self.assertIn('title.Text = "系统概览";', show_page)
+        self.assertIn('RenderSections(AsList(Get(page, "sections")));', show_page)
+
+    def test_brand_avatar_keeps_remote_loader_and_can_retry(self):
+        loader = self.method("private void ApplyAppIcon", "private void SetAppIconImage")
+        self.assertIn("LoadRemoteImage(resolved, 34, 34)", loader)
+        self.assertIn('failedIcons.Remove("app|" + cacheKey)', loader)
+        self.assertNotIn("LoadEmbeddedBrandIcon", loader)
 
     def test_non_studio_variants_hide_overview_by_id_or_label(self):
         self.assertIn("private bool IsStudioOverviewPage", self.source)

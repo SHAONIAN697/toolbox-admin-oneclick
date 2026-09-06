@@ -2281,8 +2281,15 @@ namespace ToolboxClient
 
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image remote =
-                    LoadRemoteImage(resolved, 34, 34);
+                Image remote = null;
+                for (int attempt = 0; attempt < 2 && remote == null; attempt++)
+                {
+                    remote = LoadRemoteImage(resolved, 34, 34);
+                    if (remote == null && attempt == 0) Thread.Sleep(500);
+                }
+
+                lock (iconCacheLock)
+                    failedIcons.Remove("app|" + cacheKey);
 
                 if (remote == null) return;
 
@@ -3470,7 +3477,12 @@ namespace ToolboxClient
 
         private bool IsVst76HomePage(string id, Dictionary<string, object> page)
         {
-            if (String.Equals(id, Vst76HomePageId, StringComparison.OrdinalIgnoreCase)) return true;
+            return String.Equals(id, Vst76HomePageId, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(id, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsConfiguredVst76HomeLabel(string id, Dictionary<string, object> page)
+        {
             string label = page == null ? "" : PageLabel(page, id);
             foreach (object item in AsList(Get(config, "sidebar")))
             {
@@ -3487,13 +3499,17 @@ namespace ToolboxClient
         private string ConfiguredVst76HomePageId()
         {
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            string overviewPageId = "";
             foreach (object item in AsList(Get(config, "sidebar")))
             {
                 Dictionary<string, object> row = AsDict(item);
                 string id = GetText(row, "id", "");
                 if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                if (IsVst76HomePage(id, AsDict(Get(pages, id)))) return id;
+                Dictionary<string, object> page = AsDict(Get(pages, id));
+                if (IsConfiguredVst76HomeLabel(id, page)) return id;
+                if (String.IsNullOrWhiteSpace(overviewPageId) && IsVst76HomePage(id, page)) overviewPageId = id;
             }
+            if (!String.IsNullOrWhiteSpace(overviewPageId)) return overviewPageId;
             return navButtons.ContainsKey(Vst76HomePageId) ? Vst76HomePageId : "";
         }
 
@@ -3542,7 +3558,7 @@ namespace ToolboxClient
                         Dictionary<string, object> row = AsDict(item);
                         string id = GetText(row, "id", "");
                         if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (tunerAdded.Contains(id) || IsStudioOverviewPage(id, AsDict(Get(tunerPages, id)))) continue;
+                        if (tunerAdded.Contains(id)) continue;
                         if (id.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) && !SoftwareCatalogEnabled()) continue;
                         string label = NavLabel(row, id, tunerPages);
                         AddTunerNavButton(id, label, TemplateNavIcon(label, id));
@@ -3555,7 +3571,7 @@ namespace ToolboxClient
                     }
                     if (tunerAdded.Count == 0)
                     {
-                        AddTunerNavButton(Vst76HomePageId, "软件首页", TemplateNavIcon("软件首页", Vst76HomePageId));
+                        AddTunerNavButton(Vst76HomePageId, "系统概览", TemplateNavIcon("系统概览", Vst76HomePageId));
                         tunerAdded.Add(Vst76HomePageId);
                     }
                     if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
@@ -4144,8 +4160,7 @@ namespace ToolboxClient
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             if (vst76Variant && IsVst76HomePage(id, AsDict(Get(pages, id))))
             {
-                Dictionary<string, object> homePage = AsDict(Get(pages, id));
-                title.Text = homePage.Count == 0 ? "软件首页" : PageLabel(homePage, id);
+                title.Text = "系统概览";
                 RenderVst76HomePage();
                 status.Text = "服务器已连接  |  运行时长 " + LocalUptimeText();
                 return;
@@ -4850,9 +4865,21 @@ namespace ToolboxClient
         {
             int columns = Math.Max(2, Math.Min(4, width / 150));
             int gap = vst76Variant ? 12 : 8;
-            int buttonHeight = vst76Variant ? 150 : 42;
+            int buttonHeight = 42;
+            int cardHeight = 150;
+            int inlineProgressHeight = 18;
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
-            int groupHeight = 56 + 16 + rows * buttonHeight + Math.Max(0, rows - 1) * gap + 16;
+            int[] rowHeights = new int[rows];
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                bool useCard = vst76Variant && Vst76ConfiguredButtonUsesCard(buttons[i]);
+                string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
+                int itemHeight = useCard ? cardHeight : buttonHeight + (vst76Variant && action == "download" ? inlineProgressHeight : 0);
+                rowHeights[i / columns] = Math.Max(rowHeights[i / columns], itemHeight);
+            }
+            int rowsHeight = 0;
+            for (int row = 0; row < rows; row++) rowsHeight += Math.Max(buttonHeight, rowHeights[row]);
+            int groupHeight = 56 + 16 + rowsHeight + Math.Max(0, rows - 1) * gap + 16;
 
             RoundedPanel panel = new RoundedPanel
             {
@@ -4886,13 +4913,31 @@ namespace ToolboxClient
             {
                 int row = i / columns;
                 int col = i % columns;
-                int buttonTop = top + row * (buttonHeight + gap);
-                Control button = vst76Variant
-                    ? CreateVst76ConfiguredActionCard(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i)
+                int buttonTop = top;
+                for (int previousRow = 0; previousRow < row; previousRow++) buttonTop += Math.Max(buttonHeight, rowHeights[previousRow]) + gap;
+                bool useCard = vst76Variant && Vst76ConfiguredButtonUsesCard(buttons[i]);
+                Control button = useCard
+                    ? CreateVst76ConfiguredActionCard(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, cardHeight, i)
                     : CreateTunerActionButton(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
                 panel.Controls.Add(button);
+                string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
+                if (vst76Variant && !useCard && action == "download")
+                {
+                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false);
+                    progress.Left = button.Left;
+                    progress.Top = button.Bottom;
+                    progress.Width = button.Width;
+                    progress.Height = inlineProgressHeight;
+                    panel.Controls.Add(progress);
+                    RegisterVst76InlineDownloadProgress(progress);
+                }
             }
             return panel;
+        }
+
+        private static bool Vst76ConfiguredButtonUsesCard(Dictionary<string, object> item)
+        {
+            return !String.IsNullOrWhiteSpace(GetText(item, "icon", ""));
         }
 
         private Control CreateVst76ConfiguredActionCard(Dictionary<string, object> item, int left, int top, int width, int height, int index)
@@ -4951,10 +4996,10 @@ namespace ToolboxClient
             {
                 Image image = icon.Image;
                 icon.Image = null;
-                if (image != null) image.Dispose();
-                IDisposable stream = icon.Tag as IDisposable;
+                IDisposable imageState = icon.Tag as IDisposable;
                 icon.Tag = null;
-                if (stream != null) stream.Dispose();
+                if (imageState != null) imageState.Dispose();
+                else if (image != null) image.Dispose();
             };
             Label name = new Label
             {
@@ -5537,7 +5582,7 @@ namespace ToolboxClient
         private List<Dictionary<string, object>> Vst76HomeButtons()
         {
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            string homePageId = IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage))) ? currentPage : ConfiguredVst76HomePageId();
+            string homePageId = IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage))) ? currentPage : StudioOverviewPageId;
             Dictionary<string, object> page = pages.ContainsKey(homePageId) ? AsDict(pages[homePageId]) : new Dictionary<string, object>();
             IList<object> sections = AsList(Get(page, "sections"));
             if (sections.Count == 0 && pages.ContainsKey(StudioOverviewPageId)) sections = AsList(Get(AsDict(pages[StudioOverviewPageId]), "sections"));
@@ -7306,6 +7351,41 @@ namespace ToolboxClient
             }
         }
 
+        private Color SoftwareCatalogPageBackColor()
+        {
+            return audioVariant ? Color.FromArgb(248, 249, 250) : Bg;
+        }
+
+        private Color SoftwareCatalogPanelBackColor()
+        {
+            return audioVariant ? Color.White : PanelBg;
+        }
+
+        private Color SoftwareCatalogInputBackColor()
+        {
+            return audioVariant ? Color.FromArgb(252, 252, 252) : PanelBg2;
+        }
+
+        private Color SoftwareCatalogBorderColor()
+        {
+            return audioVariant ? Color.FromArgb(210, 215, 220) : Color.FromArgb(LightTheme ? 110 : 76, Line);
+        }
+
+        private Color SoftwareCatalogTextColor()
+        {
+            return audioVariant ? Color.FromArgb(24, 28, 32) : TextColor;
+        }
+
+        private Color SoftwareCatalogMutedColor()
+        {
+            return audioVariant ? Color.FromArgb(86, 98, 108) : Muted;
+        }
+
+        private Color SoftwareCatalogAccentColor()
+        {
+            return audioVariant ? Color.FromArgb(229, 67, 67) : Accent;
+        }
+
         private void RenderSoftwareCatalogPage()
         {
             if (recordsPanel != null) recordsPanel.Visible = false;
@@ -7321,7 +7401,7 @@ namespace ToolboxClient
                 ClearChildControls(content);
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
-                content.BackColor = Bg;
+                content.BackColor = SoftwareCatalogPageBackColor();
                 content.AutoScroll = true;
 
                 int available = SoftwareCatalogContentWidth();
@@ -7336,7 +7416,7 @@ namespace ToolboxClient
                     FlowDirection = FlowDirection.LeftToRight,
                     WrapContents = true,
                     AutoScroll = false,
-                    BackColor = Bg,
+                    BackColor = SoftwareCatalogPageBackColor(),
                     Padding = new Padding(0)
                 };
                 content.Controls.Add(softwareResultsPanel);
@@ -7368,8 +7448,8 @@ namespace ToolboxClient
                 Width = width,
                 Height = studioVariant ? 86 : 94,
                 Margin = new Padding(0, 0, 0, 14),
-                BackColor = PanelBg,
-                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                BackColor = SoftwareCatalogPanelBackColor(),
+                BorderColor = SoftwareCatalogBorderColor(),
                 Radius = 8
             };
             Label h = new Label
@@ -7379,7 +7459,7 @@ namespace ToolboxClient
                 Width = width - 36,
                 Height = 30,
                 Text = tunerVariant ? heading : "▦  " + heading,
-                ForeColor = TextColor,
+                ForeColor = audioVariant ? Color.FromArgb(229, 67, 67) : SoftwareCatalogTextColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, (studioVariant || tunerVariant) ? 15F : 16F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -7391,7 +7471,7 @@ namespace ToolboxClient
                 Width = width - 36,
                 Height = 28,
                 Text = subtitle,
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 9F, FontStyle.Regular),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -7408,8 +7488,8 @@ namespace ToolboxClient
                 Width = width,
                 Height = 118,
                 Margin = new Padding(0, 0, 0, 16),
-                BackColor = PanelBg,
-                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                BackColor = SoftwareCatalogPanelBackColor(),
+                BorderColor = SoftwareCatalogBorderColor(),
                 Radius = 8
             };
 
@@ -7420,7 +7500,7 @@ namespace ToolboxClient
                 Width = 220,
                 Height = 22,
                 Text = portalVariant ? PortalText("搜索软件 / 游戏", "Search apps / games") : "搜索软件 / 游戏",
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 9F, FontStyle.Bold)
             };
@@ -7435,8 +7515,8 @@ namespace ToolboxClient
                 Width = searchWidth,
                 Height = 30,
                 Text = softwareCatalogQuery,
-                BackColor = PanelBg2,
-                ForeColor = TextColor,
+                BackColor = SoftwareCatalogInputBackColor(),
+                ForeColor = SoftwareCatalogTextColor(),
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font(Font.FontFamily, 10F, FontStyle.Regular)
             };
@@ -7449,7 +7529,7 @@ namespace ToolboxClient
                 Width = categoryWidth,
                 Height = 22,
                 Text = portalVariant ? PortalText("分类", "Category") : "分类",
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 9F, FontStyle.Bold)
             };
@@ -7462,8 +7542,8 @@ namespace ToolboxClient
                 Width = categoryWidth,
                 Height = 30,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                BackColor = PanelBg2,
-                ForeColor = TextColor,
+                BackColor = SoftwareCatalogInputBackColor(),
+                ForeColor = SoftwareCatalogTextColor(),
                 FlatStyle = FlatStyle.Flat
             };
             string[] categories = SoftwareCatalogCategories();
@@ -7491,7 +7571,7 @@ namespace ToolboxClient
                 Width = width - 36,
                 Height = 22,
                 Text = "",
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8.5F, FontStyle.Regular),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -7573,7 +7653,7 @@ namespace ToolboxClient
                     if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
                 }
             }
-            bool useOnlyReferenceCatalog = vst76Variant && remoteReady && remoteSoftwareCatalogEntries.Count > 0;
+            bool useOnlyReferenceCatalog = (vst76Variant || audioVariant) && remoteReady && remoteSoftwareCatalogEntries.Count > 0;
             foreach (SoftwareCatalogEntry entry in localResults)
             {
                 if (useOnlyReferenceCatalog) break;
@@ -7600,13 +7680,13 @@ namespace ToolboxClient
             int available = SoftwareCatalogContentWidth();
             softwareResultsPanel.Width = available;
             int gap = 14;
-            int minCardWidth = vst76Variant ? 248 : 286;
+            int minCardWidth = (vst76Variant || audioVariant) ? 248 : 286;
             int columns = vst76Variant
                 ? (available >= 1000 ? 4 : (available >= 720 ? 3 : (available >= 500 ? 2 : 1)))
                 : (available >= 980 ? 3 : (available >= 640 ? 2 : 1));
             while (columns > 1 && ((available - gap * columns - 2) / columns) < minCardWidth) columns--;
             int cardWidth = Math.Max(minCardWidth, (available - gap * columns - 2) / columns);
-            int cardHeight = vst76Variant ? 166 : (portalVariant ? 150 : (studioVariant ? 142 : 148));
+            int cardHeight = (vst76Variant || audioVariant) ? 166 : (portalVariant ? 150 : (studioVariant ? 142 : 148));
             int countForHeight = Math.Max(1, results.Count == 0 ? 1 : results.Count);
             int rows = (int)Math.Ceiling(countForHeight / (double)columns);
 
@@ -7759,8 +7839,8 @@ namespace ToolboxClient
                 Width = width,
                 Height = height,
                 Margin = new Padding(0, 0, 14, 14),
-                BackColor = PanelBg,
-                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                BackColor = SoftwareCatalogPanelBackColor(),
+                BorderColor = SoftwareCatalogBorderColor(),
                 Radius = 8
             };
             string keyword = String.IsNullOrWhiteSpace(query) ? "这个关键词" : query;
@@ -7771,7 +7851,7 @@ namespace ToolboxClient
                 Width = width - 32,
                 Height = 26,
                 Text = "没有找到：" + keyword,
-                ForeColor = TextColor,
+                ForeColor = SoftwareCatalogTextColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -7783,7 +7863,7 @@ namespace ToolboxClient
                 Width = width - 32,
                 Height = 44,
                 Text = "可以继续调用 Windows Winget 搜索，或打开聚合搜索在常用软件站里找官方下载入口。",
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 9F, FontStyle.Regular)
             };
@@ -8067,13 +8147,14 @@ namespace ToolboxClient
                 Width = width,
                 Height = height,
                 Margin = new Padding(0, 0, 14, 14),
-                BackColor = PanelBg,
-                BorderColor = Color.FromArgb(LightTheme ? 110 : 76, Line),
+                BackColor = SoftwareCatalogPanelBackColor(),
+                BorderColor = SoftwareCatalogBorderColor(),
                 Radius = 8
             };
 
             Color accent = CardAccent("winget", entry.Name, index);
-            int iconSize = vst76Variant ? 48 : 34;
+            bool detailedCard = vst76Variant || audioVariant;
+            int iconSize = detailedCard ? 48 : 34;
             Image cachedIcon = GetCachedButtonIcon(entry.IconUrl);
             PictureBox icon = new PictureBox
             {
@@ -8096,12 +8177,12 @@ namespace ToolboxClient
             };
             Label name = new Label
             {
-                Left = vst76Variant ? 74 : 60,
+                Left = detailedCard ? 74 : 60,
                 Top = 12,
-                Width = width - (vst76Variant ? 90 : 76),
+                Width = width - (detailedCard ? 90 : 76),
                 Height = 28,
                 Text = entry.Name,
-                ForeColor = TextColor,
+                ForeColor = SoftwareCatalogTextColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
                 AutoEllipsis = true,
@@ -8109,14 +8190,14 @@ namespace ToolboxClient
             };
             Label meta = new Label
             {
-                Left = vst76Variant ? 74 : 60,
+                Left = detailedCard ? 74 : 60,
                 Top = 38,
-                Width = width - (vst76Variant ? 90 : 76),
+                Width = width - (detailedCard ? 90 : 76),
                 Height = 22,
                 Text = entry.Score > 0
                     ? new string('★', Math.Max(1, Math.Min(5, (int)Math.Round(entry.Score)))) + "  " + entry.Score.ToString("0.0") + (String.IsNullOrWhiteSpace(entry.InstallFileSize) ? "" : "  " + entry.InstallFileSize)
                     : entry.Category + (String.IsNullOrWhiteSpace(entry.PackageId) ? " / 官网入口" : " / " + entry.PackageId),
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8.2F, FontStyle.Regular),
                 AutoEllipsis = true,
@@ -8125,11 +8206,11 @@ namespace ToolboxClient
             Label desc = new Label
             {
                 Left = 16,
-                Top = vst76Variant ? 82 : 66,
+                Top = detailedCard ? 82 : 66,
                 Width = width - 32,
-                Height = vst76Variant ? 42 : 28,
+                Height = detailedCard ? 42 : 28,
                 Text = entry.Description,
-                ForeColor = Muted,
+                ForeColor = SoftwareCatalogMutedColor(),
                 BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8.6F, FontStyle.Regular),
                 AutoEllipsis = true,
@@ -8137,14 +8218,14 @@ namespace ToolboxClient
             };
             Label downloadCount = new Label
             {
-                Left = vst76Variant ? 74 : 60,
+                Left = detailedCard ? 74 : 60,
                 Top = 58,
-                Width = width - (vst76Variant ? 90 : 76),
+                Width = width - (detailedCard ? 90 : 76),
                 Height = 20,
                 Text = String.IsNullOrWhiteSpace(entry.DownloadCount) ? "" : "↓ " + entry.DownloadCount,
-                ForeColor = Muted, BackColor = Color.Transparent,
+                ForeColor = SoftwareCatalogMutedColor(), BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8F), AutoEllipsis = true,
-                Visible = vst76Variant
+                Visible = detailedCard
             };
 
             bool openOnly = entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId);
@@ -8191,8 +8272,7 @@ namespace ToolboxClient
                 progress.BringToFront();
                 RegisterVst76InlineDownloadProgress(progress);
             }
-            if (vst76Variant) QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);
-            else QueueButtonIconLoad(entry.IconUrl, icon, 32);
+            QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);
             if (topToolTip != null) topToolTip.SetToolTip(panel, entry.Name + Environment.NewLine + entry.Description);
             return panel;
         }
@@ -8209,7 +8289,8 @@ namespace ToolboxClient
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 graphics.Clear(Color.Transparent);
                 Rectangle rect = new Rectangle(0, 0, size - 1, size - 1);
-                Color back = LightTheme ? Blend(Color.White, accent, 0.18) : Blend(PanelBg2, accent, 0.28);
+                bool lightCatalog = LightTheme || audioVariant;
+                Color back = lightCatalog ? Blend(Color.White, accent, 0.18) : Blend(SoftwareCatalogInputBackColor(), accent, 0.28);
                 using (GraphicsPath path = RoundRect(rect, 8))
                 using (SolidBrush brush = new SolidBrush(back))
                 using (Pen border = new Pen(Blend(back, accent, 0.42), 1F))
@@ -8304,38 +8385,50 @@ namespace ToolboxClient
             if (target == null || target.IsDisposed || data == null || data.Length == 0) return;
             MemoryStream stream = null;
             Image next = null;
+            SoftwareCatalogAnimatedImageState nextState = null;
             try
             {
                 stream = new MemoryStream(data, false);
                 next = Image.FromStream(stream, true, true);
+                nextState = new SoftwareCatalogAnimatedImageState(target, next, stream);
                 Image previous = target.Image;
-                IDisposable previousStream = target.Tag as IDisposable;
-                target.Tag = stream;
+                IDisposable previousState = target.Tag as IDisposable;
+                target.Image = null;
+                target.Tag = nextState;
                 target.Image = next;
                 target.SizeMode = PictureBoxSizeMode.Zoom;
-                if (previous != null) previous.Dispose();
-                if (previousStream != null) previousStream.Dispose();
+                if (previousState != null) previousState.Dispose();
+                else if (previous != null) previous.Dispose();
                 target.Invalidate();
             }
             catch
             {
-                if (next != null) next.Dispose();
-                if (stream != null) stream.Dispose();
+                if (nextState != null) nextState.Dispose();
+                else
+                {
+                    if (next != null) next.Dispose();
+                    if (stream != null) stream.Dispose();
+                }
             }
         }
 
         private Button MakeCatalogButton(string text, int width, bool primary)
         {
+            Color accent = SoftwareCatalogAccentColor();
+            Color textColor = SoftwareCatalogTextColor();
+            Color inputBack = SoftwareCatalogInputBackColor();
+            Color borderColor = SoftwareCatalogBorderColor();
+            bool lightCatalog = LightTheme || audioVariant;
             RoundButton button = new RoundButton
             {
                 Width = width,
                 Height = 32,
                 Margin = Padding.Empty,
                 Text = text,
-                BackColor = primary ? Accent : PanelBg2,
-                ForeColor = primary && LightTheme ? Color.White : TextColor,
-                BorderColor = primary ? Color.FromArgb(Math.Min(255, Accent.R + 35), Math.Min(255, Accent.G + 35), Math.Min(255, Accent.B + 35)) : Line,
-                HoverBackColor = primary ? Blend(Accent, Color.White, LightTheme ? 0.14 : 0.08) : (LightTheme ? Color.FromArgb(239, 246, 255) : Color.FromArgb(39, 63, 86)),
+                BackColor = primary ? accent : inputBack,
+                ForeColor = primary && lightCatalog ? Color.White : textColor,
+                BorderColor = primary ? Color.FromArgb(Math.Min(255, accent.R + 25), Math.Min(255, accent.G + 25), Math.Min(255, accent.B + 25)) : borderColor,
+                HoverBackColor = primary ? Blend(accent, Color.White, lightCatalog ? 0.14 : 0.08) : (lightCatalog ? Color.FromArgb(244, 246, 248) : Color.FromArgb(39, 63, 86)),
                 Radius = 8,
                 FlatStyle = FlatStyle.Flat,
                 UseVisualStyleBackColor = false,
@@ -18065,6 +18158,47 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                     foreach (string tag in Tags) sb.Append(tag).Append(' ');
                 }
                 return sb.ToString();
+            }
+        }
+
+        private sealed class SoftwareCatalogAnimatedImageState : IDisposable
+        {
+            private readonly PictureBox target;
+            private readonly Image image;
+            private readonly MemoryStream stream;
+            private readonly EventHandler frameChangedHandler;
+            private readonly bool animated;
+            private bool disposed;
+
+            public SoftwareCatalogAnimatedImageState(PictureBox target, Image image, MemoryStream stream)
+            {
+                this.target = target;
+                this.image = image;
+                this.stream = stream;
+                frameChangedHandler = delegate
+                {
+                    if (disposed || target == null || target.IsDisposed || !Object.ReferenceEquals(target.Image, image)) return;
+                    try
+                    {
+                        if (target.IsHandleCreated)
+                            target.BeginInvoke(new Action(delegate
+                            {
+                                if (!disposed && !target.IsDisposed && Object.ReferenceEquals(target.Image, image)) target.Invalidate();
+                            }));
+                    }
+                    catch { }
+                };
+                animated = ImageAnimator.CanAnimate(image);
+                if (animated) ImageAnimator.Animate(image, frameChangedHandler);
+            }
+
+            public void Dispose()
+            {
+                if (disposed) return;
+                disposed = true;
+                if (animated) ImageAnimator.StopAnimate(image, frameChangedHandler);
+                image.Dispose();
+                stream.Dispose();
             }
         }
 

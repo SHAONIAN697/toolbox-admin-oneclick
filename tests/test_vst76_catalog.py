@@ -42,6 +42,8 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("SaveDownloadDirectory(dialog.SelectedPath, settings)", cs)
         self.assertIn("QueueSoftwareCatalogIconLoad(entry.IconUrl, icon)", cs)
         self.assertIn("Image.FromStream(stream, true, true)", cs)
+        self.assertIn("ImageAnimator.Animate(image, frameChangedHandler)", cs)
+        self.assertIn("ImageAnimator.StopAnimate(image, frameChangedHandler)", cs)
         self.assertIn("useOnlyReferenceCatalog", cs)
         self.assertIn("Vst76InlineDownloadProgress progress", cs)
         self.assertIn('if (action == "download")', cs)
@@ -60,6 +62,16 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("content.AutoScrollMinSize = new Size", refresh)
         self.assertIn("UpdateContentScrolling();", refresh)
         self.assertNotIn("if (vst76Variant)\n                    content.AutoScrollMinSize", refresh)
+
+    def test_audio_catalog_uses_lenovo_icons_and_audio_palette(self):
+        cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
+        self.assertIn("(vst76Variant || audioVariant) && remoteReady", cs)
+        self.assertIn("QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);", cs)
+        self.assertNotIn("else QueueButtonIconLoad(entry.IconUrl, icon, 32);", cs)
+        self.assertIn("return audioVariant ? Color.FromArgb(248, 249, 250) : Bg;", cs)
+        self.assertIn("return audioVariant ? Color.FromArgb(229, 67, 67) : Accent;", cs)
+        self.assertIn("Image.FromStream(stream, true, true)", cs)
+        self.assertIn("SoftwareCatalogAnimatedImageState", cs)
 
     def test_flagship_home_and_reference_commands(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
