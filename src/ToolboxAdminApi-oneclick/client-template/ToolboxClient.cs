@@ -272,6 +272,7 @@ namespace ToolboxClient
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly Dictionary<string, byte[]> softwareCatalogIconBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> softwareCatalogIconRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<PictureBox>> softwareCatalogIconTargets = new Dictionary<string, List<PictureBox>>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly object iconCacheLock = new object();
         private Icon runtimeIcon;
@@ -8359,13 +8360,24 @@ namespace ToolboxClient
             if (String.IsNullOrWhiteSpace(url) || target == null) return;
             string resolved = ResolveAssetUrl(url);
             byte[] cached = null;
+            bool startRequest = false;
             lock (iconCacheLock)
             {
                 softwareCatalogIconBytes.TryGetValue(resolved, out cached);
                 if (cached == null)
                 {
-                    if (softwareCatalogIconRequests.Contains(resolved)) return;
-                    softwareCatalogIconRequests.Add(resolved);
+                    List<PictureBox> targets;
+                    if (!softwareCatalogIconTargets.TryGetValue(resolved, out targets))
+                    {
+                        targets = new List<PictureBox>();
+                        softwareCatalogIconTargets[resolved] = targets;
+                    }
+                    if (!targets.Contains(target)) targets.Add(target);
+                    if (!softwareCatalogIconRequests.Contains(resolved))
+                    {
+                        softwareCatalogIconRequests.Add(resolved);
+                        startRequest = true;
+                    }
                 }
             }
             if (cached != null)
@@ -8373,6 +8385,7 @@ namespace ToolboxClient
                 ApplySoftwareCatalogIcon(target, cached);
                 return;
             }
+            if (!startRequest) return;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 byte[] data = null;
@@ -8381,15 +8394,44 @@ namespace ToolboxClient
                     data = DownloadSoftwareCatalogIconBytes(resolved);
                     if (data == null && attempt < 2) Thread.Sleep(350 * (attempt + 1));
                 }
+                List<PictureBox> targets = null;
                 lock (iconCacheLock)
                 {
                     softwareCatalogIconRequests.Remove(resolved);
                     if (data != null) softwareCatalogIconBytes[resolved] = data;
+                    if (softwareCatalogIconTargets.TryGetValue(resolved, out targets))
+                        softwareCatalogIconTargets.Remove(resolved);
                 }
                 if (data == null || IsDisposed || !IsHandleCreated) return;
-                try { BeginInvoke(new Action(delegate { ApplySoftwareCatalogIcon(target, data); })); }
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        bool detachedTarget = false;
+                        if (targets != null)
+                        {
+                            foreach (PictureBox pending in targets)
+                            {
+                                if (pending != null && !pending.IsDisposed) ApplySoftwareCatalogIcon(pending, data);
+                                else detachedTarget = true;
+                            }
+                        }
+                        if (detachedTarget) ScheduleSoftwareIconRefresh();
+                    }));
+                }
                 catch { }
             });
+        }
+
+        private void ScheduleSoftwareIconRefresh()
+        {
+            if (IsDisposed || Disposing || content == null || !configApplied) return;
+            if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!softwareCatalogLayoutUpdating) RefreshSoftwareCatalogResults();
+                return;
+            }
+            ScheduleBusinessIconRefresh();
         }
 
         private static byte[] DownloadSoftwareCatalogIconBytes(string url)
@@ -9974,7 +10016,13 @@ namespace ToolboxClient
             }
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Image image = LoadRemoteImage(resolved, size, size);
+                Image image = null;
+                for (int attempt = 0; attempt < 3 && image == null; attempt++)
+                {
+                    image = LoadRemoteImage(resolved, size, size);
+                    if (image == null && attempt < 2) Thread.Sleep(350 * (attempt + 1));
+                }
+                lock (iconCacheLock) failedIcons.Remove(cacheKey);
                 if (image == null) return;
                 try
                 {

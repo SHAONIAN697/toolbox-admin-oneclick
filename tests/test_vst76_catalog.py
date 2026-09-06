@@ -96,6 +96,17 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("content.VerticalScroll.Visible = false;", overview)
         self.assertIn("Vst76OverviewUsesCompactLayout()", cs)
 
+    def test_configured_button_icons_broadcast_to_all_async_targets_and_retry(self):
+        cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
+        icon_loader = cs[cs.index("private void QueueSoftwareCatalogIconLoad"):cs.index("private static byte[] DownloadSoftwareCatalogIconBytes")]
+        self.assertIn("softwareCatalogIconTargets", cs)
+        self.assertIn("if (!targets.Contains(target)) targets.Add(target);", icon_loader)
+        self.assertIn("foreach (PictureBox pending in targets)", icon_loader)
+        self.assertIn("ScheduleSoftwareIconRefresh();", icon_loader)
+        button_loader = cs[cs.index("private void QueueButtonIconLoad(string url, Control target, int size)"):cs.index("private void ScheduleBusinessIconRefresh")]
+        self.assertIn("for (int attempt = 0; attempt < 3 && image == null; attempt++)", button_loader)
+        self.assertIn("failedIcons.Remove(cacheKey)", button_loader)
+
     def test_flagship_memory_cleanup_keeps_reference_intervals(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         self.assertIn("int[] cleanupIntervals = { 0, 1, 2, 3, 5, 10, 15, 30, 60 };", cs)

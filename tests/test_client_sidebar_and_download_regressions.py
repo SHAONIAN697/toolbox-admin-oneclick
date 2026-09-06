@@ -100,6 +100,16 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("vst76Variant && IsVst76HomePage", scrolling)
         self.assertIn("content.AutoScroll = false;", scrolling)
 
+    def test_configured_button_icons_are_broadcast_and_retry_after_transient_failure(self):
+        icon_loader = self.method("private void QueueSoftwareCatalogIconLoad", "private static byte[] DownloadSoftwareCatalogIconBytes")
+        self.assertIn("softwareCatalogIconTargets", self.source)
+        self.assertIn("if (!targets.Contains(target)) targets.Add(target);", icon_loader)
+        self.assertIn("foreach (PictureBox pending in targets)", icon_loader)
+        self.assertIn("ScheduleSoftwareIconRefresh();", icon_loader)
+        button_loader = self.method("private void QueueButtonIconLoad(string url, Control target, int size)", "private void ScheduleBusinessIconRefresh")
+        self.assertIn("for (int attempt = 0; attempt < 3 && image == null; attempt++)", button_loader)
+        self.assertIn("failedIcons.Remove(cacheKey)", button_loader)
+
     def test_non_studio_variants_hide_overview_by_id_or_label(self):
         self.assertIn("private bool IsStudioOverviewPage", self.source)
         self.assertIn('String.Equals(label.Trim(), "系统概览", StringComparison.OrdinalIgnoreCase)', self.source)
