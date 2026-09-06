@@ -137,6 +137,10 @@ const CLIENT_VARIANTS = [
     badge: '推荐资源中心',
     description: '首页横幅、导航侧栏和资源卡片布局，适合软件中心、常用链接和下载资源站。',
     preview: 'portal'
+  },
+  {
+    id: 'vst76', label: '调音师工具箱旗舰版', badge: '对接中',
+    description: '复刻 VST615 的旗舰版桌面布局，使用共享软件目录、页面锁和下载任务。', preview: 'vst76'
   }
 ];
 
@@ -2702,6 +2706,9 @@ function clientPreviewMarkup(type) {
           </main>
         </div>
       </div>`;
+  }
+  if (type === 'vst76') {
+    return `<div class="client-preview vst76-preview"><div class="preview-window-bar"><span>调音师工具箱旗舰版</span><b>锁屏</b><b>☀</b><b>微信</b><i></i><i></i></div><div class="vst76-preview-body"><aside><strong>T</strong><em class="active">软件首页</em><em>系统工具</em><em>系统软件</em><em>声卡驱动</em><em>宿主插件</em><em>常用网址</em></aside><main><div class="vst76-metrics">${['CPU', 'GPU', '内存', 'C 盘'].map((name, index) => `<span><b>${name}</b><strong>${[24, 38, 51, 67][index]}%</strong><i style="width:${[24, 38, 51, 67][index]}%"></i></span>`).join('')}</div><div class="vst76-lower"><section><b>电脑信息</b><small>Windows 11 专业版</small><small>处理器与音频设备状态</small></section><section><b>快捷资源</b><button>打开</button><button>下载</button></section></div></main></div></div>`;
   }
   if (type === 'portal') {
     return `

@@ -1134,6 +1134,21 @@ button.menu-icon-card { cursor:pointer; }
   display: grid;
   gap: 10px;
 }
+.vst76-preview .preview-window-bar b { color: #64748b; font-size: 8px; font-weight: 700; }
+.vst76-preview-body { height: calc(100% - 26px); display: grid; grid-template-columns: 96px 1fr; background: #f2f5f8; }
+.vst76-preview-body aside { padding: 12px 8px; display: grid; align-content: start; gap: 5px; border-right: 1px solid #e2e8f0; background: #fff; }
+.vst76-preview-body aside strong { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 5px; background: #1681ef; color: #fff; }
+.vst76-preview-body aside em { padding: 4px 6px; border-radius: 5px; color: #526173; font-size: 8px; font-style: normal; font-weight: 700; }
+.vst76-preview-body aside em.active { color: #0875e1; border-left: 2px solid #1681ef; background: #e8f3ff; }
+.vst76-preview-body main { min-width: 0; padding: 12px; }
+.vst76-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.vst76-metrics span { min-width: 0; height: 66px; padding: 8px; display: grid; gap: 4px; border: 1px solid #e2e8f0; border-radius: 7px; background: #fff; }
+.vst76-metrics b { color: #64748b; font-size: 8px; } .vst76-metrics strong { font-size: 15px; }
+.vst76-metrics i { height: 3px; border-radius: 2px; background: #1681ef; }
+.vst76-lower { display: grid; grid-template-columns: 1.35fr 1fr; gap: 7px; margin-top: 8px; }
+.vst76-lower section { height: 76px; padding: 9px; display: grid; align-content: start; gap: 5px; border: 1px solid #e2e8f0; border-radius: 7px; background: #fff; }
+.vst76-lower section b { font-size: 9px; } .vst76-lower small { color: #64748b; font-size: 7px; }
+.vst76-lower button { width: 58px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: #1681ef; color: #fff; font-size: 8px; }
 
 .client-variant-info > div {
   display: flex;

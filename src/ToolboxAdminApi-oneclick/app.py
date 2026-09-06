@@ -131,6 +131,7 @@ RESET_CODE_REQUESTS = {}
 RESET_VERIFY_ATTEMPTS = {}
 RESET_CODE_COOLDOWN_SECONDS = 60
 DEFAULT_CLIENT_VARIANT = "original"
+CLIENT_VARIANT_ORDER = ("original", "studio", "tuner", "audio", "portal", "vst76")
 CLIENT_VARIANTS = {
     "original": {
         "id": "original",
@@ -162,7 +163,31 @@ CLIENT_VARIANTS = {
         "file": "portal",
         "description": "首页横幅、导航侧栏和资源卡片布局，适合软件中心与资源入口场景。",
     },
+    "vst76": {
+        "id": "vst76", "label": "调音师工具箱旗舰版", "file": "vst76", "badge": "对接中",
+        "description": "按 VST615 工具箱复刻的旗舰版界面，软件目录、工具页和下载任务继续使用后台共享能力。",
+    },
 }
+
+SOFTWARE_CATALOG_LOCK = threading.RLock()
+SOFTWARE_CATALOG_CACHE = {"home": None, "search": {}}
+SOFTWARE_CATALOG_RESOLVE_CACHE = {}
+SOFTWARE_CATALOG_BUILTIN = [
+    {"id": "builtin-vlc", "name": "VLC media player", "score": 4.8, "description": "开源跨平台媒体播放器", "website": "https://www.videolan.org/", "source": "builtin"},
+    {"id": "builtin-7zip", "name": "7-Zip", "score": 4.9, "description": "高压缩比文件归档工具", "website": "https://www.7-zip.org/", "source": "builtin"},
+    {"id": "builtin-audacity", "name": "Audacity", "score": 4.7, "description": "开源音频录制与编辑工具", "website": "https://www.audacityteam.org/", "source": "builtin"},
+]
+SOFTWARE_CATALOG_ENABLED = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off", "disabled")
+SOFTWARE_CATALOG_HOME_URL = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_HOME_URL", "https://lestore.lenovo.com/api/webstorecontents/page/contents")
+SOFTWARE_CATALOG_SEARCH_URL = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_SEARCH_URL", "https://lestore.lenovo.com/api/webstorecontents/search/contents")
+SOFTWARE_CATALOG_RESOLVE_URL = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_RESOLVE_URL", "https://lestore.lenovo.com/api/webstorecontents/download/getDownloadUrl")
+SOFTWARE_CATALOG_TIMEOUT = max(2, min(30, int(os.environ.get("TOOLBOX_SOFTWARE_CATALOG_TIMEOUT", "8"))))
+SOFTWARE_CATALOG_HOME_TTL = max(30, min(3600, int(os.environ.get("TOOLBOX_SOFTWARE_CATALOG_HOME_TTL", "600"))))
+SOFTWARE_CATALOG_SEARCH_TTL = max(15, min(900, int(os.environ.get("TOOLBOX_SOFTWARE_CATALOG_SEARCH_TTL", "120"))))
+SOFTWARE_CATALOG_ALLOWED_DOWNLOAD_DOMAINS = tuple(x.strip().lower() for x in os.environ.get("TOOLBOX_SOFTWARE_CATALOG_ALLOWED_DOWNLOAD_DOMAINS", "").split(",") if x.strip())
+SOFTWARE_CATALOG_AES_KEY = b"65023EC4BA7420BB"
+SOFTWARE_CATALOG_UPSTREAM_SLOTS = threading.BoundedSemaphore(max(1, min(8, int(os.environ.get("TOOLBOX_SOFTWARE_CATALOG_CONCURRENCY", "3")))))
+SOFTWARE_CATALOG_BREAKER = {"failures": 0, "until": 0.0}
 
 SCRIPT_LABELS = {
     "preset_new_machine": "新机一键优化",
@@ -242,6 +267,176 @@ def normalize_public_base_url(base_url):
 
 def sha256_hex(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _aes_gf_mul(a, b):
+    result = 0
+    for _ in range(8):
+        if b & 1: result ^= a
+        a = ((a << 1) ^ (0x11B if a & 0x80 else 0)) & 0xFF
+        b >>= 1
+    return result
+
+
+def _aes_sbox():
+    table = []
+    for value in range(256):
+        inverse = 0 if value == 0 else next(x for x in range(1, 256) if _aes_gf_mul(value, x) == 1)
+        table.append((inverse ^ ((inverse << 1) | (inverse >> 7)) ^ ((inverse << 2) | (inverse >> 6)) ^ ((inverse << 3) | (inverse >> 5)) ^ ((inverse << 4) | (inverse >> 4)) ^ 0x63) & 0xFF)
+    return table
+
+
+def aes128_cbc_encrypt(plain, key=SOFTWARE_CATALOG_AES_KEY, iv=SOFTWARE_CATALOG_AES_KEY):
+    if len(key) != 16 or len(iv) != 16: raise ValueError("AES-128 requires 16-byte key and IV")
+    sbox = _aes_sbox(); words = [list(key[i:i + 4]) for i in range(0, 16, 4)]; rcon = 1
+    for index in range(4, 44):
+        temp = words[index - 1][:]
+        if index % 4 == 0:
+            temp = [sbox[temp[1]], sbox[temp[2]], sbox[temp[3]], sbox[temp[0]]]; temp[0] ^= rcon; rcon = _aes_gf_mul(rcon, 2)
+        words.append([words[index - 4][j] ^ temp[j] for j in range(4)])
+    round_keys = [sum(words[4 * i:4 * i + 4], []) for i in range(11)]
+    data = bytearray(plain); pad = 16 - len(data) % 16; data.extend(bytes([pad]) * pad); previous = bytearray(iv); output = bytearray()
+    for offset in range(0, len(data), 16):
+        state = [data[offset + i] ^ previous[i] ^ round_keys[0][i] for i in range(16)]
+        for round_no in range(1, 11):
+            state = [sbox[x] for x in state]
+            state = [state[0], state[5], state[10], state[15], state[4], state[9], state[14], state[3], state[8], state[13], state[2], state[7], state[12], state[1], state[6], state[11]]
+            if round_no != 10:
+                mixed = []
+                for col in range(4):
+                    a = state[col * 4:col * 4 + 4]
+                    mixed.extend([_aes_gf_mul(a[0], 2) ^ _aes_gf_mul(a[1], 3) ^ a[2] ^ a[3], a[0] ^ _aes_gf_mul(a[1], 2) ^ _aes_gf_mul(a[2], 3) ^ a[3], a[0] ^ a[1] ^ _aes_gf_mul(a[2], 2) ^ _aes_gf_mul(a[3], 3), _aes_gf_mul(a[0], 3) ^ a[1] ^ a[2] ^ _aes_gf_mul(a[3], 2)])
+                state = mixed
+            state = [state[i] ^ round_keys[round_no][i] for i in range(16)]
+        output.extend(state); previous = bytearray(state)
+    return bytes(output)
+
+
+def _catalog_post_payload(payload):
+    compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return json.dumps({"data": base64.b64encode(aes128_cbc_encrypt(compact)).decode("ascii")}, separators=(",", ":")).encode("utf-8")
+
+
+def _catalog_http(url, method="GET", payload=None, timeout=None):
+    if SOFTWARE_CATALOG_BREAKER["until"] > time.time(): raise RuntimeError("软件目录上游暂时熔断")
+    data = _catalog_post_payload(payload) if payload is not None else None
+    headers = {"User-Agent": "ToolboxAdminApi/1.0", "Accept": "application/json"}
+    if data is not None: headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    if not SOFTWARE_CATALOG_UPSTREAM_SLOTS.acquire(timeout=SOFTWARE_CATALOG_TIMEOUT): raise TimeoutError("软件目录请求繁忙")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or SOFTWARE_CATALOG_TIMEOUT) as response:
+            if int(response.headers.get("Content-Length") or 0) > 2 * 1024 * 1024: raise ValueError("软件目录响应过大")
+            body = response.read(2 * 1024 * 1024 + 1)
+            if len(body) > 2 * 1024 * 1024: raise ValueError("软件目录响应过大")
+            result = json.loads(body.decode("utf-8")); SOFTWARE_CATALOG_BREAKER.update({"failures": 0, "until": 0.0}); return result
+    except Exception:
+        failures = SOFTWARE_CATALOG_BREAKER["failures"] + 1; SOFTWARE_CATALOG_BREAKER["failures"] = failures
+        if failures >= 3: SOFTWARE_CATALOG_BREAKER["until"] = time.time() + 30
+        raise
+    finally:
+        SOFTWARE_CATALOG_UPSTREAM_SLOTS.release()
+
+
+def _catalog_entry(raw, source="lenovo"):
+    if not isinstance(raw, dict): return None
+    name = str(raw.get("softName") or raw.get("name") or raw.get("appName") or "").strip()
+    if not name: return None
+    icon = str(raw.get("logoFile") or raw.get("icon") or "").strip()
+    if icon and not icon.lower().startswith("https://"): icon = ""
+    try: score = max(0, min(5, float(raw.get("score") or 0)))
+    except (TypeError, ValueError): score = 0
+    return {"id": str(raw.get("softID") or raw.get("id") or sha256_hex(name)[:16]), "name": name, "iconUrl": icon, "score": score,
+            "downloadCount": raw.get("downloadCount") or 0, "installFileSize": raw.get("installFileSize") or "", "description": str(raw.get("introduction") or raw.get("description") or "").strip(),
+            "bizInfo": str(raw.get("bizInfo") or ""), "source": source, "website": str(raw.get("website") or "").strip(), "downloadUrl": ""}
+
+
+def _catalog_extract(payload, search=False):
+    rows = []; data = payload.get("data") if isinstance(payload, dict) else None
+    if search: candidates = data.get("apps", []) if isinstance(data, dict) else []
+    else:
+        candidates = []
+        for group in data if isinstance(data, list) else []:
+            for listing in group.get("dataList") or [] if isinstance(group, dict) else []:
+                if isinstance(listing, dict): candidates.extend(listing.get("apps") or [])
+    seen = set()
+    for raw in candidates:
+        item = _catalog_entry(raw)
+        if item and item["id"] not in seen: seen.add(item["id"]); rows.append(item)
+    return rows
+
+
+def software_catalog_builtin():
+    return [dict(item, iconUrl="", downloadUrl="") for item in SOFTWARE_CATALOG_BUILTIN]
+
+
+def software_catalog_home(force=False):
+    if not SOFTWARE_CATALOG_ENABLED: return software_catalog_builtin(), "disabled"
+    now = time.time()
+    with SOFTWARE_CATALOG_LOCK:
+        cached = SOFTWARE_CATALOG_CACHE.get("home")
+        if cached and not force and now - cached["at"] < SOFTWARE_CATALOG_HOME_TTL: return cached["rows"], "online"
+    try:
+        rows = _catalog_extract(_catalog_http(SOFTWARE_CATALOG_HOME_URL), False)[:96]
+        if rows:
+            with SOFTWARE_CATALOG_LOCK: SOFTWARE_CATALOG_CACHE["home"] = {"at": now, "rows": rows}
+            return rows, "online"
+    except Exception: pass
+    with SOFTWARE_CATALOG_LOCK: cached = SOFTWARE_CATALOG_CACHE.get("home")
+    return (cached["rows"], "stale") if cached else (software_catalog_builtin(), "offline")
+
+
+def software_catalog_search(query):
+    query = str(query or "").strip()[:120]
+    if not query: return software_catalog_home()
+    local = [x for x in software_catalog_builtin() if query.lower() in x["name"].lower() or query.lower() in x["description"].lower()]
+    if not SOFTWARE_CATALOG_ENABLED: return local, "disabled"
+    now = time.time()
+    with SOFTWARE_CATALOG_LOCK:
+        cached = SOFTWARE_CATALOG_CACHE["search"].get(query)
+        if cached and now - cached["at"] < SOFTWARE_CATALOG_SEARCH_TTL: return cached["rows"], "online"
+    try:
+        rows = _catalog_extract(_catalog_http(SOFTWARE_CATALOG_SEARCH_URL, "POST", {"searchKey": query}), True)[:96]
+        with SOFTWARE_CATALOG_LOCK: SOFTWARE_CATALOG_CACHE["search"][query] = {"at": now, "rows": rows}
+        return rows, "online"
+    except Exception:
+        with SOFTWARE_CATALOG_LOCK: cached = SOFTWARE_CATALOG_CACHE["search"].get(query)
+        return (cached["rows"], "stale") if cached else (local, "offline")
+
+
+def _safe_download_url(value):
+    try:
+        parsed = urlparse(str(value or "").strip())
+        if parsed.scheme.lower() != "https" or not parsed.hostname: return ""
+        hostname = parsed.hostname.rstrip(".").lower()
+        if hostname in ("localhost", "localhost.localdomain") or hostname.endswith(".localhost"): return ""
+        try:
+            address = ipaddress.ip_address(hostname)
+            if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_unspecified: return ""
+        except ValueError: pass
+        if SOFTWARE_CATALOG_ALLOWED_DOWNLOAD_DOMAINS and not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in SOFTWARE_CATALOG_ALLOWED_DOWNLOAD_DOMAINS): return ""
+        return parsed.geturl()
+    except Exception: return ""
+
+
+def software_catalog_resolve(item_id):
+    item_id = str(item_id or "").strip()
+    with SOFTWARE_CATALOG_LOCK: record = SOFTWARE_CATALOG_RESOLVE_CACHE.get(item_id)
+    if not record or record.get("expires", 0) < time.time(): return None
+    payload = {"bizInfo": record.get("bizInfo", ""), "bizType": "1", "product": "3", "softId": item_id, "type": "0"}
+    try:
+        result = _catalog_http(SOFTWARE_CATALOG_RESOLVE_URL, "POST", payload)
+        for row in ((result.get("data") or {}).get("downloadUrls") or []) if isinstance(result, dict) else []:
+            candidate = _safe_download_url(row.get("downLoadUrl") if isinstance(row, dict) else row)
+            if candidate: return candidate
+    except Exception: return None
+    return None
+
+
+def software_catalog_register(rows):
+    with SOFTWARE_CATALOG_LOCK:
+        for item in rows:
+            if item.get("id") and item.get("bizInfo"): SOFTWARE_CATALOG_RESOLVE_CACHE[item["id"]] = {"bizInfo": item["bizInfo"], "expires": time.time() + 900}
 
 
 def stored_password(password):
@@ -1216,7 +1411,7 @@ def public_client_variants():
     configured = read_system_settings().get("clientVariants") or {}
     counts = read_client_download_counts()
     variants = []
-    for variant_id in ("original", "studio", "tuner", "audio", "portal"):
+    for variant_id in CLIENT_VARIANT_ORDER:
         item = dict(CLIENT_VARIANTS[variant_id])
         values = configured.get(variant_id) if isinstance(configured.get(variant_id), dict) else {}
         for key in ("name", "badge", "description", "coverMode", "coverUrl"):
@@ -4409,6 +4604,21 @@ class Handler(BaseHTTPRequestHandler):
                         time.sleep(1)
                         data, compressed, etag = public_toolbox_config_payload(user["id"])
                 return self.send_cached_json(data, compressed, etag)
+            if path in ("/api/client/software-catalog/home", "/api/client/software-catalog/search", "/api/client/software-catalog/resolve"):
+                api_key = (self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", "")).strip()
+                if not find_user_by_api_key(api_key): return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
+                if path.endswith("/home") and method == "GET":
+                    rows, source = software_catalog_home(); software_catalog_register(rows)
+                    return self.send_json({"items": rows, "source": source, "offline": source != "online"})
+                if path.endswith("/search") and method == "GET":
+                    rows, source = software_catalog_search(self.query.get("q", [""])[0]); software_catalog_register(rows)
+                    return self.send_json({"items": rows, "source": source, "offline": source != "online"})
+                if path.endswith("/resolve") and method == "POST":
+                    item_id = str(self.read_body().get("id") or "").strip()
+                    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", item_id): return self.send_json({"error": "条目 ID 无效。"}, 400)
+                    url = software_catalog_resolve(item_id)
+                    return self.send_json({"downloadUrl": url}) if url else self.send_json({"error": "下载地址暂不可用。"}, 404)
+                return self.send_json({"error": "请求方法不支持。"}, 405)
 
             if path.startswith("/api/"):
                 auth = get_auth(self)
