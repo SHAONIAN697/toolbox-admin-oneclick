@@ -32,8 +32,7 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
     def test_vst76_sidebar_uses_backend_order_without_legacy_fixed_menu(self):
         build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
         vst_start = build_nav.index("if (vst76Variant)")
-        first_loop = build_nav.index("foreach (object item in tunerSidebar)", vst_start)
-        vst_end = build_nav.index("foreach (object item in tunerSidebar)", first_loop + 1)
+        vst_end = build_nav.index("if (!String.IsNullOrWhiteSpace(currentPage)", vst_start)
         vst_branch = build_nav[vst_start:vst_end]
         self.assertIn("foreach (object item in tunerSidebar)", vst_branch)
         self.assertIn("NavLabel(row, id, tunerPages)", vst_branch)
@@ -46,12 +45,27 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
             self.assertNotIn(legacy_call, vst_branch)
         self.assertIn('AddTunerNavButton(SoftwareCatalogPageId, "软件大全"', vst_branch)
 
+    def test_vst76_overview_is_prioritized_when_configured(self):
+        build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
+        vst_branch = build_nav[build_nav.index("if (vst76Variant)"):]
+        overview_add = vst_branch.index("if (!id.Equals(StudioOverviewPageId")
+        regular_loop = vst_branch.index("foreach (object item in tunerSidebar)", overview_add + 1)
+        self.assertLess(overview_add, regular_loop)
+        configured_home = self.method("private string ConfiguredVst76HomePageId", "private void BuildNav")
+        self.assertLess(configured_home.index("StudioOverviewPageId"), configured_home.index("IsConfiguredVst76HomeLabel"))
+        self.assertIn("Text = label", self.source)
+        self.assertIn("AccessibleName = label", self.source)
+
     def test_flagship_configured_buttons_use_catalog_style_icon_cards(self):
         self.assertIn("CreateVst76ConfiguredActionCard", self.source)
         group = self.method("private Panel CreateTunerGroup", "private Control CreateVst76ConfiguredActionCard")
-        self.assertIn("Vst76ConfiguredButtonUsesCard(buttons[i])", group)
-        self.assertIn("Control button = useCard", group)
-        self.assertIn('vst76Variant && !useCard && action == "download"', group)
+        self.assertIn("bool useCards = vst76Variant && Vst76ConfiguredPageUsesCards();", group)
+        self.assertIn("Control button = useCards", group)
+        self.assertIn('vst76Variant && !useCards && action == "download"', group)
+        card_rule = self.method("private bool Vst76ConfiguredPageUsesCards", "private Control CreateVst76ConfiguredActionCard")
+        self.assertIn('buttonContentLayout == "icon_top"', card_rule)
+        self.assertIn("ButtonContentLayoutAppliesToCurrentPage()", card_rule)
+        self.assertNotIn('GetText(item, "icon", "")', card_rule)
         card = self.method("private Control CreateVst76ConfiguredActionCard", "private Control CreateTunerActionButton")
         self.assertIn("CreateSoftwareCatalogIconImage(iconEntry, accent, 44)", card)
         self.assertIn("QueueSoftwareCatalogIconLoad(iconUrl, icon)", card)
@@ -74,6 +88,17 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("LoadRemoteImage(resolved, 34, 34)", loader)
         self.assertIn('failedIcons.Remove("app|" + cacheKey)', loader)
         self.assertNotIn("LoadEmbeddedBrandIcon", loader)
+
+    def test_flagship_overview_is_responsive_and_has_no_vertical_scrollbar(self):
+        overview = self.method("private void RenderVst76HomePage", "private void ResetVst76HomeControls")
+        self.assertIn("ResetContentScrollState();", overview)
+        self.assertIn("content.AutoScroll = false;", overview)
+        self.assertIn("content.VerticalScroll.Visible = false;", overview)
+        self.assertIn("Vst76OverviewUsesCompactLayout()", self.source)
+        self.assertIn("int maxColumns = Math.Max(3", self.source)
+        scrolling = self.method("private void UpdateContentScrolling", "private void BuildResourceSearchChrome")
+        self.assertIn("vst76Variant && IsVst76HomePage", scrolling)
+        self.assertIn("content.AutoScroll = false;", scrolling)
 
     def test_non_studio_variants_hide_overview_by_id_or_label(self):
         self.assertIn("private bool IsStudioOverviewPage", self.source)

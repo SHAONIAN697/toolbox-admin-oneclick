@@ -85,6 +85,17 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("EmptyWorkingSet(process.Handle)", cs)
         self.assertIn("MessageBoxButtons.YesNo", cs)
 
+    def test_flagship_overview_and_page_scoped_cards(self):
+        cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
+        group = cs[cs.index("private Panel CreateTunerGroup"):cs.index("private Control CreateVst76ConfiguredActionCard")]
+        self.assertIn("bool useCards = vst76Variant && Vst76ConfiguredPageUsesCards();", group)
+        self.assertIn("Control button = useCards", group)
+        self.assertNotIn("Vst76ConfiguredButtonUsesCard", cs)
+        overview = cs[cs.index("private void RenderVst76HomePage"):cs.index("private void ResetVst76HomeControls")]
+        self.assertIn("content.AutoScroll = false;", overview)
+        self.assertIn("content.VerticalScroll.Visible = false;", overview)
+        self.assertIn("Vst76OverviewUsesCompactLayout()", cs)
+
     def test_flagship_memory_cleanup_keeps_reference_intervals(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         self.assertIn("int[] cleanupIntervals = { 0, 1, 2, 3, 5, 10, 15, 30, 60 };", cs)

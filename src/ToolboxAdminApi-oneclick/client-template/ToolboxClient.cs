@@ -3499,17 +3499,27 @@ namespace ToolboxClient
         private string ConfiguredVst76HomePageId()
         {
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            string overviewPageId = "";
             foreach (object item in AsList(Get(config, "sidebar")))
             {
                 Dictionary<string, object> row = AsDict(item);
                 string id = GetText(row, "id", "");
                 if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
-                Dictionary<string, object> page = AsDict(Get(pages, id));
-                if (IsConfiguredVst76HomeLabel(id, page)) return id;
-                if (String.IsNullOrWhiteSpace(overviewPageId) && IsVst76HomePage(id, page)) overviewPageId = id;
+                if (id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) return id;
             }
-            if (!String.IsNullOrWhiteSpace(overviewPageId)) return overviewPageId;
+            foreach (object item in AsList(Get(config, "sidebar")))
+            {
+                Dictionary<string, object> row = AsDict(item);
+                string id = GetText(row, "id", "");
+                if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsConfiguredVst76HomeLabel(id, AsDict(Get(pages, id)))) return id;
+            }
+            foreach (object item in AsList(Get(config, "sidebar")))
+            {
+                Dictionary<string, object> row = AsDict(item);
+                string id = GetText(row, "id", "");
+                if (String.IsNullOrWhiteSpace(id) || id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsVst76HomePage(id, AsDict(Get(pages, id)))) return id;
+            }
             return navButtons.ContainsKey(Vst76HomePageId) ? Vst76HomePageId : "";
         }
 
@@ -3553,6 +3563,16 @@ namespace ToolboxClient
 
                 if (vst76Variant)
                 {
+                    foreach (object item in tunerSidebar)
+                    {
+                        Dictionary<string, object> row = AsDict(item);
+                        string id = GetText(row, "id", "");
+                        if (!id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                        string label = NavLabel(row, id, tunerPages);
+                        AddTunerNavButton(id, label, TemplateNavIcon(label, id));
+                        tunerAdded.Add(id);
+                        break;
+                    }
                     foreach (object item in tunerSidebar)
                     {
                         Dictionary<string, object> row = AsDict(item);
@@ -3811,8 +3831,11 @@ namespace ToolboxClient
                 Width = 174,
                 Height = 47,
                 Margin = new Padding(0, 0, 0, 1),
+                Text = label,
                 Caption = label,
                 IconKey = iconKey,
+                AccessibleName = label,
+                AccessibleDescription = "导航：" + label,
                 Tag = id
             };
             button.Click += delegate { QueueShowPage((string)button.Tag); };
@@ -4870,11 +4893,11 @@ namespace ToolboxClient
             int inlineProgressHeight = 18;
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
             int[] rowHeights = new int[rows];
+            bool useCards = vst76Variant && Vst76ConfiguredPageUsesCards();
             for (int i = 0; i < buttons.Count; i++)
             {
-                bool useCard = vst76Variant && Vst76ConfiguredButtonUsesCard(buttons[i]);
                 string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
-                int itemHeight = useCard ? cardHeight : buttonHeight + (vst76Variant && action == "download" ? inlineProgressHeight : 0);
+                int itemHeight = useCards ? cardHeight : buttonHeight + (vst76Variant && action == "download" ? inlineProgressHeight : 0);
                 rowHeights[i / columns] = Math.Max(rowHeights[i / columns], itemHeight);
             }
             int rowsHeight = 0;
@@ -4915,13 +4938,12 @@ namespace ToolboxClient
                 int col = i % columns;
                 int buttonTop = top;
                 for (int previousRow = 0; previousRow < row; previousRow++) buttonTop += Math.Max(buttonHeight, rowHeights[previousRow]) + gap;
-                bool useCard = vst76Variant && Vst76ConfiguredButtonUsesCard(buttons[i]);
-                Control button = useCard
+                Control button = useCards
                     ? CreateVst76ConfiguredActionCard(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, cardHeight, i)
                     : CreateTunerActionButton(buttons[i], innerLeft + col * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
                 panel.Controls.Add(button);
                 string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
-                if (vst76Variant && !useCard && action == "download")
+                if (vst76Variant && !useCards && action == "download")
                 {
                     Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false);
                     progress.Left = button.Left;
@@ -4935,9 +4957,9 @@ namespace ToolboxClient
             return panel;
         }
 
-        private static bool Vst76ConfiguredButtonUsesCard(Dictionary<string, object> item)
+        private bool Vst76ConfiguredPageUsesCards()
         {
-            return !String.IsNullOrWhiteSpace(GetText(item, "icon", ""));
+            return buttonContentLayout == "icon_top" && ButtonContentLayoutAppliesToCurrentPage();
         }
 
         private Control CreateVst76ConfiguredActionCard(Dictionary<string, object> item, int left, int top, int width, int height, int index)
@@ -5096,7 +5118,9 @@ namespace ToolboxClient
                 Top = top,
                 Width = width,
                 Height = height,
+                Text = GetText(item, "name", "未命名"),
                 Title = GetText(item, "name", "未命名"),
+                AccessibleName = GetText(item, "name", "未命名"),
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
@@ -5318,12 +5342,15 @@ namespace ToolboxClient
             {
                 ClearChildControls(content);
                 ResetVst76HomeControls();
+                ResetContentScrollState();
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
+                content.AutoScroll = false;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
-                int width = Math.Max(780, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
+                content.VerticalScroll.Visible = false;
+                int width = Math.Max(780, content.ClientSize.Width - 8);
                 content.Controls.Add(CreateVst76HomeHeader(width));
                 content.Controls.Add(CreateVst76MetricRow(width));
                 content.Controls.Add(CreateVst76ActionPanel(width));
@@ -5350,7 +5377,8 @@ namespace ToolboxClient
 
         private Control CreateVst76HomeHeader(int width)
         {
-            Panel header = new Panel { Width = width, Height = 42, Margin = Padding.Empty, BackColor = Bg };
+            bool compact = Vst76OverviewUsesCompactLayout();
+            Panel header = new Panel { Width = width, Height = compact ? 34 : 42, Margin = Padding.Empty, BackColor = Bg };
             Label caption = new Label
             {
                 Left = 0, Top = 0, Width = 82, Height = 34, Text = "系统状态",
@@ -5371,7 +5399,8 @@ namespace ToolboxClient
         private Control CreateVst76MetricRow(int width)
         {
             const int gap = 14;
-            Panel row = new Panel { Width = width, Height = 166, Margin = Padding.Empty, BackColor = Bg };
+            bool compact = Vst76OverviewUsesCompactLayout();
+            Panel row = new Panel { Width = width, Height = compact ? 140 : 158, Margin = Padding.Empty, BackColor = Bg };
             int cardWidth = Math.Max(170, (width - gap * 3) / 4);
             int lastWidth = Math.Max(170, width - (cardWidth + gap) * 3);
             row.Controls.Add(CreateVst76MetricCard("处理器", "CPU", 0, cardWidth, "cpu"));
@@ -5383,39 +5412,40 @@ namespace ToolboxClient
 
         private Control CreateVst76MetricCard(string caption, string shortName, int left, int width, string kind)
         {
+            bool compact = Vst76OverviewUsesCompactLayout();
             RoundedPanel card = new RoundedPanel
             {
-                Left = left, Top = 0, Width = width, Height = 150, BackColor = PanelBg,
+                Left = left, Top = 0, Width = width, Height = compact ? 132 : 150, BackColor = PanelBg,
                 BorderColor = Color.FromArgb(LightTheme ? 115 : 88, Line), Radius = 8
             };
             Vst76MetricGauge gauge = new Vst76MetricGauge
             {
-                Left = 20, Top = 31, Width = 94, Height = 94, MetricName = shortName,
+                Left = compact ? 16 : 20, Top = compact ? 24 : 31, Width = compact ? 82 : 94, Height = compact ? 82 : 94, MetricName = shortName,
                 Percent = -1F, RingColor = Accent, ValueColor = kind == "cpu" ? Color.FromArgb(239, 68, 68) : Accent
             };
-            int right = 132;
+            int right = compact ? 112 : 132;
             int rightWidth = Math.Max(42, width - right - 20);
             Label titleLabel = new Label
             {
-                Left = right, Top = 32, Width = rightWidth, Height = 24, Text = caption,
+                Left = right, Top = compact ? 24 : 32, Width = rightWidth, Height = 24, Text = caption,
                 ForeColor = TextColor, BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold), AutoEllipsis = true
             };
             Panel barBack = new Panel
             {
-                Left = right, Top = 62, Width = rightWidth, Height = 8,
+                Left = right, Top = compact ? 54 : 62, Width = rightWidth, Height = 8,
                 BackColor = LightTheme ? Color.FromArgb(242, 243, 245) : Color.FromArgb(54, 61, 73)
             };
             Panel bar = new Panel { Left = 0, Top = 0, Width = 1, Height = 8, BackColor = Accent };
             barBack.Controls.Add(bar);
             Label detail = new Label
             {
-                Left = right, Top = 78, Width = rightWidth, Height = 20, Text = "读取中...",
+                Left = right, Top = compact ? 68 : 78, Width = rightWidth, Height = 20, Text = "读取中...",
                 ForeColor = Muted, BackColor = Color.Transparent, Font = new Font(Font.FontFamily, 8F), AutoEllipsis = true
             };
             Label health = new Label
             {
-                Left = right, Top = 103, Width = rightWidth, Height = 22, Text = "--",
+                Left = right, Top = compact ? 91 : 103, Width = rightWidth, Height = 22, Text = "--",
                 ForeColor = Color.FromArgb(22, 163, 74), BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8.5F), AutoEllipsis = true
             };
@@ -5429,9 +5459,10 @@ namespace ToolboxClient
 
         private Control CreateVst76ActionPanel(int width)
         {
+            bool compact = Vst76OverviewUsesCompactLayout();
             RoundedPanel panel = new RoundedPanel
             {
-                Width = width, Height = 200, Margin = new Padding(0, 0, 0, 16),
+                Width = width, Height = compact ? 170 : 200, Margin = new Padding(0, 0, 0, compact ? 6 : 8),
                 BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 115 : 88, Line), Radius = 8
             };
             AddVst76ActionRow(panel, 0, "🧹", "内存清理", "可手动或定时释放内存", "立即释放", delegate { RunVst76MemoryCleanup(true); });
@@ -5466,10 +5497,11 @@ namespace ToolboxClient
 
         private void AddVst76ActionRow(Control panel, int index, string icon, string caption, string description, string buttonText, EventHandler click)
         {
-            int y = 10 + index * 66;
+            bool compact = Vst76OverviewUsesCompactLayout();
+            int y = (compact ? 4 : 10) + index * (compact ? 54 : 66);
             Label iconLabel = new Label
             {
-                Left = 16, Top = y + 8, Width = 32, Height = 34, Text = icon,
+                Left = 16, Top = y + (compact ? 5 : 8), Width = 32, Height = 34, Text = icon,
                 BackColor = Color.Transparent, Font = new Font("Segoe UI Emoji", 14F), TextAlign = ContentAlignment.MiddleCenter
             };
             Label titleLabel = new Label
@@ -5480,13 +5512,13 @@ namespace ToolboxClient
             };
             Label detailLabel = new Label
             {
-                Left = 52, Top = y + 29, Width = Math.Max(180, panel.Width - 280), Height = 23,
+                Left = 52, Top = y + (compact ? 25 : 29), Width = Math.Max(180, panel.Width - 280), Height = compact ? 19 : 23,
                 Text = description, ForeColor = Muted, BackColor = Color.Transparent,
                 Font = new Font(Font.FontFamily, 8F), AutoEllipsis = true
             };
             RoundButton action = new RoundButton
             {
-                Left = Math.Max(300, panel.Width - 105), Top = y + 8, Width = 88, Height = 32,
+                Left = Math.Max(300, panel.Width - 105), Top = y + (compact ? 5 : 8), Width = 88, Height = 32,
                 Text = buttonText, BackColor = Accent, HoverBackColor = Color.FromArgb(18, 100, 210),
                 ForeColor = Color.White, BorderColor = Accent, Radius = 6,
                 Font = new Font(Font.FontFamily, 8.5F, FontStyle.Bold), Cursor = Cursors.Hand
@@ -5497,9 +5529,10 @@ namespace ToolboxClient
 
         private Control CreateVst76ComputerInfoCard(int width)
         {
+            bool compact = Vst76OverviewUsesCompactLayout();
             RoundedPanel panel = new RoundedPanel
             {
-                Width = width, Height = 126, Margin = new Padding(0, 0, 0, 16),
+                Width = width, Height = compact ? 108 : 126, Margin = new Padding(0, 0, 0, compact ? 6 : 8),
                 BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 115 : 88, Line), Radius = 8
             };
             Label heading = new Label
@@ -5524,11 +5557,11 @@ namespace ToolboxClient
             ulong total, used; float percent;
             LocalMemoryInfo(out total, out used, out percent);
             int rightLeft = Math.Max(430, width / 2 + 8);
-            AddVst76InfoLine(panel, 16, 45, "系统", LocalWindowsName(), Math.Max(280, rightLeft - 32));
-            AddVst76InfoLine(panel, 16, 69, "显卡", LocalGpuName(), Math.Max(280, rightLeft - 32));
-            AddVst76InfoLine(panel, 16, 93, "主机名", Environment.MachineName, Math.Max(280, rightLeft - 32));
-            AddVst76InfoLine(panel, rightLeft, 45, "处理器", LocalCpuName(), Math.Max(220, width - rightLeft - 20));
-            AddVst76InfoLine(panel, rightLeft, 69, "内存", FormatGb(used) + " / " + FormatGb(total), Math.Max(220, width - rightLeft - 20));
+            AddVst76InfoLine(panel, 16, compact ? 38 : 45, "系统", LocalWindowsName(), Math.Max(280, rightLeft - 32));
+            AddVst76InfoLine(panel, 16, compact ? 60 : 69, "显卡", LocalGpuName(), Math.Max(280, rightLeft - 32));
+            AddVst76InfoLine(panel, 16, compact ? 82 : 93, "主机名", Environment.MachineName, Math.Max(280, rightLeft - 32));
+            AddVst76InfoLine(panel, rightLeft, compact ? 38 : 45, "处理器", LocalCpuName(), Math.Max(220, width - rightLeft - 20));
+            AddVst76InfoLine(panel, rightLeft, compact ? 60 : 69, "内存", FormatGb(used) + " / " + FormatGb(total), Math.Max(220, width - rightLeft - 20));
             return panel;
         }
 
@@ -5541,16 +5574,19 @@ namespace ToolboxClient
         private Control CreateVst76ResourcePanel(int width)
         {
             List<Dictionary<string, object>> buttons = Vst76HomeButtons();
-            const int columns = 3;
-            const int gap = 16;
-            const int rowGap = 12;
-            const int buttonHeight = 45;
-            const int progressHeight = 18;
+            bool compact = Vst76OverviewUsesCompactLayout();
+            const int gap = 10;
+            int maxColumns = Math.Max(3, (width - 24 + gap) / (132 + gap));
+            int columns = Math.Max(1, Math.Min(Math.Max(1, buttons.Count), maxColumns));
+            int rowGap = compact ? 6 : 8;
+            int buttonHeight = compact ? 36 : 40;
+            int progressHeight = compact ? 12 : 14;
+            int top = compact ? 6 : 8;
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
-            int height = 24 + rows * (buttonHeight + progressHeight) + Math.Max(0, rows - 1) * rowGap;
+            int height = top + rows * (buttonHeight + progressHeight) + Math.Max(0, rows - 1) * rowGap;
             RoundedPanel panel = new RoundedPanel
             {
-                Width = width, Height = height, Margin = new Padding(0, 0, 0, 16),
+                Width = width, Height = height, Margin = Padding.Empty,
                 BackColor = PanelBg, BorderColor = Color.FromArgb(LightTheme ? 115 : 88, Line), Radius = 8
             };
             if (buttons.Count == 0)
@@ -5558,11 +5594,11 @@ namespace ToolboxClient
                 panel.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "后台尚未配置首页按钮", ForeColor = Muted, BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, 9F) });
                 return panel;
             }
-            int buttonWidth = Math.Max(150, (width - 32 - gap * (columns - 1)) / columns);
+            int buttonWidth = Math.Max(100, (width - 24 - gap * (columns - 1)) / columns);
             for (int i = 0; i < buttons.Count; i++)
             {
-                int buttonTop = 12 + (i / columns) * (buttonHeight + progressHeight + rowGap);
-                Control button = CreateTunerActionButton(buttons[i], 16 + (i % columns) * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
+                int buttonTop = top + (i / columns) * (buttonHeight + progressHeight + rowGap);
+                Control button = CreateTunerActionButton(buttons[i], 12 + (i % columns) * (buttonWidth + gap), buttonTop, buttonWidth, buttonHeight, i);
                 panel.Controls.Add(button);
                 string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
                 if (action == "download")
@@ -5577,6 +5613,11 @@ namespace ToolboxClient
                 }
             }
             return panel;
+        }
+
+        private bool Vst76OverviewUsesCompactLayout()
+        {
+            return content != null && content.ClientSize.Height - content.Padding.Vertical < 620;
         }
 
         private List<Dictionary<string, object>> Vst76HomeButtons()
@@ -9277,6 +9318,17 @@ namespace ToolboxClient
         private void UpdateContentScrolling()
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            if (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage))))
+            {
+                content.AutoScroll = false;
+                content.AutoScrollPosition = Point.Empty;
+                content.AutoScrollMinSize = Size.Empty;
+                content.VerticalScroll.Visible = false;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
+                return;
+            }
             int requiredBottom = content.Padding.Top;
             foreach (Control child in content.Controls)
             {
