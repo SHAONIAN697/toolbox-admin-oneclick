@@ -679,6 +679,8 @@ def should_write_generic_audit(path, method):
         return False
     if path in ("/api/admin/announcements/read-all", "/api/admin/announcements/read-batch"):
         return False
+    if re.fullmatch(r"/api/admin/announcements/[^/]+/mail", path):
+        return False
     if re.fullmatch(r"/api/admin/announcements/[^/]+/read", path):
         return False
     return True
@@ -3269,6 +3271,91 @@ def send_notice_mail_to_users(notice, users=None):
     return True, f"已推送到 {len(recipients)} 个邮箱。"
 
 
+def smtp_failure_reason(exc):
+    """Convert SMTP/network exceptions to safe, actionable Chinese messages."""
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "邮箱服务器登录失败，请检查 SMTP 账号或授权码。"
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "收件人被邮箱服务器拒绝。"
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "发件人被邮箱服务器拒绝。"
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        return "邮箱服务器不支持当前 TLS 加密方式。"
+    if isinstance(exc, (TimeoutError, smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, ConnectionError, OSError)):
+        return "连接邮箱服务器失败或请求超时。"
+    if isinstance(exc, smtplib.SMTPException):
+        return "邮箱服务器发送失败。"
+    return "邮件发送失败，请检查 SMTP 配置。"
+
+
+def send_announcement_mail_to_users(announcement, users):
+    """Send one private message per recipient and return structured statistics."""
+    selected = len(users)
+    failures = []
+    sendable = []
+    for user in users:
+        user_id = str(user.get("id") or "")
+        email = str(user.get("email") or "").strip()
+        if user.get("active", True) is False:
+            failures.append({"userId": user_id, "reason": "账号已停用"})
+        elif not email:
+            failures.append({"userId": user_id, "reason": "未绑定邮箱"})
+        elif not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            failures.append({"userId": user_id, "reason": "邮箱地址无效"})
+        else:
+            sendable.append((user_id, email))
+
+    settings = read_mail_settings()
+    smtp_available = smtp_ready()
+    sent = 0
+    if not smtp_available:
+        failures.extend({"userId": user_id, "reason": "SMTP 未配置完整"} for user_id, _ in sendable)
+    else:
+        sender = settings.get("from") or settings.get("user") or os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER")
+        host = settings.get("host") or os.environ.get("SMTP_HOST")
+        port = int(settings.get("port") or os.environ.get("SMTP_PORT", "465"))
+        smtp_user = settings.get("user") or os.environ.get("SMTP_USER")
+        password = settings.get("password") or os.environ.get("SMTP_PASS")
+        subject = announcement.get("title") or "更新公告"
+        publish_time = announcement.get("publish_time") or announcement.get("updated_time") or ""
+        content = (
+            f"公告标题：{announcement.get('title') or '更新公告'}\n"
+            f"版本号：{announcement.get('version') or '无版本号'}\n"
+            f"公告类型：{announcement.get('type') or '功能更新'}\n"
+            f"摘要：{announcement.get('summary') or '无'}\n"
+            f"更新内容：\n{announcement.get('content') or ''}\n"
+            f"发布时间：{publish_time or '未设置'}"
+        )
+        for user_id, email in sendable:
+            msg = EmailMessage()
+            msg["From"] = sender
+            msg["To"] = email
+            msg["Subject"] = subject
+            msg.set_content(content)
+            try:
+                if settings.get("secure", True) or port == 465:
+                    with smtplib.SMTP_SSL(host, port, timeout=15) as smtp:
+                        smtp.login(smtp_user, password)
+                        smtp.send_message(msg)
+                else:
+                    with smtplib.SMTP(host, port, timeout=15) as smtp:
+                        smtp.starttls()
+                        smtp.login(smtp_user, password)
+                        smtp.send_message(msg)
+                sent += 1
+            except Exception as exc:
+                failures.append({"userId": user_id, "reason": smtp_failure_reason(exc)})
+    failed = len(failures)
+    return {
+        "ok": sent > 0,
+        "selected": selected,
+        "sent": sent,
+        "failed": failed,
+        "message": f"成功发送 {sent} 封，失败 {failed} 封",
+        "failures": failures,
+    }
+
+
 PAYMENT_CHANNEL_LABELS = {
     "easypay": "易支付一",
     "easypay2": "易支付二",
@@ -5065,6 +5152,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "只有总管理员可以邮箱推送通知。"}, 403)
             body = self.read_body()
             notice_id = (body.get("id") or "").strip()
+            if notice_id.startswith("announcement:"):
+                return self.send_json({"error": "该条目是更新公告，请前往更新公告页面推送。"}, 400)
             data = read_notices()
             notice = next((n for n in data.get("notices", []) if n.get("id") == notice_id and n.get("active", True) is not False), None)
             if not notice:
@@ -5239,6 +5328,38 @@ class Handler(BaseHTTPRequestHandler):
     def handle_admin_announcements(self, path, method, auth):
         user = auth["user"]
         user_id = user.get("id")
+        mail_match = re.fullmatch(r"/api/admin/announcements/([^/]+)/mail", path)
+        if mail_match and method == "POST":
+            if not is_super(user):
+                return self.send_json({"error": "只有超级管理员可以推送更新公告邮件。"}, 403)
+            announcement_id = mail_match.group(1)
+            store = read_admin_announcements()
+            item = next((entry for entry in store.get("announcements", []) if str(entry.get("id")) == announcement_id), None)
+            if not item:
+                return self.send_json({"error": "公告不存在。"}, 404)
+            if not announcement_is_available(item):
+                return self.send_json({"error": "只有已发布且当前有效的公告允许推送。"}, 400)
+            body = self.read_body()
+            raw_ids = body.get("userIds") if isinstance(body, dict) else None
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return self.send_json({"error": "userIds 必须是非空数组。"}, 400)
+            user_ids = list(dict.fromkeys(str(value).strip() for value in raw_ids if str(value).strip()))
+            if not user_ids:
+                return self.send_json({"error": "userIds 必须包含有效用户 ID。"}, 400)
+            users = read_users().get("users", [])
+            by_id = {str(entry.get("id")): entry for entry in users}
+            unknown = [value for value in user_ids if value not in by_id]
+            if unknown:
+                return self.send_json({"error": "包含不存在的用户 ID。", "unknownUserIds": unknown}, 400)
+            result = send_announcement_mail_to_users(item, [by_id[value] for value in user_ids])
+            audit_event("announcement_mail", user, announcement_id, self, {
+                "announcementId": announcement_id,
+                "title": item.get("title") or "",
+                "selected": result["selected"],
+                "sent": result["sent"],
+                "failed": result["failed"],
+            }, success=result["failed"] == 0)
+            return self.send_json(result)
         match = re.fullmatch(r"/api/admin/announcements/([^/]+)(?:/(publish|withdraw|read))?", path)
         with ADMIN_ANNOUNCEMENT_LOCK:
             store = read_admin_announcements()

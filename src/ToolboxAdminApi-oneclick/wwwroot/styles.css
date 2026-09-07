@@ -3779,6 +3779,20 @@ body.sidebar-collapsed .nav.active {
 .announcement-popup-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .announcement-popup-actions span { margin-right: auto; color: var(--muted); font-size: 12px; }
 .announcement-popup-hint { align-self: center; margin: 0; color: var(--muted); font-size: 12px; }
+.announcement-mail-card { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 12px; }
+.announcement-mail-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+.announcement-mail-tools input { flex: 1 1 240px; min-width: 0; }
+.announcement-mail-users { max-height: min(52vh, 500px); overflow-y: auto; display: grid; gap: 6px; padding-right: 4px; }
+.announcement-mail-user { display: grid; grid-template-columns: 28px repeat(4, minmax(0, 1fr)); gap: 10px; align-items: center; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; }
+.announcement-mail-user.is-disabled { opacity: .58; cursor: not-allowed; }
+.announcement-mail-user span { min-width: 0; display: grid; gap: 2px; }
+.announcement-mail-user strong, .announcement-mail-user small { overflow-wrap: anywhere; }
+.announcement-mail-user small { color: var(--muted); font-size: 11px; }
+.announcement-mail-empty, .announcement-mail-result { padding: 12px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; }
+.announcement-mail-result { color: var(--text); background: var(--panel-2); }
+.announcement-mail-result ul { margin: 8px 0 0; padding-left: 20px; }
+.announcement-mail-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.announcement-mail-footer strong { color: var(--muted); font-size: 13px; }
 body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; transform: none; }
 @media (max-width: 1100px) {
   .announcement-filters { grid-template-columns: 1fr 1fr; }
@@ -3789,6 +3803,8 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
   .announcement-filters, .announcement-editor-grid { grid-template-columns: 1fr; }
   .announcement-editor-grid .wide { grid-column: auto; }
   .announcement-popup-actions { flex-wrap: wrap; }
+  .announcement-mail-user { grid-template-columns: 28px 1fr 1fr; }
+  .announcement-mail-user span:nth-of-type(3), .announcement-mail-user span:nth-of-type(4) { grid-column: span 1; }
 }
 
 #userListSearch {

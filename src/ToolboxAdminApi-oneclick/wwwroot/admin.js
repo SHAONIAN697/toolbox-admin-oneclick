@@ -1969,16 +1969,18 @@ function renderNotices() {
     list.textContent = '暂无通知';
     return;
   }
-  list.innerHTML = state.notices.map((notice) => `
+  list.innerHTML = state.notices.map((notice) => {
+    const isAnnouncement = notice.refType === 'announcement' || String(notice.id || '').startsWith('announcement:');
+    return `
     <div class="notice-item ${notice.read ? 'is-read' : ''}" data-notice-id="${escapeAttr(notice.id || '')}" data-order-id="${escapeAttr(orderIdFromNotice(notice))}">
       <div class="notice-item-head">
         <strong>${escapeHtml(notice.title || '通知')}</strong>
-        ${isSuper() ? '<div class="notice-item-actions"><button class="notice-mail-one" type="button">邮箱推送</button><button class="notice-delete-one" type="button">删除</button></div>' : ''}
+        ${isSuper() && !isAnnouncement ? '<div class="notice-item-actions"><button class="notice-mail-one" type="button">邮箱推送</button><button class="notice-delete-one" type="button">删除</button></div>' : ''}
       </div>
       <p>${escapeHtml(notice.content || '')}</p>
       <small>${escapeHtml(noticeAuthorName(notice))} · ${escapeHtml(formatDateTime(notice.createdAt))}</small>
     </div>
-  `).join('');
+  `; }).join('');
   list.querySelectorAll('.notice-item').forEach((item) => {
     item.onclick = (event) => {
       if (event.target.closest('.notice-delete-one, .notice-mail-one')) return;
@@ -2025,6 +2027,16 @@ function orderIdFromNotice(notice) {
 }
 
 async function openNoticeItem(noticeId, orderId = '') {
+  if (String(noticeId || '').startsWith('announcement:')) {
+    const announcementId = String(noticeId).slice('announcement:'.length);
+    closeNoticeDropdown();
+    switchView('announcements');
+    await openAnnouncementDetail(announcementId);
+    const notice = state.notices.find((item) => item.id === noticeId);
+    if (notice) notice.read = true;
+    renderNotices();
+    return;
+  }
   if (noticeId) await markNoticeRead(noticeId);
   if (orderId && isSuper()) {
     const box = $('noticeDropdown');
@@ -5756,13 +5768,150 @@ function renderAdminAnnouncements() {
         <span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.summary || '暂无摘要')}</small></span>
       </button>
       <div class="announcement-meta"><span>${escapeHtml(item.version || '无版本号')}</span><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(announcementStatusLabel(item.status))}</span><span>${escapeHtml(formatDateTime(item.publish_time || item.updated_time))}</span><span>${escapeHtml(item.author || '')}</span>${isSuper() && item.readCount != null ? `<span>已读 ${item.readCount} 人${item.readUsers?.length ? `：${escapeHtml(item.readUsers.map(x => x.username || x.userId).join('、'))}` : ''}</span>` : ''}</div>
-      ${isSuper() ? `<div class="announcement-admin-actions"><button type="button" data-announcement-edit="${escapeAttr(item.id)}">编辑</button>${item.status === 'published' ? `<button type="button" data-announcement-withdraw="${escapeAttr(item.id)}">撤回</button>` : `<button type="button" data-announcement-publish="${escapeAttr(item.id)}">发布</button>`}<button class="danger" type="button" data-announcement-delete="${escapeAttr(item.id)}">删除</button></div>` : ''}
+      ${isSuper() ? `<div class="announcement-admin-actions"><button type="button" data-announcement-edit="${escapeAttr(item.id)}">编辑</button>${item.status === 'published' ? `<button type="button" data-announcement-withdraw="${escapeAttr(item.id)}">撤回</button>` : `<button type="button" data-announcement-publish="${escapeAttr(item.id)}">发布</button>`}<button class="danger" type="button" data-announcement-delete="${escapeAttr(item.id)}">删除</button>${announcementMailButton(item)}</div>` : ''}
     </article>`).join('') : '<div class="announcement-empty panel">没有符合条件的公告</div>';
   document.querySelectorAll('[data-announcement-open]').forEach((button) => { button.onclick = () => openAnnouncementDetail(button.dataset.announcementOpen); });
   document.querySelectorAll('[data-announcement-edit]').forEach((button) => { button.onclick = () => openAnnouncementEditor(state.announcements.find((x) => x.id === button.dataset.announcementEdit)); });
   document.querySelectorAll('[data-announcement-publish]').forEach((button) => { button.onclick = () => announcementAction(button.dataset.announcementPublish, 'publish'); });
   document.querySelectorAll('[data-announcement-withdraw]').forEach((button) => { button.onclick = () => announcementAction(button.dataset.announcementWithdraw, 'withdraw'); });
   document.querySelectorAll('[data-announcement-delete]').forEach((button) => { button.onclick = () => deleteAdminAnnouncement(button.dataset.announcementDelete); });
+  document.querySelectorAll('[data-announcement-mail]').forEach((button) => { button.onclick = () => openAnnouncementMail(button.dataset.announcementMail); });
+}
+
+function announcementMailState(item) {
+  if (!item || item.status === 'draft') return '草稿公告不可推送。';
+  if (item.status === 'withdrawn') return '公告已撤回，暂不可推送。';
+  if (item.status !== 'published') return '公告未发布，暂不可推送。';
+  if (item.enabled === false) return '公告已停用，暂不可推送。';
+  const publish = Date.parse(item.publish_time || '');
+  if (Number.isFinite(publish) && publish > Date.now()) return '公告尚未到发布时间。';
+  const expire = Date.parse(item.expire_time || '');
+  if (Number.isFinite(expire) && expire <= Date.now()) return '公告已过期，暂不可推送。';
+  return '';
+}
+
+function announcementMailButton(item) {
+  const reason = announcementMailState(item);
+  return `<button type="button" data-announcement-mail="${escapeAttr(item.id)}" ${reason ? `disabled title="${escapeAttr(reason)}"` : ''}>邮箱推送</button>`;
+}
+
+function announcementMailUserState(user) {
+  if (user?.active === false) return '账号已停用';
+  const email = String(user?.email || '').trim();
+  if (!email) return '未绑定邮箱';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return '邮箱地址无效';
+  return '';
+}
+
+function ensureAnnouncementMailModal() {
+  let overlay = $('announcementMailOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'announcementMailOverlay';
+  overlay.className = 'modal-overlay';
+  overlay.hidden = true;
+  overlay.innerHTML = `<div class="modal-card announcement-mail-card" role="dialog" aria-modal="true" aria-labelledby="announcementMailTitle">
+    <div class="panel-head"><div><h2 id="announcementMailTitle">邮箱推送</h2><small id="announcementMailStatus"></small></div><button id="announcementMailClose" type="button">关闭</button></div>
+    <div class="announcement-mail-tools"><input id="announcementMailSearch" type="search" placeholder="搜索用户名、显示名称或邮箱"><button id="announcementMailSelectAll" type="button">全选当前结果</button><button id="announcementMailClear" type="button">全部取消</button></div>
+    <div id="announcementMailUsers" class="announcement-mail-users"></div>
+    <div id="announcementMailResult" class="announcement-mail-result" hidden></div>
+    <div class="announcement-mail-footer"><strong id="announcementMailCount">已选择 0 人，可发送 0 个邮箱</strong><div class="button-pair"><button id="announcementMailCancel" type="button">取消</button><button id="announcementMailConfirm" type="button" disabled>确认推送</button></div></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay._selected = new Set();
+  overlay._busy = false;
+  overlay._completed = false;
+  const close = () => { if (!overlay._busy) overlay.hidden = true; };
+  $('announcementMailClose').onclick = close;
+  $('announcementMailCancel').onclick = close;
+  $('announcementMailSearch').oninput = renderAnnouncementMailUsers;
+  $('announcementMailSelectAll').onclick = () => {
+    announcementMailVisibleUsers().forEach((user) => { if (!announcementMailUserState(user)) overlay._selected.add(user.id); });
+    renderAnnouncementMailUsers();
+  };
+  $('announcementMailClear').onclick = () => { overlay._selected.clear(); renderAnnouncementMailUsers(); };
+  $('announcementMailConfirm').onclick = () => confirmAnnouncementMail();
+  return overlay;
+}
+
+function announcementMailVisibleUsers() {
+  const query = String($('announcementMailSearch')?.value || '').trim().toLowerCase();
+  return state.users.filter((user) => !query || `${user.username || ''} ${user.displayName || ''} ${user.email || ''}`.toLowerCase().includes(query));
+}
+
+function renderAnnouncementMailUsers() {
+  const overlay = ensureAnnouncementMailModal();
+  const rows = announcementMailVisibleUsers();
+  $('announcementMailUsers').innerHTML = rows.length ? rows.map((user) => {
+    const reason = announcementMailUserState(user);
+    const email = String(user.email || '').trim();
+    return `<label class="announcement-mail-user ${reason ? 'is-disabled' : ''}">
+      <input type="checkbox" data-announcement-mail-user="${escapeAttr(user.id)}" ${overlay._selected.has(user.id) ? 'checked' : ''} ${reason || overlay._busy || overlay._completed ? 'disabled' : ''}>
+      <span><strong>${escapeHtml(user.username || '')}</strong><small>用户名</small></span>
+      <span><strong>${escapeHtml(user.displayName || user.username || '')}</strong><small>显示名称</small></span>
+      <span><strong>${escapeHtml(email || '未绑定邮箱')}</strong><small>${escapeHtml(reason || '邮箱')}</small></span>
+      <span><strong>${escapeHtml(user.roleLabel || (user.role === 'super' ? '总管理员' : (user.role === 'agent' ? '代理' : '普通用户')))}</strong><small>账号角色</small></span>
+    </label>`;
+  }).join('') : '<div class="announcement-mail-empty">没有符合条件的用户</div>';
+  $('announcementMailUsers').querySelectorAll('[data-announcement-mail-user]').forEach((input) => {
+    input.onchange = () => { if (input.checked) overlay._selected.add(input.dataset.announcementMailUser); else overlay._selected.delete(input.dataset.announcementMailUser); renderAnnouncementMailUsers(); };
+  });
+  const count = overlay._selected.size;
+  $('announcementMailCount').textContent = `已选择 ${count} 人，可发送 ${count} 个邮箱`;
+  $('announcementMailConfirm').disabled = count === 0 || overlay._busy || overlay._completed;
+  $('announcementMailSelectAll').disabled = overlay._busy || overlay._completed;
+  $('announcementMailClear').disabled = overlay._busy || overlay._completed || count === 0;
+  $('announcementMailSearch').disabled = overlay._busy || overlay._completed;
+  $('announcementMailClose').disabled = overlay._busy;
+  $('announcementMailCancel').disabled = overlay._busy;
+}
+
+async function openAnnouncementMail(id) {
+  if (!isSuper()) return;
+  const item = state.announcements.find((entry) => entry.id === id);
+  const reason = announcementMailState(item);
+  if (!item || reason) { showToast(reason || '公告不存在。', 'error'); return; }
+  if (!state.users.length) await loadUsers();
+  const overlay = ensureAnnouncementMailModal();
+  overlay.dataset.announcementId = id;
+  overlay._selected = new Set();
+  overlay._busy = false;
+  overlay._completed = false;
+  $('announcementMailTitle').textContent = item.title || '更新公告';
+  $('announcementMailStatus').textContent = `公告状态：${announcementStatusLabel(item.status)}`;
+  $('announcementMailSearch').value = '';
+  $('announcementMailResult').hidden = true;
+  $('announcementMailResult').innerHTML = '';
+  $('announcementMailConfirm').textContent = '确认推送';
+  renderAnnouncementMailUsers();
+  overlay.hidden = false;
+}
+
+async function confirmAnnouncementMail() {
+  const overlay = ensureAnnouncementMailModal();
+  if (overlay._busy || overlay._completed || !overlay._selected.size) return;
+  const item = state.announcements.find((entry) => entry.id === overlay.dataset.announcementId);
+  const userIds = [...overlay._selected];
+  if (!item || !window.confirm(`确定将《${item.title || '更新公告'}》推送给 ${userIds.length} 位用户吗？`)) return;
+  overlay._busy = true;
+  $('announcementMailConfirm').textContent = '推送中...';
+  renderAnnouncementMailUsers();
+  try {
+    const result = await api(`/api/admin/announcements/${encodeURIComponent(item.id)}/mail`, { method: 'POST', body: JSON.stringify({ userIds }) });
+    overlay._completed = true;
+    const failures = Array.isArray(result.failures) ? result.failures : [];
+    $('announcementMailResult').innerHTML = `<strong>${escapeHtml(result.message || '')}</strong>${failures.length ? `<ul>${failures.map((failure) => { const user = state.users.find((entry) => entry.id === failure.userId); return `<li>${escapeHtml(user?.username || failure.userId)}：${escapeHtml(failure.reason || '发送失败')}</li>`; }).join('')}</ul>` : ''}`;
+    $('announcementMailResult').hidden = false;
+    showToast(result.message || '邮件推送完成。', result.failed ? 'warn' : 'success');
+  } catch (error) {
+    $('announcementMailResult').textContent = error.message || '邮件推送失败，请稍后重试。';
+    $('announcementMailResult').hidden = false;
+    showToast(error.message || '邮件推送失败。', 'error');
+  } finally {
+    overlay._busy = false;
+    $('announcementMailConfirm').textContent = overlay._completed ? '推送完成' : '确认推送';
+    renderAnnouncementMailUsers();
+  }
 }
 
 function ensureAnnouncementDetailModal() {
