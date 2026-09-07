@@ -127,23 +127,95 @@ show_status(){ systemctl status "$SERVICE" --no-pager -l || true; }
 service_action(){ systemctl "$1" "$SERVICE"; show_status; }
 
 change_password(){
-  local dir password
+  local dir password password_confirm target choice result
+  local -a admins
   dir="$(app_dir)"; [ -n "$dir" ] || { red "服务尚未安装"; return; }
-  read -r -s -p "输入总管理员新密码（至少 6 位）: " password; echo
-  [ "${#password}" -ge 6 ] || { red "密码长度不足"; return; }
-  TOOLBOX_NEW_PASSWORD="$password" python3 - "$dir" <<'PY'
-import hashlib,json,os,secrets,sys
+  mapfile -t admins < <(python3 - "$dir" <<'PY'
+import json,sys
 from pathlib import Path
 p=Path(sys.argv[1])/"data/users.json"
 d=json.loads(p.read_text(encoding="utf-8"))
-salt=secrets.token_hex(16); pwd=os.environ["TOOLBOX_NEW_PASSWORD"]
-h="sha256$%s$%s"%(salt,hashlib.sha256((salt+pwd).encode()).hexdigest())
-users=d.get("users",[]); admin=next((u for u in users if u.get("username")=="admin"),None)
-if not admin: raise SystemExit("未找到 admin 账号")
-admin["passwordHash"]=h
-p.write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding="utf-8")
+for user in d.get("users", []):
+    if isinstance(user, dict) and user.get("role") == "super" and user.get("active", True) is not False:
+        username = str(user.get("username") or "").strip()
+        if username:
+            print(username)
 PY
-  systemctl restart "$SERVICE"; green "总管理员密码已修改"
+  )
+  [ "${#admins[@]}" -gt 0 ] || { red "未找到启用中的超级管理员账号"; return; }
+  for choice in "${!admins[@]}"; do
+    admins[$choice]="${admins[$choice]%$'\r'}"
+  done
+  if [ "${#admins[@]}" -eq 1 ]; then
+    target="${admins[0]}"
+  else
+    yellow "检测到多个启用中的超级管理员，请选择要修改的账号："
+    for choice in "${!admins[@]}"; do
+      printf '%d. %s\n' "$((choice + 1))" "${admins[$choice]}"
+    done
+    read -r -p "请输入序号 [1-${#admins[@]}]: " choice
+    [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#admins[@]}" ] || { red "选择无效"; return; }
+    target="${admins[$((choice - 1))]}"
+  fi
+  green "将修改超级管理员账号：$target"
+  read -r -s -p "输入新密码（至少 10 位）: " password; echo
+  password="${password%$'\r'}"
+  [ "${#password}" -ge 10 ] || { red "密码长度不足，至少需要 10 位"; return; }
+  read -r -s -p "再次输入新密码: " password_confirm; echo
+  password_confirm="${password_confirm%$'\r'}"
+  [ "$password" = "$password_confirm" ] || { red "两次输入的密码不一致"; return; }
+  if ! result="$(export TOOLBOX_NEW_PASSWORD="$password" TOOLBOX_ADMIN_USERNAME="$target"; python3 - "$dir" <<'PY'
+import hashlib,json,os,secrets,sys
+from pathlib import Path
+
+root=Path(sys.argv[1])
+users_path=root/"data/users.json"
+sessions_path=root/"data/sessions.json"
+data=json.loads(users_path.read_text(encoding="utf-8"))
+target=os.environ["TOOLBOX_ADMIN_USERNAME"]
+admin=next((u for u in data.get("users", [])
+            if isinstance(u, dict) and u.get("username") == target
+            and u.get("role") == "super" and u.get("active", True) is not False), None)
+if not admin:
+    raise SystemExit("目标超级管理员不存在或已停用")
+
+salt=secrets.token_bytes(16)
+digest=hashlib.pbkdf2_hmac("sha256", os.environ["TOOLBOX_NEW_PASSWORD"].encode(), salt, 310000).hex()
+admin["passwordHash"]=f"pbkdf2_sha256$310000${salt.hex()}${digest}"
+
+def write_json_atomic(path, value):
+    temporary=path.with_name(path.name+f".tmp.{os.getpid()}")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    if path.exists():
+        os.chmod(temporary, path.stat().st_mode)
+    os.replace(temporary, path)
+
+revoked=0
+sessions={}
+if sessions_path.exists():
+    loaded=json.loads(sessions_path.read_text(encoding="utf-8"))
+    if isinstance(loaded, dict):
+        sessions=loaded
+        expired=[token for token,row in sessions.items()
+                 if isinstance(row, dict) and row.get("userId") == admin.get("id")]
+        for token in expired:
+            sessions.pop(token, None)
+        revoked=len(expired)
+
+write_json_atomic(users_path, data)
+if sessions_path.exists() and revoked:
+    write_json_atomic(sessions_path, sessions)
+print(f"{target}|{revoked}")
+PY
+  )"; then
+    red "密码修改失败，请检查 data/users.json 是否完整。"
+    return
+  fi
+  if systemctl restart "$SERVICE"; then
+    green "超级管理员 ${result%%|*} 的密码已修改，已撤销 ${result##*|} 个旧登录会话。"
+  else
+    red "密码已经写入，但服务重启失败，请执行：systemctl restart $SERVICE"
+  fi
 }
 
 backup_data(){
@@ -222,10 +294,12 @@ menu(){
   done
 }
 
-need_root
-if ! install_manager_command; then
-  yellow "管理命令暂时无法写入 /usr/local/bin，本次继续运行已下载的新脚本。"
-  yellow "可稍后执行：chattr -i /usr/local/bin/toolbox-admin"
+if [ "${TOOLBOX_ADMIN_SOURCE_ONLY:-0}" != "1" ]; then
+  need_root
+  if ! install_manager_command; then
+    yellow "管理命令暂时无法写入 /usr/local/bin，本次继续运行已下载的新脚本。"
+    yellow "可稍后执行：chattr -i /usr/local/bin/toolbox-admin"
+  fi
+  prepare_interactive_terminal
+  menu
 fi
-prepare_interactive_terminal
-menu

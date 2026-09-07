@@ -79,6 +79,36 @@ install_deps() {
     yellow "未能自动安装 C# 编译器。后台可以运行，但下载 EXE 前请手动安装 mono-devel/mono-complete 后重启 ${APP_NAME}。"
   fi
 }
+
+read_admin_accounts() {
+  local app_dir="$1"
+  python3 - "$app_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]) / "data/users.json"
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, ValueError, TypeError):
+    raise SystemExit(0)
+
+accounts = []
+for user in data.get("users", []):
+    if not isinstance(user, dict):
+        continue
+    if user.get("role") != "super" or user.get("active", True) is False:
+        continue
+    username = str(user.get("username") or "").strip()
+    if username:
+        accounts.append(username)
+print("、".join(accounts))
+PY
+}
+
+validate_admin_username() {
+  [[ "$1" =~ ^[A-Za-z0-9._@+-]{1,64}$ ]]
+}
 copy_source() {
   local src_dir="$1"
   local app_dir="$2"
@@ -114,6 +144,7 @@ write_service() {
   local app_dir="$1"
   local port="$2"
   local password="$3"
+  local username="$4"
   local service_file="/etc/systemd/system/${APP_NAME}.service"
 
   yellow "正在创建 systemd 服务..."
@@ -134,6 +165,7 @@ WorkingDirectory=${app_dir}
 Environment=TOOLBOX_HOST=127.0.0.1
 Environment=TOOLBOX_PORT=${port}
 Environment=TOOLBOX_ADMIN_TOKEN=${password}
+Environment=TOOLBOX_ADMIN_USERNAME=${username}
 ExecStart=/usr/bin/python3 ${app_dir}/app.py
 Restart=on-failure
 RestartSec=10
@@ -279,6 +311,8 @@ main() {
   existing_port="$(detect_service_env TOOLBOX_PORT || true)"
   local existing_token
   existing_token="$(detect_service_env TOOLBOX_ADMIN_TOKEN || true)"
+  local existing_username
+  existing_username="$(detect_service_env TOOLBOX_ADMIN_USERNAME || true)"
 
   if [ -n "$existing_app_dir" ] && [ -d "$existing_app_dir/data" ]; then
     yellow "检测到已部署目录：$existing_app_dir"
@@ -313,26 +347,49 @@ main() {
     is_update="1"
   fi
   local password
+  local admin_username
   if [ "$is_update" = "1" ]; then
     password="${existing_token:-$(random_password)}"
+    admin_username="${existing_username:-admin}"
     yellow "已进入更新模式：后台账号、密码、用户列表、邀请码和工具箱配置都会保留。"
   else
+    while true; do
+      admin_username="$(ask "请输入后台管理员账号" "admin")"
+      if validate_admin_username "$admin_username"; then
+        break
+      fi
+      red "管理员账号只能包含字母、数字及 . _ @ + -，长度为 1-64 位。"
+    done
     local password_default
     password_default="$(random_password)"
-    password="$(ask "请输入后台管理员密码，直接回车自动生成" "$password_default")"
+    while true; do
+      password="$(ask "请输入后台管理员密码（至少 12 位），直接回车自动生成" "$password_default")"
+      if [ "${#password}" -ge 12 ]; then
+        break
+      fi
+      red "管理员密码至少需要 12 位。"
+    done
   fi
 
   install_deps
   copy_source "$script_dir" "$app_dir"
-  write_service "$app_dir" "$port" "$password"
+  write_service "$app_dir" "$port" "$password" "$admin_username"
   patch_nginx "$domain" "$port" || true
+
+  local actual_admin_accounts=""
+  local account_wait
+  for account_wait in 1 2 3 4 5 6 7 8 9 10; do
+    actual_admin_accounts="$(read_admin_accounts "$app_dir")"
+    [ -n "$actual_admin_accounts" ] && break
+    sleep 0.2
+  done
 
   echo
   green "=== 部署完成 ==="
   echo "后台地址：http://${domain}"
-  echo "管理员账号：admin"
+  echo "管理员账号：${actual_admin_accounts:-$admin_username}"
   if [ "$is_update" = "1" ]; then
-    echo "管理员密码：保持原密码不变"
+    echo "管理员密码：沿用后台现有密码（密码已加密，无法显示明文）"
   else
     echo "管理员密码：${password}"
   fi

@@ -111,6 +111,7 @@ def ensure_studio_overview_page(config):
             changed = True
     return changed
 ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "").strip()
+ADMIN_USERNAME = os.environ.get("TOOLBOX_ADMIN_USERNAME", "admin").strip() or "admin"
 SESSIONS = {}
 SECURITY_LOCK = threading.RLock()
 LOGIN_ATTEMPTS = {}
@@ -2143,7 +2144,7 @@ def read_users():
             raise RuntimeError("首次启动必须通过 TOOLBOX_ADMIN_TOKEN 设置至少 12 位的管理员密码。")
         admin = {
             "id": "admin",
-            "username": "admin",
+            "username": ADMIN_USERNAME,
             "displayName": "总管理员",
             "role": "super",
             "active": True,
