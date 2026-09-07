@@ -48,13 +48,33 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
     def test_vst76_overview_is_prioritized_when_configured(self):
         build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
         vst_branch = build_nav[build_nav.index("if (vst76Variant)"):]
-        overview_add = vst_branch.index("if (!id.Equals(StudioOverviewPageId")
+        overview_add = vst_branch.index("if (tunerPages.ContainsKey(StudioOverviewPageId))")
         regular_loop = vst_branch.index("foreach (object item in tunerSidebar)", overview_add + 1)
         self.assertLess(overview_add, regular_loop)
+        self.assertIn("PageLabel(AsDict(Get(tunerPages, StudioOverviewPageId)), StudioOverviewPageId)", vst_branch)
+        self.assertIn("overviewLabel = NavLabel(row, StudioOverviewPageId, tunerPages)", vst_branch)
+        self.assertIn("tunerAdded.Add(StudioOverviewPageId)", vst_branch)
         configured_home = self.method("private string ConfiguredVst76HomePageId", "private void BuildNav")
         self.assertLess(configured_home.index("StudioOverviewPageId"), configured_home.index("IsConfiguredVst76HomeLabel"))
         self.assertIn("Text = label", self.source)
         self.assertIn("AccessibleName = label", self.source)
+
+    def test_flagship_overview_is_injected_when_sidebar_omits_it(self):
+        build_nav = self.method("private void BuildNav()", "private void QueueShowPage(")
+        vst_branch = build_nav[build_nav.index("if (vst76Variant)"):]
+        self.assertIn("if (tunerPages.ContainsKey(StudioOverviewPageId))", vst_branch)
+        self.assertIn('AddTunerNavButton(StudioOverviewPageId, overviewLabel', vst_branch)
+        self.assertIn("if (tunerAdded.Contains(id)) continue;", vst_branch)
+        self.assertIn("else if (navButtons.ContainsKey(StudioOverviewPageId)) ShowPage(StudioOverviewPageId);", vst_branch)
+
+    def test_first_config_queues_post_layout_page_render(self):
+        apply_config = self.method("private void ApplyConfig()", "private void ApplyTheme(")
+        self.assertIn("bool firstConfigApplication = !configApplied;", apply_config)
+        self.assertIn("if (firstConfigApplication) QueueInitialPageRender();", apply_config)
+        queue = self.method("private void QueueInitialPageRender", "private void ApplyTheme(")
+        self.assertIn("BeginInvoke(new Action(delegate", queue)
+        self.assertIn("RenderCurrentVisiblePage();", queue)
+        self.assertIn("ShowPage(key);", queue)
 
     def test_flagship_configured_buttons_use_catalog_style_icon_cards(self):
         self.assertIn("CreateVst76ConfiguredActionCard", self.source)

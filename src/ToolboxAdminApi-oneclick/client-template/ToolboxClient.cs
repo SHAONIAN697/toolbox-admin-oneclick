@@ -239,6 +239,7 @@ namespace ToolboxClient
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
+        private bool initialPageRenderQueued = false;
         private bool updatePromptShown = false;
         private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
@@ -2583,6 +2584,7 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
+            bool firstConfigApplication = !configApplied;
             Point previousScroll = CaptureContentScroll();
             string previousButtonContentLayout = buttonContentLayout;
             Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
@@ -2718,6 +2720,35 @@ namespace ToolboxClient
             side.ResumeLayout();
             ResumeLayout();
             HideStartupOverlay();
+            if (firstConfigApplication) QueueInitialPageRender();
+        }
+
+        private void QueueInitialPageRender()
+        {
+            if (initialPageRenderQueued || !configApplied || IsDisposed || Disposing || !IsHandleCreated) return;
+            initialPageRenderQueued = true;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    initialPageRenderQueued = false;
+                    if (IsDisposed || Disposing || !configApplied || content == null || content.IsDisposed) return;
+                    if (String.IsNullOrWhiteSpace(currentPage) || !navButtons.ContainsKey(currentPage))
+                    {
+                        foreach (string key in navButtons.Keys)
+                        {
+                            if (String.Equals(key, "settings", StringComparison.OrdinalIgnoreCase)) continue;
+                            ShowPage(key);
+                            return;
+                        }
+                    }
+                    RenderCurrentVisiblePage();
+                }));
+            }
+            catch
+            {
+                initialPageRenderQueued = false;
+            }
         }
 
         private void ApplyTheme(string theme)
@@ -3564,15 +3595,20 @@ namespace ToolboxClient
 
                 if (vst76Variant)
                 {
-                    foreach (object item in tunerSidebar)
+                    if (tunerPages.ContainsKey(StudioOverviewPageId))
                     {
-                        Dictionary<string, object> row = AsDict(item);
-                        string id = GetText(row, "id", "");
-                        if (!id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
-                        string label = NavLabel(row, id, tunerPages);
-                        AddTunerNavButton(id, label, TemplateNavIcon(label, id));
-                        tunerAdded.Add(id);
-                        break;
+                        string overviewLabel = PageLabel(AsDict(Get(tunerPages, StudioOverviewPageId)), StudioOverviewPageId);
+                        foreach (object item in tunerSidebar)
+                        {
+                            Dictionary<string, object> row = AsDict(item);
+                            string id = GetText(row, "id", "");
+                            if (!id.Equals(StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) continue;
+                            overviewLabel = NavLabel(row, StudioOverviewPageId, tunerPages);
+                            break;
+                        }
+                        if (String.IsNullOrWhiteSpace(overviewLabel)) overviewLabel = "系统概览";
+                        AddTunerNavButton(StudioOverviewPageId, overviewLabel, TemplateNavIcon(overviewLabel, StudioOverviewPageId));
+                        tunerAdded.Add(StudioOverviewPageId);
                     }
                     foreach (object item in tunerSidebar)
                     {
@@ -3596,6 +3632,7 @@ namespace ToolboxClient
                         tunerAdded.Add(Vst76HomePageId);
                     }
                     if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
+                    else if (navButtons.ContainsKey(StudioOverviewPageId)) ShowPage(StudioOverviewPageId);
                     else foreach (string key in navButtons.Keys) { ShowPage(key); break; }
                     nav.HorizontalScroll.Visible = false;
                     nav.HorizontalScroll.Enabled = false;
@@ -17313,7 +17350,7 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                Rectangle rect = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
                 Color fill = LightTheme
                     ? (hovered ? Color.FromArgb(248, 251, 255) : Color.FromArgb(253, 254, 255))
                     : (hovered ? Color.FromArgb(59, 66, 82) : PanelBg2);
