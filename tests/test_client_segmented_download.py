@@ -31,12 +31,12 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         self.assertNotIn("current = task.LastResolvedUrl;", method)
         self.assertLess(method.index(loop), method.index(request))
 
-    def test_fast_start_probe_uses_legacy_timeout(self):
+    def test_fast_start_probe_uses_short_timeout(self):
         probe_start = self.source.index("private RemoteDownloadInfo ProbeRemoteDownloadInfo(")
         probe_end = self.source.index("private HttpWebResponse OpenProbeDownloadResponse(", probe_start)
         probe = self.source[probe_start:probe_end]
 
-        self.assertIn("int timeout = task.FastStartDirectDownload ? 4000 : 12000;", probe)
+        self.assertIn("int timeout = task.FastStartDirectDownload ? 1500 : 12000;", probe)
 
     def test_legacy_download_path_does_not_run_drive_switching(self):
         attempt_start = self.source.index("private void DownloadFileAttempt(")

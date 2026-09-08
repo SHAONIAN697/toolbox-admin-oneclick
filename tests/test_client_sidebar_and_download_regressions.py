@@ -29,6 +29,10 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertNotIn("TrimEnd('\\\\')", self.source)
         self.assertIn("drive.Name ?? \"\").TrimEnd(new char[] { '\\\\' })", self.source)
 
+    def test_direct_downloads_skip_visible_prepare_delay_and_use_short_probe_timeout(self):
+        self.assertIn("LooksLikeDirectDownloadFile(originalUrl)", self.source)
+        self.assertIn("task.FastStartDirectDownload ? 1500 : 12000", self.source)
+
     @classmethod
     def setUpClass(cls):
         cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")

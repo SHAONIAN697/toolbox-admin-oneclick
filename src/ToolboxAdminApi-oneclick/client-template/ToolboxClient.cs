@@ -10853,7 +10853,9 @@ namespace ToolboxClient
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             ShowVst76InlineDownloadPreparing(displayName);
             if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
-            status.Text = PortalText("正在解析下载地址...", "Preparing download...");
+            status.Text = LooksLikeDirectDownloadFile(originalUrl)
+                ? PortalText("正在加入下载队列...", "Adding to download queue...")
+                : PortalText("正在解析下载地址...", "Preparing download...");
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
             ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl); });
@@ -12182,7 +12184,7 @@ namespace ToolboxClient
             if (task == null) return info;
             try
             {
-                int timeout = task.FastStartDirectDownload ? 4000 : 12000;
+                int timeout = task.FastStartDirectDownload ? 1500 : 12000;
                 using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, timeout, timeout))
                 {
                     info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
