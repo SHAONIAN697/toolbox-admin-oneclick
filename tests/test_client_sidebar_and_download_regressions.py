@@ -17,6 +17,12 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("status.Text.TrimEnd(new char[0])", source)
         self.assertNotIn("status.Text.TrimEnd()", source)
 
+    def test_direct_file_urls_bypass_cloud_parser_and_range_can_fallback(self):
+        self.assertIn("string directFileName = DirectDownloadFileNameFromText(url);", self.source)
+        self.assertIn("if (IsHttpUrl(url) && !String.IsNullOrWhiteSpace(directFileName))", self.source)
+        self.assertIn("result.Download == null && IsHttpUrl(originalUrl)", self.source)
+        self.assertIn("DownloadFileSingleConnection(task, attempt);", self.source)
+
     @classmethod
     def setUpClass(cls):
         cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")

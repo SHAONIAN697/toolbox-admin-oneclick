@@ -10914,6 +10914,18 @@ namespace ToolboxClient
                     {
                     }
                 }
+                if (result.Download == null && IsHttpUrl(originalUrl))
+                {
+                    result.Download = new DownloadRequest
+                    {
+                        OriginalUrl = originalUrl,
+                        Url = originalUrl,
+                        FileName = FileNameFromUrl(originalUrl),
+                        BrowserUrl = originalUrl,
+                        FastStartDirectDownload = true
+                    };
+                    result.Error = null;
+                }
                 if (result.Download == null) result.Error = ex;
             }
 
@@ -11036,6 +11048,18 @@ namespace ToolboxClient
 
         private DownloadRequest ResolveDownloadRequest(string url)
         {
+            string directFileName = DirectDownloadFileNameFromText(url);
+            if (IsHttpUrl(url) && !String.IsNullOrWhiteSpace(directFileName))
+            {
+                return new DownloadRequest
+                {
+                    OriginalUrl = url,
+                    Url = url,
+                    FileName = directFileName,
+                    BrowserUrl = url,
+                    FastStartDirectDownload = true
+                };
+            }
             DownloadRequest request = Resolve8UidDownloadRequest(url);
             if (request == null) request = ResolveCloud189ClientDownloadRequest(url);
             if (request == null)
@@ -11822,9 +11846,10 @@ namespace ToolboxClient
             SegmentedDownloadPlan plan;
             if (!TryCreateSegmentedDownloadPlan(task, out plan))
             {
-                task.StateText = "服务器不支持32线程分片";
+                task.StateText = "服务器不支持分片，切换普通下载";
                 QueueDownloadTaskRowUpdate(task);
-                throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
+                DownloadFileSingleConnection(task, attempt);
+                return;
             }
 
             DownloadFileSegmented(task, plan, attempt);
