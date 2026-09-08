@@ -11846,10 +11846,9 @@ namespace ToolboxClient
             SegmentedDownloadPlan plan;
             if (!TryCreateSegmentedDownloadPlan(task, out plan))
             {
-                task.StateText = "服务器不支持分片，切换普通下载";
+                task.StateText = "服务器不支持32线程分片";
                 QueueDownloadTaskRowUpdate(task);
-                DownloadFileSingleConnection(task, attempt);
-                return;
+                throw new InvalidOperationException("服务器不支持 Range 分片下载，无法使用32线程下载。");
             }
 
             DownloadFileSegmented(task, plan, attempt);

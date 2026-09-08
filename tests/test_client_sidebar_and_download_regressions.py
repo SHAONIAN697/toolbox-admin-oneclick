@@ -17,11 +17,13 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("status.Text.TrimEnd(new char[0])", source)
         self.assertNotIn("status.Text.TrimEnd()", source)
 
-    def test_direct_file_urls_bypass_cloud_parser_and_range_can_fallback(self):
+    def test_direct_file_urls_bypass_cloud_parser_and_require_segmented_download(self):
         self.assertIn("string directFileName = DirectDownloadFileNameFromText(url);", self.source)
         self.assertIn("if (IsHttpUrl(url) && !String.IsNullOrWhiteSpace(directFileName))", self.source)
         self.assertIn("result.Download == null && IsHttpUrl(originalUrl)", self.source)
-        self.assertIn("DownloadFileSingleConnection(task, attempt);", self.source)
+        self.assertIn("服务器不支持 Range 分片下载，无法使用32线程下载。", self.source)
+        attempt = self.method("private void DownloadFileAttempt(", "private bool TryCreateSegmentedDownloadPlan(")
+        self.assertNotIn("DownloadFileSingleConnection(task, attempt);", attempt)
 
     @classmethod
     def setUpClass(cls):
