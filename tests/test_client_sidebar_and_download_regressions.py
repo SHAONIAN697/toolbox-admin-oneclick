@@ -25,6 +25,10 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         attempt = self.method("private void DownloadFileAttempt(", "private bool TryCreateSegmentedDownloadPlan(")
         self.assertNotIn("DownloadFileSingleConnection(task, attempt);", attempt)
 
+    def test_drive_path_trimming_uses_legacy_runtime_compatible_overload(self):
+        self.assertNotIn("TrimEnd('\\\\')", self.source)
+        self.assertIn("drive.Name ?? \"\").TrimEnd(new char[] { '\\\\' })", self.source)
+
     @classmethod
     def setUpClass(cls):
         cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")
