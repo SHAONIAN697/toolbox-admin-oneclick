@@ -12,6 +12,11 @@ CLIENT_SOURCE = (
 
 
 class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
+    def test_status_clock_uses_legacy_runtime_compatible_trim_end(self):
+        source = CLIENT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("status.Text.TrimEnd(new char[0])", source)
+        self.assertNotIn("status.Text.TrimEnd()", source)
+
     @classmethod
     def setUpClass(cls):
         cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")

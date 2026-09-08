@@ -413,7 +413,7 @@ namespace ToolboxClient
         private void UpdateStatusClock()
         {
             if (status == null || status.IsDisposed || String.IsNullOrWhiteSpace(status.Text)) return;
-            string value = status.Text.TrimEnd();
+            string value = status.Text.TrimEnd(new char[0]);
             if (value.Length < 9 || value[value.Length - 9] != ' ') return;
             string time = value.Substring(value.Length - 8);
             DateTime parsed;
