@@ -177,6 +177,7 @@ SOFTWARE_CATALOG_BUILTIN = [
     {"id": "builtin-vlc", "name": "VLC media player", "score": 4.8, "description": "开源跨平台媒体播放器", "website": "https://www.videolan.org/", "source": "builtin"},
     {"id": "builtin-7zip", "name": "7-Zip", "score": 4.9, "description": "高压缩比文件归档工具", "website": "https://www.7-zip.org/", "source": "builtin"},
     {"id": "builtin-audacity", "name": "Audacity", "score": 4.7, "description": "开源音频录制与编辑工具", "website": "https://www.audacityteam.org/", "source": "builtin"},
+    {"id": "builtin-vc-runtime", "name": "微软 VC++ 运行库合集", "score": 4.9, "description": "Visual C++ 运行库合集，覆盖常用 VC 运行环境。", "website": "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist", "source": "builtin"},
 ]
 SOFTWARE_CATALOG_ENABLED = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off", "disabled")
 SOFTWARE_CATALOG_HOME_URL = os.environ.get("TOOLBOX_SOFTWARE_CATALOG_HOME_URL", "https://lestore.lenovo.com/api/webstorecontents/page/contents")
@@ -344,7 +345,11 @@ def _catalog_entry(raw, source="lenovo"):
     name = str(raw.get("softName") or raw.get("name") or raw.get("appName") or "").strip()
     if not name: return None
     icon = str(raw.get("logoFile") or raw.get("icon") or "").strip()
-    if icon and not icon.lower().startswith("https://"): icon = ""
+    # Several vendor feeds still publish HTTP image URLs. Upgrade them to HTTPS
+    # so the client can use the source icon without weakening transport policy.
+    # Keep the vendor's original scheme. Some catalog CDNs only serve images
+    # over HTTP and the client is configured to support both schemes.
+    if icon and not (icon.lower().startswith("https://") or icon.lower().startswith("http://")): icon = ""
     try: score = max(0, min(5, float(raw.get("score") or 0)))
     except (TypeError, ValueError): score = 0
     return {"id": str(raw.get("softID") or raw.get("id") or sha256_hex(name)[:16]), "name": name, "iconUrl": icon, "score": score,
@@ -371,6 +376,31 @@ def software_catalog_builtin():
     return [dict(item, iconUrl="", downloadUrl="") for item in SOFTWARE_CATALOG_BUILTIN]
 
 
+def _catalog_name_key(value):
+    """Normalize names so identical apps from different vendors collapse to the first result."""
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
+    for suffix in ("官方版", "最新版", "安装包", "客户端", "软件"):
+        if text.endswith(suffix): text = text[:-len(suffix)]
+    return text
+
+
+def _catalog_merge_unique(*groups, limit=96):
+    rows = []
+    seen_ids = set()
+    seen_names = set()
+    for group in groups:
+        for item in group or []:
+            if not isinstance(item, dict): continue
+            key = _catalog_name_key(item.get("name"))
+            item_id = str(item.get("id") or "")
+            if (item_id and item_id in seen_ids) or (key and key in seen_names): continue
+            if item_id: seen_ids.add(item_id)
+            if key: seen_names.add(key)
+            rows.append(item)
+            if len(rows) >= limit: return rows
+    return rows
+
+
 def software_catalog_home(force=False):
     if not SOFTWARE_CATALOG_ENABLED: return software_catalog_builtin(), "disabled"
     now = time.time()
@@ -378,7 +408,7 @@ def software_catalog_home(force=False):
         cached = SOFTWARE_CATALOG_CACHE.get("home")
         if cached and not force and now - cached["at"] < SOFTWARE_CATALOG_HOME_TTL: return cached["rows"], "online"
     try:
-        rows = _catalog_extract(_catalog_http(SOFTWARE_CATALOG_HOME_URL), False)[:96]
+        rows = _catalog_merge_unique(_catalog_extract(_catalog_http(SOFTWARE_CATALOG_HOME_URL), False))
         if rows:
             with SOFTWARE_CATALOG_LOCK: SOFTWARE_CATALOG_CACHE["home"] = {"at": now, "rows": rows}
             return rows, "online"
@@ -397,7 +427,7 @@ def software_catalog_search(query):
         cached = SOFTWARE_CATALOG_CACHE["search"].get(query)
         if cached and now - cached["at"] < SOFTWARE_CATALOG_SEARCH_TTL: return cached["rows"], "online"
     try:
-        rows = _catalog_extract(_catalog_http(SOFTWARE_CATALOG_SEARCH_URL, "POST", {"searchKey": query}), True)[:96]
+        rows = _catalog_merge_unique(_catalog_extract(_catalog_http(SOFTWARE_CATALOG_SEARCH_URL, "POST", {"searchKey": query}), True), local)
         with SOFTWARE_CATALOG_LOCK: SOFTWARE_CATALOG_CACHE["search"][query] = {"at": now, "rows": rows}
         return rows, "online"
     except Exception:

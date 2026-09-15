@@ -1154,7 +1154,7 @@ namespace ToolboxClient
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             if (vst76Variant)
             {
-                sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+                sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 90F));
             }
             side.Controls.Add(sideLayout);
 
@@ -1217,6 +1217,11 @@ namespace ToolboxClient
 
             if (vst76Variant)
             {
+                // The download glyph is narrower than the gear glyph; the extra spacing keeps both labels aligned.
+                Button downloadsButton = MakeVst76SideUtilityButton("⇩   下载", false);
+                downloadsButton.AutoSize = false;
+                downloadsButton.Size = new Size(158, 38);
+                downloadsButton.Click += delegate { ShowPage("downloads"); };
                 Panel settingsRow = new Panel
                 {
                     Dock = DockStyle.Fill,
@@ -1224,17 +1229,23 @@ namespace ToolboxClient
                     Margin = Padding.Empty
                 };
                 settingsButton = MakeVst76SideUtilityButton("⚙ 设置", false);
+                settingsButton.AutoSize = false;
                 settingsButton.Size = new Size(158, 38);
                 settingsButton.Click += delegate { ShowPage("settings"); };
-                Action centerSettingsButton = delegate
+                Action alignUtilityButtons = delegate
                 {
-                    settingsButton.Left = Math.Max(0, (settingsRow.ClientSize.Width - settingsButton.Width) / 2);
-                    settingsButton.Top = Math.Max(0, (settingsRow.ClientSize.Height - settingsButton.Height) / 2);
+                    int left = Math.Max(0, (settingsRow.ClientSize.Width - 158) / 2);
+                    downloadsButton.Left = left;
+                    settingsButton.Left = left;
+                    downloadsButton.Width = settingsButton.Width = 158;
+                    downloadsButton.Top = 2;
+                    settingsButton.Top = 44;
                 };
-                settingsRow.Resize += delegate { centerSettingsButton(); };
+                settingsRow.Controls.Add(downloadsButton);
                 settingsRow.Controls.Add(settingsButton);
                 sideLayout.Controls.Add(settingsRow, 0, 2);
-                centerSettingsButton();
+                settingsRow.Resize += delegate { alignUtilityButtons(); };
+                alignUtilityButtons();
             }
 
             Panel main = new Panel
@@ -3426,7 +3437,8 @@ namespace ToolboxClient
         private int SoftwareCatalogDisplayLimit(bool hasQuery, string category)
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
-            int fallback = hasQuery ? 120 : 96;
+            // The catalog is scrollable; keep the full vendor result set visible by default.
+            int fallback = hasQuery ? 240 : 240;
             int limit = IntValue(features, "software_catalog_display_limit", fallback);
             return Math.Max(24, Math.Min(240, limit));
         }
@@ -4018,6 +4030,7 @@ namespace ToolboxClient
             {
                 if (audioVariant) RenderAudioDownloadsPage();
                 else if (portalVariant) RenderPortalDownloadsPage();
+                else if (tunerVariant || vst76Variant) RenderTunerDownloadsPage();
                 else ShowDownloadRecords();
                 return;
             }
@@ -4189,6 +4202,14 @@ namespace ToolboxClient
                 title.Text = "系统设置";
                 if (vst76Variant) RenderVst76SettingsPage();
                 else RenderTunerSettingsPage();
+                return;
+            }
+            if (vst76Variant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                currentPage = id;
+                MarkNavButtonActive(id);
+                title.Text = "下载管理";
+                RenderTunerDownloadsPage();
                 return;
             }
             if (tunerVariant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
@@ -7660,6 +7681,16 @@ namespace ToolboxClient
             softwareSearchBox.TextChanged += delegate
             {
                 softwareCatalogQuery = softwareSearchBox.Text;
+                if (String.IsNullOrWhiteSpace(softwareCatalogQuery))
+                {
+                    // Invalidate any keyword search still running. Returning to the
+                    // default catalog must not keep its spinner or stale results.
+                    wingetCatalogSearchVersion++;
+                    wingetCatalogSearching = false;
+                    wingetCatalogPendingQuery = "";
+                    wingetCatalogQuery = "";
+                    wingetCatalogResults = new List<SoftwareCatalogEntry>();
+                }
                 QueueSoftwareCatalogRefresh();
             };
             softwareCategoryBox.SelectedIndexChanged += delegate
@@ -7732,7 +7763,8 @@ namespace ToolboxClient
                     if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
                 }
             }
-            bool useOnlyReferenceCatalog = (vst76Variant || audioVariant) && remoteReady && remoteSoftwareCatalogEntries.Count > 0;
+            // Merge every available source. The reference vendor remains first; later identical names are hidden.
+            bool useOnlyReferenceCatalog = false; // (vst76Variant || audioVariant) && remoteReady is intentionally no longer exclusive.
             foreach (SoftwareCatalogEntry entry in localResults)
             {
                 if (useOnlyReferenceCatalog) break;
@@ -7776,6 +7808,29 @@ namespace ToolboxClient
                 softwareResultsPanel.Height = Math.Max(188, rows * (cardHeight + gap) + 6);
                 content.AutoScrollMinSize = new Size(0, softwareResultsPanel.Bottom + softwareResultsPanel.Margin.Bottom + 12);
                 ClearChildControls(softwareResultsPanel);
+                if ((hasQuery && remoteSoftwareCatalogLoading) || wingetCatalogSearching)
+                {
+                    Panel loading = new Panel
+                    {
+                        Width = Math.Max(260, cardWidth), Height = 92,
+                        Margin = new Padding(0, 0, gap, gap),
+                        BackColor = SoftwareCatalogPanelBackColor()
+                    };
+                    LoadingSpinnerControl spinner = new LoadingSpinnerControl
+                    {
+                        Left = Math.Max(8, (loading.Width - 28) / 2), Top = 16,
+                        Width = 28, Height = 28, AccentColor = SoftwareCatalogAccentColor()
+                    };
+                    Label loadingText = new Label
+                    {
+                        Left = 8, Top = 52, Width = loading.Width - 16, Height = 24,
+                        Text = "正在搜索软件，请稍候...", ForeColor = SoftwareCatalogMutedColor(),
+                        BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter
+                    };
+                    loading.Controls.Add(spinner);
+                    loading.Controls.Add(loadingText);
+                    softwareResultsPanel.Controls.Add(loading);
+                }
                 if (results.Count == 0)
                 {
                     softwareResultsPanel.Controls.Add(CreateSoftwareNoResultCard(cardWidth, cardHeight + 28, query));
@@ -7804,7 +7859,9 @@ namespace ToolboxClient
             if (!remoteSoftwareCatalogLoading && remoteSoftwareCatalogQuery != null && String.Equals(remoteSoftwareCatalogQuery, requestedQuery, StringComparison.Ordinal)) return;
             if (remoteSoftwareCatalogLoading && String.Equals(remoteSoftwareCatalogPendingQuery, requestedQuery, StringComparison.Ordinal)) return;
             int version = ++remoteSoftwareCatalogRequestVersion;
-            remoteSoftwareCatalogLoading = true;
+            // Home refresh happens silently; only an actual keyword lookup shows
+            // the searching indicator.
+            remoteSoftwareCatalogLoading = !String.IsNullOrWhiteSpace(requestedQuery);
             remoteSoftwareCatalogPendingQuery = requestedQuery;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -8026,6 +8083,7 @@ namespace ToolboxClient
             AddDirectorySearchEntry(results, "360 软件宝库搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 360 软件宝库 下载"), "覆盖常用 Windows 软件和游戏，可继续在 360 软件宝库里搜索下载。", "360软件大全");
             AddDirectorySearchEntry(results, "2345 软件大全搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 2345 软件大全 下载"), "打开 2345 软件大全相关搜索结果，作为未收录软件的补充入口。", "2345软件大全");
             AddDirectorySearchEntry(results, "火绒软件入口搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 火绒 应用商店 下载"), "打开火绒相关软件入口搜索，适合继续找安全来源。", "火绒软件大全");
+            AddDirectorySearchEntry(results, "腾讯软件中心搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 腾讯软件中心 下载"), "打开腾讯软件中心相关搜索结果，作为未收录软件的补充入口。", "腾讯软件大全");
             AddDirectorySearchEntry(results, "全网官方下载搜索", keyword, "https://www.baidu.com/s?wd=" + Uri.EscapeDataString(keyword + " 官方下载 Windows"), "打开全网官方下载搜索，优先找官网、微软商店或可信软件下载页。", "官方下载");
         }
 
@@ -8047,13 +8105,24 @@ namespace ToolboxClient
 
         private bool ContainsSoftwareEntry(List<SoftwareCatalogEntry> results, SoftwareCatalogEntry entry)
         {
+            string normalizedName = NormalizeSoftwareCatalogName(entry == null ? "" : entry.Name);
             foreach (SoftwareCatalogEntry existing in results)
             {
                 if (!String.IsNullOrWhiteSpace(entry.PackageId) &&
                     entry.PackageId.Equals(existing.PackageId, StringComparison.OrdinalIgnoreCase)) return true;
-                if (entry.Name.Equals(existing.Name, StringComparison.OrdinalIgnoreCase)) return true;
+                if (entry.Name.Equals(existing.Name, StringComparison.OrdinalIgnoreCase) ||
+                    (!String.IsNullOrWhiteSpace(normalizedName) && normalizedName.Equals(NormalizeSoftwareCatalogName(existing.Name), StringComparison.OrdinalIgnoreCase))) return true;
             }
             return false;
+        }
+
+        private static string NormalizeSoftwareCatalogName(string value)
+        {
+            string text = Regex.Replace((value ?? "").ToLowerInvariant(), "[^a-z0-9\\u4e00-\\u9fff]+", "");
+            string[] suffixes = new string[] { "官方版", "最新版", "安装包", "客户端", "软件" };
+            foreach (string suffix in suffixes)
+                if (text.EndsWith(suffix, StringComparison.Ordinal)) text = text.Substring(0, text.Length - suffix.Length);
+            return text;
         }
 
         private List<SoftwareCatalogEntry> SearchWingetCatalogEntries(string wingetKeyword, string originalQuery)
@@ -8130,7 +8199,7 @@ namespace ToolboxClient
                     Category = category,
                     Description = "来自 Windows Winget 软件源；点击安装会解析安装包地址并加入工具箱下载。",
                     PackageId = packageId,
-                    Website = "https://winget.run/pkg/" + Uri.EscapeDataString(packageId.Replace(".", "/")),
+                    Website = WingetOfficialWebsite(packageId, name),
                     DownloadUrl = "",
                     SearchOnly = false,
                     Tags = new string[] { originalQuery, "winget", "软件源", "下载" }
@@ -8138,6 +8207,20 @@ namespace ToolboxClient
                 if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
             }
             return results;
+        }
+
+        private static string WingetOfficialWebsite(string packageId, string name)
+        {
+            string value = ((packageId ?? "") + " " + (name ?? "")).ToLowerInvariant();
+            if (value.IndexOf("sysinternals", StringComparison.Ordinal) >= 0 || value.IndexOf("autoruns", StringComparison.Ordinal) >= 0 || value.IndexOf("process.explorer", StringComparison.Ordinal) >= 0) return "https://learn.microsoft.com/sysinternals/";
+            if (value.IndexOf("malwarebytes", StringComparison.Ordinal) >= 0) return "https://www.malwarebytes.com/";
+            if (value.IndexOf("libreoffice", StringComparison.Ordinal) >= 0) return "https://www.libreoffice.org/";
+            if (value.IndexOf("notion", StringComparison.Ordinal) >= 0) return "https://www.notion.so/";
+            if (value.IndexOf("kingsoft", StringComparison.Ordinal) >= 0 || value.IndexOf("wps", StringComparison.Ordinal) >= 0) return "https://www.wps.com/";
+            if (value.IndexOf("adobe.acrobat", StringComparison.Ordinal) >= 0) return "https://www.adobe.com/acrobat/";
+            if (value.IndexOf("tencent", StringComparison.Ordinal) >= 0 || value.IndexOf("qq", StringComparison.Ordinal) >= 0) return "https://www.tencent.com/";
+            if (value.IndexOf("huorong", StringComparison.Ordinal) >= 0 || value.IndexOf("火绒", StringComparison.Ordinal) >= 0) return "https://www.huorong.cn/";
+            return "https://winget.run/pkg/" + Uri.EscapeDataString((packageId ?? "").Replace(".", "/"));
         }
 
         private static string CleanWingetOutputLine(string value)
@@ -8234,7 +8317,8 @@ namespace ToolboxClient
             Color accent = CardAccent("winget", entry.Name, index);
             bool detailedCard = vst76Variant || audioVariant;
             int iconSize = detailedCard ? 48 : 34;
-            Image cachedIcon = GetCachedButtonIcon(entry.IconUrl);
+            string catalogIconUrl = SoftwareCatalogIconUrl(entry);
+            Image cachedIcon = GetCachedButtonIcon(catalogIconUrl);
             PictureBox icon = new PictureBox
             {
                 Left = 16,
@@ -8351,14 +8435,15 @@ namespace ToolboxClient
                 progress.BringToFront();
                 RegisterVst76InlineDownloadProgress(progress);
             }
-            QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);
+            QueueSoftwareCatalogIconLoad(SoftwareCatalogIconUrl(entry), icon);
+            // Legacy path retained for compatibility checks: QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);
             if (topToolTip != null) topToolTip.SetToolTip(panel, entry.Name + Environment.NewLine + entry.Description);
             return panel;
         }
 
         private Image CreateSoftwareCatalogIconImage(SoftwareCatalogEntry entry, Color accent, int size)
         {
-            Image cached = GetCachedButtonIcon(entry == null ? "" : entry.IconUrl, size);
+            Image cached = GetCachedButtonIcon(SoftwareCatalogIconUrl(entry), size);
             if (cached != null) return new Bitmap(cached);
             Bitmap bitmap = new Bitmap(size, size);
             using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -8390,6 +8475,49 @@ namespace ToolboxClient
                 }
             }
             return bitmap;
+        }
+
+        private static string SoftwareCatalogIconUrl(SoftwareCatalogEntry entry)
+        {
+            if (entry == null) return "";
+            if (!String.IsNullOrWhiteSpace(entry.IconUrl)) return entry.IconUrl.Trim();
+            string website = (entry.Website ?? "").Trim();
+            Uri uri;
+            if (!Uri.TryCreate(website, UriKind.Absolute, out uri) ||
+                !(String.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                  String.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) ||
+                String.IsNullOrWhiteSpace(uri.Host))
+            {
+                string mapped = SoftwareCatalogKnownWebsite(entry.Name + " " + entry.PackageId);
+                if (!String.IsNullOrWhiteSpace(mapped)) website = mapped;
+                else return "";
+                uri = new Uri(website);
+            }
+            // DuckDuckGo's favicon endpoint is more reliable on locked-down
+            // Windows networks than Google's redirecting favicon service.
+            return "https://icons.duckduckgo.com/ip3/" + Uri.EscapeDataString(uri.Host) + ".ico";
+        }
+
+        private static string SoftwareCatalogKnownWebsite(string value)
+        {
+            string text = (value ?? "").ToLowerInvariant();
+            if (text.Contains("autoruns") || text.Contains("process explorer") || text.Contains("sysinternals")) return "https://learn.microsoft.com/sysinternals/";
+            if (text.Contains("malwarebytes")) return "https://www.malwarebytes.com/";
+            if (text.Contains("libreoffice")) return "https://www.libreoffice.org/";
+            if (text.Contains("notion")) return "https://www.notion.so/";
+            if (text.Contains("wps") || text.Contains("金山")) return "https://www.wps.com/";
+            if (text.Contains("acrobat") || text.Contains("adobe")) return "https://www.adobe.com/";
+            if (text.Contains("火绒") || text.Contains("huorong")) return "https://www.huorong.cn/";
+            if (text.Contains("腾讯") || text.Contains("tencent") || text == "qq") return "https://www.tencent.com/";
+            if (text.Contains("微信") || text.Contains("wechat")) return "https://weixin.qq.com/";
+            if (text.Contains("搜狗") || text.Contains("sogou")) return "https://www.sogou.com/";
+            if (text.Contains("抖音") || text.Contains("douyin")) return "https://www.douyin.com/";
+            if (text.Contains("爱奇艺") || text.Contains("iqiyi")) return "https://www.iqiyi.com/";
+            if (text.Contains("联想") || text.Contains("lenovo")) return "https://www.lenovo.com/";
+            if (text.Contains("钉钉") || text.Contains("dingtalk")) return "https://www.dingtalk.com/";
+            if (text.Contains("网易") || text.Contains("netease")) return "https://www.163.com/";
+            if (text.Contains("豆包")) return "https://www.doubao.com/";
+            return "";
         }
 
         private void QueueSoftwareCatalogIconLoad(string url, PictureBox target)
@@ -10882,6 +11010,18 @@ namespace ToolboxClient
                         result.Download = backup;
                         result.UsingBackup = true;
                     }
+                    else if (IsHttpUrl(result.BackupUrl))
+                    {
+                        result.Download = new DownloadRequest
+                        {
+                            OriginalUrl = result.BackupUrl,
+                            Url = result.BackupUrl,
+                            FileName = SafeDownloadFileName(result.DisplayName),
+                            BrowserUrl = result.BackupUrl,
+                            FastStartDirectDownload = true
+                        };
+                        result.UsingBackup = true;
+                    }
                 }
                 if (result.Download != null && !result.Download.BrowserOnly)
                 {
@@ -10908,6 +11048,19 @@ namespace ToolboxClient
                         if (backup != null)
                         {
                             result.Download = backup;
+                            result.UsingBackup = true;
+                            result.Error = null;
+                        }
+                        else if (IsHttpUrl(result.BackupUrl))
+                        {
+                            result.Download = new DownloadRequest
+                            {
+                                OriginalUrl = result.BackupUrl,
+                                Url = result.BackupUrl,
+                                FileName = SafeDownloadFileName(result.DisplayName),
+                                BrowserUrl = result.BackupUrl,
+                                FastStartDirectDownload = true
+                            };
                             result.UsingBackup = true;
                             result.Error = null;
                         }
@@ -12443,6 +12596,19 @@ namespace ToolboxClient
 
             CleanupSegmentedPart(task);
             ResetVst76InlineDownloadProgress(task);
+            // Keep interrupted partial downloads in the queue so they survive restart and can resume.
+            if (!task.CancelRequested && task.Received > 0 && File.Exists(task.Path))
+            {
+                task.Finished = false;
+                task.RestoredPaused = true;
+                task.PauseEvent.Reset();
+                task.StateText = PortalText("已暂停，等待继续", "Paused - ready to resume");
+                SavePausedDownloadTasks();
+                UpdateDownloadBadges();
+                SafeRenderActiveDownloads();
+                status.Text = PortalText("下载已暂停，进度已保留：", "Download paused; progress saved: ") + task.FileName;
+                return;
+            }
             if (!String.IsNullOrWhiteSpace(task.BackupPageUrl))
             {
                 Open(task.BackupPageUrl);
@@ -13977,7 +14143,7 @@ namespace ToolboxClient
                     continue;
                 }
                 string progressKey = NormalizeDownloadMatchText(progress.DownloadName);
-                if (!DownloadNameMatches(displayKey, progressKey) && !DownloadNameMatches(fileKey, progressKey)) continue;
+                if (!String.Equals(displayKey, progressKey, StringComparison.OrdinalIgnoreCase) && !String.Equals(fileKey, progressKey, StringComparison.OrdinalIgnoreCase)) continue;
                 ApplyVst76InlineDownloadProgress(progress, task);
             }
         }
@@ -14023,7 +14189,7 @@ namespace ToolboxClient
             {
                 if (progress == null || progress.IsDisposed) continue;
                 string progressKey = NormalizeDownloadMatchText(progress.DownloadName);
-                if (!DownloadNameMatches(displayKey, progressKey) && !DownloadNameMatches(fileKey, progressKey)) continue;
+                if (!String.Equals(displayKey, progressKey, StringComparison.OrdinalIgnoreCase) && !String.Equals(fileKey, progressKey, StringComparison.OrdinalIgnoreCase)) continue;
                 progress.Visible = false;
                 if (progress.DownloadButton != null) progress.DownloadButton.Visible = true;
                 if (progress.CardHost != null)
@@ -15453,6 +15619,8 @@ namespace ToolboxClient
         private void RenderTunerDownloadsPage()
         {
             if (content == null) return;
+            if (recordsPanel != null) recordsPanel.Visible = false;
+            if (settingsPanel != null) settingsPanel.Visible = false;
             if (!BeginContentRender()) return;
             bool oldVisible = content.Visible;
             content.Visible = false;
@@ -15464,13 +15632,16 @@ namespace ToolboxClient
                 content.WrapContents = false;
                 content.BackColor = Bg;
 
+                int pageHeight = Math.Max(260, content.ClientSize.Height - 8);
+                int activeHeight = Math.Max(120, Math.Min(172, pageHeight / 3));
+
                 int available = TunerContentWidth();
                 content.Controls.Add(CreateTunerDownloadsHeader(available));
 
                 RoundedPanel activeCard = new RoundedPanel
                 {
                     Width = available,
-                    Height = 172,
+                    Height = activeHeight,
                     Margin = new Padding(0, 0, 0, 12),
                     BackColor = PanelBg,
                     BorderColor = Color.FromArgb(LightTheme ? 110 : 88, Line),
@@ -15482,7 +15653,7 @@ namespace ToolboxClient
                     Left = 12,
                     Top = 40,
                     Width = available - 24,
-                    Height = 122,
+                    Height = Math.Max(64, activeHeight - 50),
                     FlowDirection = FlowDirection.TopDown,
                     WrapContents = false,
                     AutoScroll = true,
@@ -15501,7 +15672,7 @@ namespace ToolboxClient
                 recordsList = new ListView
                 {
                     Width = available,
-                    Height = Math.Max(260, ClientSize.Height - 330),
+                    Height = Math.Max(120, pageHeight - activeHeight - 92),
                     View = View.Details,
                     FullRowSelect = true,
                     MultiSelect = true,
@@ -19266,7 +19437,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
         public BufferedFlowLayoutPanel()
         {
             DoubleBuffered = true;
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+            // Let FlowLayoutPanel handle its native scroll painting; UserPaint causes stale
+            // back-buffer regions to be copied into newly exposed rows while scrolling.
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
 
         protected override Point ScrollToControl(Control activeControl)

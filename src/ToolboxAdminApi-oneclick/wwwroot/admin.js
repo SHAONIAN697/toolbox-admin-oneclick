@@ -3738,18 +3738,22 @@ function scriptOptionsHtml(selected = '') {
   return `<option value="${CUSTOM_SCRIPT_VALUE}" ${customSelected}>自定义内置功能</option>${globals}<option value="" disabled>── 系统功能 ──</option>${options}`;
 }
 
-function downloadFileRowHtml(file = {}, index = 0) {
+function downloadFileRowHtml(file = {}, index = 0, radioName = '') {
+  const group = radioName || `download-primary-${Date.now()}-${Math.random()}`;
   return `<div class="download-file-row">
     <input data-download-url value="${escapeAttr(file.url || '')}" placeholder="文件下载地址">
     <input data-download-backup-url value="${escapeAttr(file.backup_url || file.backup_download_url || '')}" placeholder="备用下载地址（可选）">
     <input data-download-backup-page value="${escapeAttr(file.backup_page_url || file.backup_webpage || '')}" placeholder="备用网页地址（可选）">
-    <label class="download-primary" title="全部文件下载完成后自动运行此文件"><input type="radio" data-download-primary name="download-primary-${Date.now()}-${Math.random()}" ${file.primary || index === 0 ? 'checked' : ''}> 完成后运行</label>
+    <label class="download-primary" title="全部文件下载完成后自动运行此文件"><input type="radio" data-download-primary name="${escapeAttr(group)}" ${file.primary || index === 0 ? 'checked' : ''}> 完成后运行</label>
     <button type="button" class="danger" data-remove-download title="删除此文件">×</button>
   </div>`;
 }
 
 function downloadControlHtml(target = '', data = {}) {
   const files = Array.isArray(data.files) && data.files.length ? data.files : [{ name: '', url: target || '', primary: true }];
+  const primaryIndex = files.findIndex((file) => file && file.primary === true);
+  const normalizedFiles = files.map((file, index) => ({ ...file, primary: primaryIndex >= 0 ? index === primaryIndex : index === 0 }));
+  const radioName = `download-primary-${Date.now()}-${Math.random()}`;
   const multiple = data.download_mode === 'multiple' || files.length > 1;
   const downloadDirectory = data.download_directory || data.download_path || '';
   const deleteOnExit = data.download_delete_on_exit === true || data.delete_download_on_exit === true;
@@ -3762,7 +3766,7 @@ function downloadControlHtml(target = '', data = {}) {
     </div>
     <div class="download-multiple" data-download-multiple ${multiple ? '' : 'hidden'}>
       <input data-package-name value="${escapeAttr(data.package_name || data.name || '')}" placeholder="安装包文件夹名称">
-      <div data-download-files>${files.map(downloadFileRowHtml).join('')}</div>
+      <div data-download-files>${normalizedFiles.map((file, index) => downloadFileRowHtml(file, index, radioName)).join('')}</div>
       <button type="button" data-add-download>＋ 添加文件</button>
       <small>所有文件下载到同一目录；全部成功后运行标记为主程序的文件。</small>
     </div>
@@ -3818,7 +3822,11 @@ function bindDownloadControl(root) {
   };
   mode.onchange = sync;
   directory?.addEventListener('input', syncCleanup);
-  control.querySelector('[data-add-download]').onclick = () => { control.querySelector('[data-download-files]').insertAdjacentHTML('beforeend', downloadFileRowHtml({}, 1)); bindRows(); };
+  control.querySelector('[data-add-download]').onclick = () => {
+    const radioName = control.querySelector('[data-download-primary]')?.name || '';
+    control.querySelector('[data-download-files]').insertAdjacentHTML('beforeend', downloadFileRowHtml({}, 1, radioName));
+    bindRows();
+  };
   bindRows(); sync(); syncCleanup();
 }
 
@@ -3834,6 +3842,9 @@ function readDownloadConfig(root) {
   if (backupPageUrl) result.backup_page_url = backupPageUrl;
   if (control.querySelector('[data-download-mode]').value !== 'multiple') return result;
   const files = [...control.querySelectorAll('.download-file-row')].map((row) => ({ url: row.querySelector('[data-download-url]').value.trim(), backup_url: row.querySelector('[data-download-backup-url]')?.value.trim() || '', backup_page_url: row.querySelector('[data-download-backup-page]')?.value.trim() || '', primary: row.querySelector('[data-download-primary]').checked })).filter((file) => file.url);
+  let primaryIndex = files.findIndex((file) => file.primary);
+  if (primaryIndex < 0) primaryIndex = 0;
+  files.forEach((file, index) => { file.primary = index === primaryIndex; });
   return { ...result, download_mode: 'multiple', package_name: control.querySelector('[data-package-name]').value.trim(), files };
 }
 
