@@ -116,9 +116,14 @@ copy_source() {
   mkdir -p "$app_dir"
 
   if [ -d "$app_dir/data" ]; then
-    local bak="$app_dir/data.bak.$(date +%Y%m%d%H%M%S)"
-    yellow "检测到已有 data 数据目录，自动备份到：$bak"
+    local stamp="$(date +%Y%m%d%H%M%S)"
+    local bak="$app_dir/data.bak.$stamp"
+    local full_bak="${app_dir%/*}/$(basename "$app_dir").full.bak.$stamp.tar.gz"
+    yellow "检测到已有 data 数据目录，生成数据备份：$bak"
     cp -a "$app_dir/data" "$bak"
+    yellow "生成完整站点备份：$full_bak"
+    tar -czf "$full_bak" -C "$(dirname "$app_dir")" "$(basename "$app_dir")"
+    green "更新前已完成两份备份：完整站点 + data 数据目录"
   fi
 
   yellow "正在复制程序文件到：$app_dir"
