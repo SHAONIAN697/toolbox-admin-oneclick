@@ -50,6 +50,43 @@ detect_service_env() {
   grep -E "^Environment=${key}=" "$file" | tail -n 1 | sed "s/^Environment=${key}=//; s/^\"//; s/\"$//"
 }
 
+show_status() {
+  local app_dir="$(detect_service_workdir || true)"
+  local port="$(detect_service_env TOOLBOX_PORT || true)"
+  local state="未安装"
+  local pid="-"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME"; then
+    state="运行中"
+    pid="$(systemctl show -p MainPID --value "$APP_NAME" 2>/dev/null || true)"
+    [ -z "$pid" ] && pid="-"
+  elif [ -f "$(service_file)" ]; then
+    state="已安装，未运行"
+  fi
+  [ -z "$port" ] && port="$DEFAULT_PORT"
+  echo
+  printf '%s\n' '============================================================'
+  printf '工具箱后台状态\n'
+  printf '%s\n' '============================================================'
+  printf '服务名称：%s\n' "$APP_NAME"
+  printf '运行状态：%s\n' "$state"
+  printf '进程 PID：%s\n' "$pid"
+  printf '监听端口：%s\n' "$port"
+  printf '安装目录：%s\n' "${app_dir:-未找到}"
+  printf '数据目录：%s\n' "${app_dir:+$app_dir/data}"
+  printf '服务文件：%s\n' "$(service_file)"
+  printf '日志查看：journalctl -u %s -n 50 --no-pager\n' "$APP_NAME"
+  if [ -n "$app_dir" ]; then
+    printf '配置文件：%s\n' "$app_dir/data/config.json"
+    printf '公告数据：%s\n' "$app_dir/data/admin-announcements.json"
+    printf '访问地址：http://127.0.0.1:%s\n' "$port"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -f "$(service_file)" ]; then
+    echo
+    systemctl status "$APP_NAME" --no-pager -l 2>/dev/null | sed -n '1,12p' || true
+  fi
+  printf '%s\n\n' '============================================================'
+}
+
 install_deps() {
   yellow "正在安装运行依赖：python3、Mono/C# 编译器..."
   if command -v apt >/dev/null 2>&1; then
@@ -296,6 +333,11 @@ PY
 }
 
 main() {
+  if [ "${1:-}" = "status" ] || [ "${1:-}" = "状态" ]; then
+    need_root
+    show_status
+    exit 0
+  fi
   need_root
 
   local script_dir
@@ -401,6 +443,7 @@ main() {
   echo
   echo "服务状态命令：systemctl status ${APP_NAME} --no-pager -l"
   echo "重启命令：systemctl restart ${APP_NAME}"
+  show_status
   echo
   yellow "如果域名已经开启 HTTPS，请用 https://${domain} 访问。"
   yellow "登录后建议先到“账号”里修改管理员资料，再到“对接”下载工具箱 EXE。"
