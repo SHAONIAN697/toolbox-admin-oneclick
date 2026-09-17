@@ -90,7 +90,7 @@ systemctl restart toolbox-admin
 查看服务状态：
 
 ```bash
-systemctl status toolbox-admin --no-pager -l
+bash install-baota.sh status
 ```
 
 重启后台：

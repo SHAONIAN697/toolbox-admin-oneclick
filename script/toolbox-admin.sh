@@ -123,7 +123,69 @@ update_app(){
   FORCE_UPDATE=1 run_install_or_update update
 }
 
-show_status(){ systemctl status "$SERVICE" --no-pager -l || true; }
+service_file(){ printf '/etc/systemd/system/%s.service' "$SERVICE"; }
+service_workdir(){
+  local file
+  file="$(service_file)"
+  [ -f "$file" ] || return 0
+  sed -n 's/^WorkingDirectory=//p' "$file" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+service_env(){
+  local key="$1" file
+  file="$(service_file)"
+  [ -f "$file" ] || return 0
+  sed -n "s/^Environment=${key}=//p" "$file" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+show_status(){
+  local dir port state pid enabled active_since config announcements
+  dir="$(service_workdir || true)"
+  port="$(service_env TOOLBOX_PORT || true)"
+  [ -n "$port" ] || port="5088"
+  state="未安装"
+  pid="-"
+  enabled="未配置"
+  active_since="-"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE"; then
+    state="运行中"
+    pid="$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)"
+    active_since="$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE" 2>/dev/null || true)"
+    [ -n "$pid" ] || pid="-"
+    [ -n "$active_since" ] || active_since="-"
+  elif [ -f "$(service_file)" ]; then
+    state="已安装，未运行"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+    enabled="已启用"
+  elif [ -f "$(service_file)" ]; then
+    enabled="未启用"
+  fi
+  config="未找到"
+  announcements="未找到"
+  if [ -n "$dir" ]; then
+    [ -f "$dir/data/config.json" ] && config="正常" || config="未找到"
+    [ -f "$dir/data/admin-announcements.json" ] && announcements="正常" || announcements="未找到"
+  fi
+  echo
+  printf '%s\n' '============================================================'
+  printf 'Toolbox Admin 服务状态\n'
+  printf '%s\n' '============================================================'
+  printf '服务名称：%s\n' "$SERVICE"
+  printf '运行状态：%s\n' "$state"
+  printf '开机自启：%s\n' "$enabled"
+  printf '进程 PID：%s\n' "$pid"
+  printf '监听端口：%s\n' "$port"
+  printf '运行时间：%s\n' "$active_since"
+  printf '安装目录：%s\n' "${dir:-未找到}"
+  printf '数据目录：%s\n' "${dir:+$dir/data}"
+  printf '配置文件：%s\n' "$config"
+  printf '公告文件：%s\n' "$announcements"
+  printf '服务文件：%s\n' "$(service_file)"
+  printf '日志查看：journalctl -u %s -n 50 --no-pager\n' "$SERVICE"
+  if [ -n "$dir" ]; then
+    printf '访问地址：http://127.0.0.1:%s\n' "$port"
+  fi
+  printf '%s\n\n' '============================================================'
+}
 service_action(){ systemctl "$1" "$SERVICE"; show_status; }
 
 change_password(){

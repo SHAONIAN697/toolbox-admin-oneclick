@@ -51,38 +51,52 @@ detect_service_env() {
 }
 
 show_status() {
-  local app_dir="$(detect_service_workdir || true)"
-  local port="$(detect_service_env TOOLBOX_PORT || true)"
-  local state="未安装"
-  local pid="-"
+  local app_dir port state pid enabled active_since config announcements
+  app_dir="$(detect_service_workdir || true)"
+  port="$(detect_service_env TOOLBOX_PORT || true)"
+  state="未安装"
+  pid="-"
+  enabled="未配置"
+  active_since="-"
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME"; then
     state="运行中"
     pid="$(systemctl show -p MainPID --value "$APP_NAME" 2>/dev/null || true)"
+    active_since="$(systemctl show -p ActiveEnterTimestamp --value "$APP_NAME" 2>/dev/null || true)"
     [ -z "$pid" ] && pid="-"
+    [ -z "$active_since" ] && active_since="-"
   elif [ -f "$(service_file)" ]; then
     state="已安装，未运行"
   fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet "$APP_NAME" 2>/dev/null; then
+    enabled="已启用"
+  elif [ -f "$(service_file)" ]; then
+    enabled="未启用"
+  fi
   [ -z "$port" ] && port="$DEFAULT_PORT"
+  config="未找到"
+  announcements="未找到"
+  if [ -n "$app_dir" ]; then
+    [ -f "$app_dir/data/config.json" ] && config="正常" || config="未找到"
+    [ -f "$app_dir/data/admin-announcements.json" ] && announcements="正常" || announcements="未找到"
+  fi
   echo
   printf '%s\n' '============================================================'
   printf '工具箱后台状态\n'
   printf '%s\n' '============================================================'
   printf '服务名称：%s\n' "$APP_NAME"
   printf '运行状态：%s\n' "$state"
+  printf '开机自启：%s\n' "$enabled"
   printf '进程 PID：%s\n' "$pid"
   printf '监听端口：%s\n' "$port"
+  printf '运行时间：%s\n' "$active_since"
   printf '安装目录：%s\n' "${app_dir:-未找到}"
   printf '数据目录：%s\n' "${app_dir:+$app_dir/data}"
+  printf '配置文件：%s\n' "$config"
+  printf '公告文件：%s\n' "$announcements"
   printf '服务文件：%s\n' "$(service_file)"
   printf '日志查看：journalctl -u %s -n 50 --no-pager\n' "$APP_NAME"
   if [ -n "$app_dir" ]; then
-    printf '配置文件：%s\n' "$app_dir/data/config.json"
-    printf '公告数据：%s\n' "$app_dir/data/admin-announcements.json"
     printf '访问地址：http://127.0.0.1:%s\n' "$port"
-  fi
-  if command -v systemctl >/dev/null 2>&1 && [ -f "$(service_file)" ]; then
-    echo
-    systemctl status "$APP_NAME" --no-pager -l 2>/dev/null | sed -n '1,12p' || true
   fi
   printf '%s\n\n' '============================================================'
 }
@@ -441,7 +455,7 @@ main() {
     echo "管理员密码：${password}"
   fi
   echo
-  echo "服务状态命令：systemctl status ${APP_NAME} --no-pager -l"
+  echo "中文状态命令：bash install-baota.sh status"
   echo "重启命令：systemctl restart ${APP_NAME}"
   show_status
   echo
