@@ -76,8 +76,10 @@ show_status() {
   config="未找到"
   announcements="未找到"
   if [ -n "$app_dir" ]; then
-    [ -f "$app_dir/data/config.json" ] && config="正常" || config="未找到"
-    [ -f "$app_dir/data/admin-announcements.json" ] && announcements="正常" || announcements="未找到"
+    config="$app_dir/data/config.json"
+    announcements="$app_dir/data/admin-announcements.json"
+    [ -f "$config" ] && config="$config（正常）" || config="$config（未找到）"
+    [ -f "$announcements" ] && announcements="$announcements（正常）" || announcements="$announcements（未找到）"
   fi
   echo
   printf '%s\n' '============================================================'
