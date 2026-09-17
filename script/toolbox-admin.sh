@@ -21,8 +21,13 @@ prepare_interactive_terminal(){
 
 unlock_manager_target(){
   local target="$1"
-  command -v chattr >/dev/null 2>&1 && chattr -i "$target" 2>/dev/null || true
-  chmod u+w "$target" 2>/dev/null || true
+  local parent
+  parent="$(dirname "$target")"
+  if command -v chattr >/dev/null 2>&1; then
+    chattr -i -a "$target" 2>/dev/null || true
+    chattr -i -a "$parent" 2>/dev/null || true
+  fi
+  chmod u+w "$target" "$parent" 2>/dev/null || true
 }
 
 install_manager_command(){
@@ -362,7 +367,7 @@ if [ "${TOOLBOX_ADMIN_SOURCE_ONLY:-0}" != "1" ]; then
   need_root
   if ! install_manager_command; then
     yellow "管理命令暂时无法写入 /usr/local/bin，本次继续运行已下载的新脚本。"
-    yellow "可稍后执行：chattr -i /usr/local/bin/toolbox-admin"
+    yellow "请先执行：chattr -i -a /usr/local/bin/toolbox-admin /usr/local/bin"
   fi
   prepare_interactive_terminal
   menu
