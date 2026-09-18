@@ -2997,6 +2997,22 @@ def read_notices():
     data = read_json(NOTICES_PATH, {"notices": [], "reads": {}})
     data.setdefault("notices", [])
     data.setdefault("reads", {})
+    # Old pending notices did not store a reference; reconcile them on reads too.
+    orders = {str(row.get("id")): row for row in read_orders().get("orders", []) if row.get("id")}
+    changed = False
+    for notice in data["notices"]:
+        if notice.get("createdBy") != "system" or notice.get("title") not in ("订单待处理", "Agent order pending"):
+            continue
+        order_id = notice.get("refId") if notice.get("refType") == "order" else ""
+        if not order_id:
+            match = re.search(r"\border_[A-Za-z0-9_]+\b", str(notice.get("content") or ""))
+            order_id = match.group(0) if match else ""
+        order = orders.get(order_id)
+        if order and (order.get("status") in ("paid", "done", "cancelled") or order.get("fulfilledAt")):
+            notice["active"] = False
+            changed = True
+    if changed:
+        write_json(NOTICES_PATH, data)
     return data
 
 
@@ -3176,6 +3192,26 @@ def add_system_notice(title, content, level="info", target_role="", ref_type="",
     data["notices"].insert(0, notice)
     write_notices(data)
     return notice
+
+
+def resolve_order_pending_notice(order):
+    order_id = str((order or {}).get("id") or "").strip()
+    if not order_id:
+        return
+    data = read_notices()
+    changed = False
+    for notice in data.get("notices", []):
+        if notice.get("active", True) is False:
+            continue
+        same_order = (
+            notice.get("refType") == "order" and str(notice.get("refId") or "") == order_id
+        ) or order_id in str(notice.get("content") or "")
+        if same_order and notice.get("title") in ("订单待处理", "Agent order pending"):
+            notice["active"] = False
+            notice["resolvedAt"] = now_iso()
+            changed = True
+    if changed:
+        write_notices(data)
 
 
 def scoped_users(store, actor):
@@ -3820,7 +3856,7 @@ def create_admin_order(user, action, amount, currency, detail, request=None, pay
     write_orders(data)
     title = "订单待处理"
     content = f"用户 {user_display_name(user)} 提交了订单 {order['id']}：{detail}。金额：{order['amount']} {order['currency']}。"
-    add_system_notice(title, content, "warn", "super")
+    add_system_notice(title, content, "warn", "super", "order", order["id"])
     try:
         send_admin_event_email(title, content)
     except Exception:
@@ -4175,6 +4211,8 @@ def fulfill_invite_order(order, approver=None, paid=False, external_trade_no="")
     order["externalTradeNo"] = external_trade_no or order.get("externalTradeNo", "")
     order["fulfilledBy"] = user_display_name(approver) if approver else "payment_callback"
     order["fulfilledInviteCodes"] = [item.get("code") for item in created]
+    # Payment completion must also clear the super-admin's pending-order alert.
+    resolve_order_pending_notice(order)
     return order["fulfilledInviteCodes"]
 
 def get_target(button):
@@ -5791,6 +5829,8 @@ class Handler(BaseHTTPRequestHandler):
                 order["status"] = status
                 order["updatedAt"] = now_iso()
                 write_orders(data)
+                if status in ("paid", "done", "cancelled"):
+                    resolve_order_pending_notice(order)
                 return self.send_json(public_order(order))
             if method == "DELETE":
                 body = self.read_body()

@@ -5880,7 +5880,13 @@ function ensureAdminAnnouncementView() {
   document.querySelector('main').appendChild(view);
   ['announcementStatusFilter', 'announcementTypeFilter', 'announcementSearch'].forEach((id) => { $(id).oninput = renderAdminAnnouncements; });
   $('announcementReadAllBtn').onclick = () => markAllAdminAnnouncementsRead().catch((error) => showToast(error.message, 'error'));
-  $('announcementCreateBtn').onclick = () => openAnnouncementEditor();
+  // This view is created after the initial role pass, so apply the super-admin
+  // visibility rule here as well. The API enforces the same permission server-side.
+  $('announcementCreateBtn').hidden = !isSuper();
+  $('announcementStats').hidden = !isSuper();
+  $('announcementCreateBtn').onclick = () => {
+    if (isSuper()) openAnnouncementEditor();
+  };
   return view;
 }
 
