@@ -174,9 +174,27 @@ copy_source() {
     local full_bak="${app_dir%/*}/$(basename "$app_dir").full.bak.$stamp.tar.gz"
     yellow "检测到已有 data 数据目录，生成数据备份：$bak"
     cp -a "$app_dir/data" "$bak"
-    yellow "生成完整站点备份：$full_bak"
-    tar -czf "$full_bak" -C "$(dirname "$app_dir")" "$(basename "$app_dir")"
-    green "更新前已完成两份备份：完整站点 + data 数据目录"
+    yellow "生成完整站点备份（跳过可重新生成的缓存，最多等待 120 秒）：$full_bak"
+    # data 已经单独复制，client-cache/client-jobs 可能包含大型 EXE 和临时文件，
+    # 不应让 gzip 长时间占住更新流程；失败时保留 data 备份并继续更新。
+    local backup_parent="$(dirname "$app_dir")"
+    local backup_name="$(basename "$app_dir")"
+    local tar_status=0
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      timeout --signal=TERM --kill-after=10s 120s tar --exclude="$backup_name/data/client-cache" --exclude="$backup_name/data/client-jobs" --exclude="$backup_name/wwwroot/uploads" -czf "$full_bak" -C "$backup_parent" "$backup_name"
+      tar_status=$?
+    else
+      tar --exclude="$backup_name/data/client-cache" --exclude="$backup_name/data/client-jobs" --exclude="$backup_name/wwwroot/uploads" -czf "$full_bak" -C "$backup_parent" "$backup_name"
+      tar_status=$?
+    fi
+    set -e
+    if [ "$tar_status" -eq 0 ]; then
+      green "更新前已完成两份备份：完整站点 + data 数据目录"
+    else
+      rm -f "$full_bak"
+      yellow "完整站点备份超时或失败，已保留 data 数据备份，继续更新程序。"
+    fi
   fi
 
   yellow "正在复制程序文件到：$app_dir"
