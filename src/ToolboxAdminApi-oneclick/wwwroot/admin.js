@@ -617,8 +617,11 @@ async function loadAll() {
     state.buttons = await api(buttonsApiPath());
     renderAll();
     if (viewToRestore) switchView(viewToRestore);
-    showUnreadNoticePopup();
-    showAdminAnnouncementPopup();
+    const paymentReturn = await handlePaymentReturnStatus();
+    if (!paymentReturn) {
+      showUnreadNoticePopup();
+      showAdminAnnouncementPopup();
+    }
     showToast('配置读取成功。', 'success');
     loadMenuIcons().then(() => {
       renderMenuIcons();
@@ -868,6 +871,9 @@ function inviteSnapshot(invites) {
     registerRole: invite.registerRole || 'user',
     boundAgentId: invite.boundAgentId || '',
     isAgentInvite: invite.isAgentInvite === true,
+    superDisabled: invite.superDisabled === true,
+    canDelete: invite.canDelete !== false,
+    canToggle: invite.canToggle !== false,
     createdAt: invite.createdAt || ''
   })));
 }
@@ -934,6 +940,42 @@ async function loadSystemSettings() {
   state.orders = result.orders || [];
 }
 
+async function handlePaymentReturnStatus() {
+  const params = new URLSearchParams(window.location.search);
+  const payment = params.get('payment');
+  if (!payment) return false;
+  const orderId = params.get('order') || '';
+  if (!orderId) {
+    setStatus('支付返回缺少订单号，无法读取生成结果。', true);
+    return true;
+  }
+  try {
+    // 支付状态和卡密必须以已登录账号可访问的服务端订单为准。
+    const order = await api(`/api/super/orders/${encodeURIComponent(orderId)}`);
+    const fulfilledCodes = order.fulfilledInviteCodes || [];
+    if (!['paid', 'done'].includes(order.status) || !order.fulfilledAt || !fulfilledCodes.length) {
+      setStatus('订单尚未完成发卡，请稍后刷新重试；已支付请勿重复购买。', true);
+      return true;
+    }
+    if (isSuper()) {
+      await refreshOrders(false);
+    } else if (isAgent()) {
+      await loadInvites();
+      renderInvites();
+      switchView('users');
+    }
+    openInviteResultDialog(fulfilledCodes.map((code) => ({ code })), fulfilledCodes.length);
+    params.delete('payment');
+    params.delete('order');
+    const query = params.toString();
+    window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+    setStatus(`支付成功，订单 ${orderId} 已完成，已生成 ${fulfilledCodes.length} 个邀请码。`);
+  } catch (error) {
+    setStatus(`支付已返回，但结果暂时读取失败：${error.message}。请刷新重试。`, true);
+  }
+  return true;
+}
+
 async function loadNotices() {
   if (!state.currentUser) return;
   const result = await api('/api/admin/notices');
@@ -993,6 +1035,7 @@ function renderUserContext() {
 
   renderUsers();
   renderInvites();
+  renderNewUserAgentLevel();
   const addUserPanel = $('addUserBtn')?.closest('.panel');
   if (addUserPanel) addUserPanel.hidden = !superMode;
 }
@@ -1760,13 +1803,16 @@ function renderUsers() {
         <span class="pill ${user.active === false ? 'danger-pill' : ''}">${user.active === false ? '已停用' : '正常'}</span>
         <span class="pill ${user.canViewJson === false ? 'muted-pill' : ''}">JSON ${user.canViewJson === false ? '不可见' : '可见'}</span>
         ${user.role === 'agent' ? `
-          <label class="inline-balance">
-            <span>代理余额</span>
-            <input data-field="balance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() ? 'disabled' : ''}>
-            <button data-action="save-balance" type="button" ${!isSuper() ? 'disabled' : ''}>保存余额</button>
-          </label>
-          <span class="pill">邀请码 ${Number(user.agentInviteCount || 0)}</span>
-          <span class="pill">推广用户 ${Number(user.promotedUserCount || 0)}</span>
+          <div class="agent-card-meta">
+            <span class="pill agent-level-pill">${escapeHtml(user.agentLevelName || '默认代理级别')}</span>
+            <span class="pill">邀请码 ${Number(user.agentInviteCount || 0)}</span>
+            <span class="pill">推广用户 ${Number(user.promotedUserCount || 0)}</span>
+            <label class="inline-balance">
+              <span>代理余额</span>
+              <input data-field="balance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() ? 'disabled' : ''}>
+              <button data-action="save-balance" type="button" ${!isSuper() ? 'disabled' : ''}>保存余额</button>
+            </label>
+          </div>
         ` : ''}
       </div>
       <div class="user-card-detail" hidden>
@@ -1776,10 +1822,15 @@ function renderUsers() {
           <label>邮箱<input data-field="email" type="email" value="${escapeAttr(user.email || '')}"></label>
           <label>显示名称<input data-field="displayName" value="${escapeAttr(user.displayName || '')}"></label>
           <label>角色
-            <select data-field="role" ${!isSuper() ? 'disabled' : ''}>
-              <option value="user" ${user.role === 'user' ? 'selected' : ''}>普通用户</option>
-              <option value="agent" ${user.role === 'agent' ? 'selected' : ''}>代理</option>
-              <option value="super" ${user.role === 'super' ? 'selected' : ''}>总管理员</option>
+            <select data-field="role" ${!isSuper() || user.role === 'super' ? 'disabled' : ''}>
+              ${user.role === 'super'
+                ? '<option value="super" selected>总管理员（系统保留）</option>'
+                : `<option value="user" ${user.role === 'user' ? 'selected' : ''}>普通用户</option><option value="agent" ${user.role === 'agent' ? 'selected' : ''}>代理</option>`}
+            </select>
+          </label>
+          <label>代理级别
+            <select data-field="agentLevelId" ${!isSuper() || user.role !== 'agent' ? 'disabled' : ''}>
+              ${user.role === 'agent' ? agentLevelOptionsHtml(user.agentLevelId || '') : '<option value="">仅代理账号可选</option>'}
             </select>
           </label>
           <label>新密码<input data-field="password" type="password" placeholder="留空不修改" ${!isSuper() ? 'disabled' : ''}></label>
@@ -1805,14 +1856,27 @@ function renderUsers() {
       detail.hidden = !open;
       card.querySelector('.user-expand').textContent = open ? '▾' : '▸';
     };
+    const roleInput = card.querySelector('[data-field="role"]');
+    const levelInput = card.querySelector('[data-field="agentLevelId"]');
+    if (roleInput && levelInput) {
+      roleInput.onchange = () => {
+        const isAgentRole = roleInput.value === 'agent';
+        levelInput.innerHTML = isAgentRole ? agentLevelOptionsHtml(levelInput.value || '') : '<option value="">仅代理账号可选</option>';
+        levelInput.disabled = !isSuper() || !isAgentRole;
+      };
+    }
     card.querySelector('[data-action="download"]').onclick = () => downloadClient(user.id);
-    card.querySelector('[data-action="save"]').onclick = () => saveUser(user.id, card);
+    card.querySelector('[data-action="save"]').onclick = () => saveUser(user.id, card)
+      .catch((error) => setStatus(error.message || '保存用户失败。', true));
     const saveBalanceBtn = card.querySelector('[data-action="save-balance"]');
-    if (saveBalanceBtn) saveBalanceBtn.onclick = () => saveAgentBalance(user.id, card);
+    if (saveBalanceBtn) saveBalanceBtn.onclick = () => saveAgentBalance(user.id, card)
+      .catch((error) => setStatus(error.message || '保存代理余额失败。', true));
     const promoteBtn = card.querySelector('[data-action="promote-agent"]');
-    if (promoteBtn) promoteBtn.onclick = () => promoteUserAgent(user.id);
+    if (promoteBtn) promoteBtn.onclick = () => promoteUserAgent(user.id)
+      .catch((error) => setStatus(error.message || '设置代理失败。', true));
     const cancelAgentBtn = card.querySelector('[data-action="cancel-agent"]');
-    if (cancelAgentBtn) cancelAgentBtn.onclick = () => cancelUserAgent(user.id);
+    if (cancelAgentBtn) cancelAgentBtn.onclick = () => cancelUserAgent(user.id)
+      .catch((error) => setStatus(error.message || '取消代理失败。', true));
     const viewAgentOrdersBtn = card.querySelector('[data-action="view-agent-orders"]');
     if (viewAgentOrdersBtn) viewAgentOrdersBtn.onclick = () => jumpToAgentOrders(user.id);
     card.querySelector('[data-action="toggle-active"]').onclick = () => toggleUserActive(user.id, user.active !== false);
@@ -1907,6 +1971,12 @@ function renderInvites() {
     const registerRole = invite.registerRole === 'agent' ? '代理' : '普通用户';
     const boundAgentName = invite.boundAgentName || userNameFromId(invite.boundAgentId || invite.ownerAgentId || '', invite.boundAgentId || invite.ownerAgentId || '');
     const isAgentInvite = invite.isAgentInvite === true || invite.registerRole === 'agent' || !!invite.ownerAgentId;
+    const canDelete = invite.canDelete === true || (invite.canDelete == null && isSuper());
+    const canToggle = invite.canToggle === true || (invite.canToggle == null && !inviteUsed && (isSuper() || !invite.superDisabled));
+    const toggleAction = canToggle
+      ? `<button data-invite-action="toggle">${invite.active ? '停用' : '启用'}</button>`
+      : (invite.superDisabled && !isSuper() && !inviteUsed ? '<span class="invite-lock-note">总管理员已停用</span>' : '');
+    const deleteAction = canDelete ? '<button data-invite-action="delete" class="danger">删除</button>' : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="checkbox" class="invite-check" value="${escapeAttr(invite.code || '')}" ${checkedCodes.has(invite.code || '') ? 'checked' : ''}></td>
@@ -1921,8 +1991,8 @@ function renderInvites() {
       <td>${escapeHtml(usedBy || '暂无')}${invite.ownerAgentId ? '<br><small>代理生成</small>' : ''}</td>
       <td class="actions">
         <button data-invite-action="copy">复制</button>
-        <button data-invite-action="toggle">${invite.active ? '停用' : '启用'}</button>
-        <button data-invite-action="delete" class="danger">删除</button>
+        ${toggleAction}
+        ${deleteAction}
       </td>
     `;
     tr.dataset.inviteCode = invite.code || '';
@@ -2121,10 +2191,14 @@ function renderSystemSettings() {
   if ($('integrityEnabled')) $('integrityEnabled').checked = integrity.enabled !== false;
   if ($('integrityTokenTtl')) $('integrityTokenTtl').value = Number(integrity.tokenTtlMinutes || 10080);
   if ($('integrityRotateSecret')) $('integrityRotateSecret').checked = false;
-  if ($('agentInvitePrice')) $('agentInvitePrice').value = Number(agent.invitePrice || 0);
+  const agentLevels = Array.isArray(agent.levels) && agent.levels.length
+    ? agent.levels
+    : [{ id: 'level-default', name: '默认代理级别', price: Number(agent.invitePrice || 0), sort: 10, enabled: true }];
+  agent.levels = agentLevels;
   if ($('agentCurrency')) $('agentCurrency').value = agent.currency || 'CNY';
   if ($('agentOrderCooldown')) $('agentOrderCooldown').value = Number(agent.orderCooldownMinutes ?? 30);
   if ($('agentAllowNegative')) $('agentAllowNegative').checked = !!agent.allowNegativeBalance;
+  renderAgentLevelRows();
   if ($('payWechatChannel')) $('payWechatChannel').value = pay.wechatChannel || 'disabled';
   if ($('payAlipayChannel')) $('payAlipayChannel').value = pay.alipayChannel || 'disabled';
   if ($('payWechatOrder')) $('payWechatOrder').value = Number(pay.wechatOrder || 10);
@@ -2842,6 +2916,7 @@ const PAY_GATEWAYS = [
     fields: [
       ['appId', '支付宝 APPID'],
       ['notifyUrl', '支付宝回调地址'],
+      ['returnUrl', '支付宝支付返回地址'],
       ['privateKey', '支付宝应用私钥', 'textarea'],
       ['publicKey', '支付宝公钥', 'textarea']
     ]
@@ -2872,7 +2947,10 @@ const PAY_GATEWAYS = [
       ['apiUrl', 'API接口网址'],
       ['pid', '商户号 PID'],
       ['key', '商户密钥 Key'],
-      ['pcScan', 'PC端扫码支付', 'checkbox']
+      ['mapiUrl', '自定义扫码支付URL'],
+      ['pcScan', 'PC端扫码支付', 'checkbox'],
+      ['notifyUrl', '支付通知回调地址'],
+      ['returnUrl', '支付完成返回地址']
     ]
   },
   {
@@ -2886,7 +2964,10 @@ const PAY_GATEWAYS = [
       ['apiUrl', 'API接口网址'],
       ['pid', '商户号 PID'],
       ['key', '商户密钥 Key'],
-      ['pcScan', 'PC端扫码支付', 'checkbox']
+      ['mapiUrl', '自定义扫码支付URL'],
+      ['pcScan', 'PC端扫码支付', 'checkbox'],
+      ['notifyUrl', '支付通知回调地址'],
+      ['returnUrl', '支付完成返回地址']
     ]
   }
 ];
@@ -4511,6 +4592,7 @@ async function addUser() {
   const displayName = $('newDisplayName').value.trim();
   const password = $('newUserPassword').value.trim();
   const role = $('newUserRole').value;
+  const agentLevelId = $('newUserAgentLevel')?.value || '';
   const balance = Number($('newUserBalance')?.value || 0);
 
   if (!username || !password) {
@@ -4520,13 +4602,15 @@ async function addUser() {
 
   await api('/api/super/users', {
     method: 'POST',
-    body: JSON.stringify({ username, email, displayName, password, role, balance })
+    body: JSON.stringify({ username, email, displayName, password, role, balance, agentLevelId })
   });
 
   $('newUsername').value = '';
   $('newUserEmail').value = '';
   $('newDisplayName').value = '';
   $('newUserPassword').value = '';
+  if ($('newUserRole')) $('newUserRole').value = 'user';
+  renderNewUserAgentLevel();
   await loadUsers();
   renderUserContext();
   setStatus('用户已创建。');
@@ -4591,7 +4675,7 @@ function showInvitePaymentDialog(quote) {
   const overlay = ensureInvitePaymentDialog();
   const currency = quote.currency || 'CNY';
   const channels = quote.channels || [];
-  const canPayBalance = quote.balanceEnough || quote.allowNegativeBalance;
+  const canPayBalance = quote.balanceEnough === true;
   $('invitePaymentSummary').innerHTML = `
     <div class="invite-pay-grid">
       <div><span>账户余额</span><strong>${escapeHtml(formatMoney(quote.balance, currency))}</strong></div>
@@ -4599,13 +4683,13 @@ function showInvitePaymentDialog(quote) {
       <div><span>单个价格</span><strong>${escapeHtml(formatMoney(quote.price, currency))}</strong></div>
       <div><span>生成数量</span><strong>${Number(quote.request?.count || 1)} 个</strong></div>
     </div>
-    <p class="invite-pay-note">请选择付款方式提交订单，必须总管理员通过后才会生成邀请码。</p>
+    <p class="invite-pay-note">请选择余额或已启用的支付宝、微信支付接口。</p>
   `;
   const actions = $('invitePaymentActions');
   actions.innerHTML = '';
   const balanceBtn = document.createElement('button');
   balanceBtn.type = 'button';
-  balanceBtn.textContent = canPayBalance ? '余额支付，提交审核' : '余额不足';
+  balanceBtn.textContent = canPayBalance ? '余额支付' : '余额不足';
   balanceBtn.disabled = !canPayBalance;
   balanceBtn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'balance' });
   actions.appendChild(balanceBtn);
@@ -4613,21 +4697,15 @@ function showInvitePaymentDialog(quote) {
   channels.forEach((channel) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = `${channel.label || channel.key}支付，提交审核`;
-    btn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'interface', paymentChannel: channel.key });
+    btn.textContent = `${channel.label || channel.key}，立即支付`;
+    btn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'interface', paymentChannel: channel.key, paymentType: channel.paymentType || '' });
     actions.appendChild(btn);
   });
-
-  const manualBtn = document.createElement('button');
-  manualBtn.type = 'button';
-  manualBtn.textContent = '提交总管理审核';
-  manualBtn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'manual' });
-  actions.appendChild(manualBtn);
 
   if (!channels.length) {
     const tip = document.createElement('p');
     tip.className = 'invite-pay-note';
-    tip.textContent = '当前未配置支付接口，可提交订单等待总管理员后台通过。';
+    tip.textContent = '当前未配置可用的支付宝或微信支付接口。';
     actions.appendChild(tip);
   }
 
@@ -4677,6 +4755,10 @@ async function createInvite() {
     }
     renderUserContext();
     if (result.order) {
+      if (result.paymentUrl || result.payment_url || result.order.paymentUrl || result.order.payment_url) {
+        window.location.href = result.paymentUrl || result.payment_url || result.order.paymentUrl || result.order.payment_url;
+        return;
+      }
       setStatus(result.message || '订单已提交，必须总管理员通过后才会生成邀请码。');
       return;
     }
@@ -4808,6 +4890,8 @@ function ensureInviteTools() {
     deleteBtn.onclick = deleteSelectedInvites;
     panelHead.insertBefore(deleteBtn, $('createInviteBtn'));
   }
+  const deleteSelected = $('deleteSelectedInvitesBtn');
+  if (deleteSelected) deleteSelected.hidden = !isSuper();
 }
 
 function renderInviteAgentControls() {
@@ -4996,13 +5080,14 @@ function openInviteResultDialog(invites, count = 0) {
 }
 
 async function saveUser(userId, row) {
-  const balanceInput = row.querySelector('[data-field="balance"]') || row.querySelector('[data-field="detailBalance"]');
+  const balanceInput = row.querySelector('[data-field="detailBalance"]') || row.querySelector('[data-field="balance"]');
   const body = {
     id: userId,
     username: row.querySelector('[data-field="username"]').value.trim(),
     email: row.querySelector('[data-field="email"]').value.trim(),
     displayName: row.querySelector('[data-field="displayName"]').value.trim(),
     role: row.querySelector('[data-field="role"]').value,
+    agentLevelId: row.querySelector('[data-field="agentLevelId"]')?.value || '',
     canViewJson: row.querySelector('[data-field="canViewJson"]')?.checked !== false,
     balance: Number(balanceInput?.value || 0)
   };
@@ -5026,7 +5111,7 @@ async function saveUser(userId, row) {
 }
 
 async function saveAgentBalance(userId, row) {
-  const balance = Number(row.querySelector('[data-field="balance"]')?.value || row.querySelector('[data-field="detailBalance"]')?.value || 0);
+  const balance = Number(row.querySelector('[data-field="detailBalance"]')?.value || row.querySelector('[data-field="balance"]')?.value || 0);
   await api('/api/super/users/agent', {
     method: 'POST',
     body: JSON.stringify({ id: userId, action: 'balance', balance })
@@ -5039,10 +5124,17 @@ async function saveAgentBalance(userId, row) {
 async function promoteUserAgent(userId) {
   const user = state.users.find((item) => item.id === userId);
   if (!user) return;
+  const levels = agentLevelRows().filter((level) => level.enabled !== false);
+  const levelHint = levels.map((level) => `${level.id}：${level.name}（${Number(level.price || 0).toFixed(2)}）`).join('\n');
+  const selectedLevelId = window.prompt(`请输入代理级别编号：\n${levelHint}`, user.agentLevelId || levels[0]?.id || '') || '';
+  if (!levels.some((level) => level.id === selectedLevelId)) {
+    setStatus('请选择有效的代理级别。', true);
+    return;
+  }
   const useDefaultBalance = confirm(`把「${user.displayName || user.username}」设为代理，并写入系统默认代理余额吗？\n选择“取消”会设为代理但余额保留为 0 或当前值。`);
   await api('/api/super/users/agent', {
     method: 'POST',
-    body: JSON.stringify({ id: userId, action: 'promote', useDefaultBalance })
+    body: JSON.stringify({ id: userId, action: 'promote', useDefaultBalance, agentLevelId: selectedLevelId })
   });
   await loadUsers();
   await loadInvites();
@@ -5209,14 +5301,71 @@ function collectPayGateway(key) {
 function syncPayRoutesFromCards() {
   const pay = state.system?.pay || {};
   const enabled = (key) => document.querySelector(`[data-pay-gateway="${key}"] [data-pay-enabled]`)?.checked || false;
+  const usable = (key) => key !== 'wechatOfficial' && enabled(key);
   const currentWechat = $('payWechatChannel')?.value || pay.wechatChannel || 'disabled';
   const currentAlipay = $('payAlipayChannel')?.value || pay.alipayChannel || 'disabled';
   if ($('payWechatChannel')) {
-    $('payWechatChannel').value = enabled(currentWechat) ? currentWechat : (enabled('wechatOfficial') ? 'wechatOfficial' : (enabled('easypay') ? 'easypay' : (enabled('easypay2') ? 'easypay2' : 'disabled')));
+    $('payWechatChannel').value = usable(currentWechat) ? currentWechat : (usable('easypay') ? 'easypay' : (usable('easypay2') ? 'easypay2' : 'disabled'));
   }
   if ($('payAlipayChannel')) {
-    $('payAlipayChannel').value = enabled(currentAlipay) ? currentAlipay : (enabled('alipayOfficial') ? 'alipayOfficial' : (enabled('easypay') ? 'easypay' : (enabled('easypay2') ? 'easypay2' : 'disabled')));
+    $('payAlipayChannel').value = usable(currentAlipay) ? currentAlipay : (usable('alipayOfficial') ? 'alipayOfficial' : (usable('easypay') ? 'easypay' : (usable('easypay2') ? 'easypay2' : 'disabled')));
   }
+}
+
+function agentLevelRows() {
+  const rows = Array.isArray(state.system?.agent?.levels) ? state.system.agent.levels : [];
+  return rows.length ? rows : [{ id: 'level-default', name: '默认代理级别', price: Number(state.system?.agent?.invitePrice || 0), sort: 10, enabled: true }];
+}
+
+function agentLevelOptionsHtml(selected = '') {
+  return agentLevelRows().filter((level) => level.enabled !== false).map((level) =>
+    `<option value="${escapeAttr(level.id)}" ${level.id === selected ? 'selected' : ''}>${escapeHtml(level.name)}（${Number(level.price || 0).toFixed(2)}）</option>`
+  ).join('');
+}
+
+function renderAgentLevelRows() {
+  const root = $('agentLevelRows');
+  if (!root || !state.system) return;
+  const rows = agentLevelRows();
+  state.system.agent.levels = rows;
+  root.innerHTML = rows.map((level, index) => `
+    <div class="agent-level-row" data-agent-level-row data-index="${index}">
+      <input data-agent-level-name value="${escapeAttr(level.name || '')}" placeholder="级别名称">
+      <input data-agent-level-price type="number" min="0" step="0.01" value="${Number(level.price || 0)}" placeholder="邀请码单价">
+      <input data-agent-level-sort type="number" step="1" value="${Number(level.sort || (index + 1) * 10)}" placeholder="排序">
+      <label class="checkline"><input data-agent-level-enabled type="checkbox" ${level.enabled !== false ? 'checked' : ''}> 启用</label>
+      <button type="button" class="danger" data-agent-level-remove ${rows.length <= 1 ? 'disabled' : ''}>删除</button>
+    </div>
+  `).join('');
+  root.querySelectorAll('[data-agent-level-remove]').forEach((button) => {
+    button.onclick = () => {
+      const row = button.closest('[data-agent-level-row]');
+      state.system.agent.levels.splice(Number(row?.dataset.index || 0), 1);
+      renderAgentLevelRows();
+      renderNewUserAgentLevel();
+    };
+  });
+}
+
+function readAgentLevelRowsFromForm() {
+  const rows = [...document.querySelectorAll('[data-agent-level-row]')].map((row, index) => ({
+    id: agentLevelRows()[index]?.id || `level-${Date.now().toString(36)}-${index}`,
+    name: row.querySelector('[data-agent-level-name]')?.value.trim() || `代理级别 ${index + 1}`,
+    price: Number(row.querySelector('[data-agent-level-price]')?.value || 0),
+    sort: Number(row.querySelector('[data-agent-level-sort]')?.value || (index + 1) * 10),
+    enabled: row.querySelector('[data-agent-level-enabled]')?.checked !== false
+  }));
+  return rows.length ? rows : agentLevelRows();
+}
+
+function renderNewUserAgentLevel() {
+  const select = $('newUserAgentLevel');
+  const role = $('newUserRole')?.value || 'user';
+  if (!select) return;
+  const previous = select.value || agentLevelRows()[0]?.id || '';
+  select.innerHTML = role === 'agent' ? agentLevelOptionsHtml(previous) : '<option value="">仅代理账号可选</option>';
+  select.value = role === 'agent' && [...select.options].some((option) => option.value === previous) ? previous : (role === 'agent' ? (select.options[0]?.value || '') : '');
+  select.disabled = role !== 'agent' || !isSuper();
 }
 
 async function saveSystemSettings(section) {
@@ -5230,11 +5379,13 @@ async function saveSystemSettings(section) {
     };
   }
   if (section === 'agent') {
+    const levels = readAgentLevelRowsFromForm();
     body.agent = {
-      invitePrice: Number($('agentInvitePrice').value || 0),
+      invitePrice: Number(levels[0]?.price || 0),
       currency: $('agentCurrency').value.trim() || 'CNY',
       orderCooldownMinutes: Number($('agentOrderCooldown')?.value || 0),
-      allowNegativeBalance: $('agentAllowNegative').checked
+      allowNegativeBalance: $('agentAllowNegative').checked,
+      levels
     };
   }
   if (section === 'pay') {
@@ -6210,6 +6361,15 @@ $('deleteSectionBtn').onclick = () => deleteSection().catch((error) => setStatus
 $('addButtonBtn').onclick = () => addButton().catch((error) => setStatus(error.message, true));
 $('addAction').onchange = updateAddTargetState;
 $('addUserBtn').onclick = () => addUser().catch((error) => setStatus(error.message, true));
+$('newUserRole').onchange = renderNewUserAgentLevel;
+$('addAgentLevelBtn').onclick = () => {
+  if (!state.system) return;
+  const levels = agentLevelRows();
+  levels.push({ id: `level-${Date.now().toString(36)}`, name: `代理级别 ${levels.length + 1}`, price: 0, sort: (levels.length + 1) * 10, enabled: true });
+  state.system.agent.levels = levels;
+  renderAgentLevelRows();
+  renderNewUserAgentLevel();
+};
 $('createInviteBtn').onclick = () => createInvite().catch((error) => setStatus(error.message, true));
 if ($('downloadCurrentClientBtn')) {
   $('downloadCurrentClientBtn').onclick = () => downloadClient().catch((error) => setStatus(error.message, true));

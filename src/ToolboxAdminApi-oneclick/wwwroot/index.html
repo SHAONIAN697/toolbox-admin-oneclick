@@ -230,7 +230,8 @@
           <label>邮箱<input id="newUserEmail" type="email"></label>
           <label>显示名称<input id="newDisplayName"></label>
           <label>密码<input id="newUserPassword" type="password"></label>
-          <label>角色<select id="newUserRole"><option value="user">普通用户</option><option value="agent">代理</option><option value="super">总管理员</option></select></label>
+          <label>角色<select id="newUserRole"><option value="user">普通用户</option><option value="agent">代理</option></select></label>
+          <label>代理级别<select id="newUserAgentLevel" disabled><option value="">仅代理账号可选</option></select></label>
           <label>代理余额<input id="newUserBalance" type="number" min="0" step="0.01" value="0"></label>
         </div>
       </div>
@@ -442,11 +443,23 @@
           <button id="saveAgentSettingsBtn" type="button">保存</button>
         </div>
         <div class="form-grid compact">
-          <label>每个邀请码扣费<input id="agentInvitePrice" type="number" min="0" step="0.01"></label>
           <label>币种<input id="agentCurrency" value="CNY"></label>
           <label>订单冷却分钟<input id="agentOrderCooldown" type="number" min="0" step="1"></label>
           <label class="toggle-line">允许负余额<span><input id="agentAllowNegative" type="checkbox"> 允许</span></label>
         </div>
+        <div class="agent-level-toolbar">
+          <strong>代理级别设置（每个级别单独设置邀请码单价）</strong>
+          <button id="addAgentLevelBtn" type="button">新增代理级别</button>
+        </div>
+        <div class="agent-level-head" aria-hidden="true">
+          <span>级别名称</span>
+          <span>邀请码单价</span>
+          <span>显示顺序（数字越小越靠前）</span>
+          <span>状态</span>
+          <span>操作</span>
+        </div>
+        <p class="agent-level-note">每个代理级别单独设置邀请码单价；显示顺序只控制列表排列，停用的级别不能分配给代理。</p>
+        <div id="agentLevelRows" class="agent-level-list"></div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
@@ -459,6 +472,7 @@
           <label>微信显示顺序<input id="payWechatOrder" type="number"></label>
           <label>支付宝显示顺序<input id="payAlipayOrder" type="number"></label>
         </div>
+        <p class="pay-callback-note">支付通知回调必须填写公网可访问的地址：<code>https://你的域名/api/payment/callback</code>；支付完成返回地址填写：<code>https://你的域名/api/payment/return</code>。本机的 <code>127.0.0.1</code> 或 <code>localhost</code> 只能本机访问，支付平台无法连接。留空时系统会按当前访问域名自动生成；部署在反向代理后请设置 <code>TOOLBOX_PUBLIC_URL</code>。</p>
         <div id="payGatewayCards" class="gateway-cards"></div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">

@@ -669,6 +669,21 @@ p { color: var(--muted); margin-top: 6px; }
   margin-bottom: 12px;
 }
 
+.pay-callback-note {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pay-callback-note code {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .gateway-cards {
   display: grid;
   gap: 18px;
@@ -1726,10 +1741,24 @@ body.is-super-admin #appLoginPanel {
 
 .user-card-main {
   display: grid;
-  grid-template-columns: auto 34px 42px minmax(180px, 1fr) auto auto auto minmax(220px, auto);
+  grid-template-columns: auto 34px 42px minmax(180px, 1fr) auto auto auto;
   gap: 10px;
   align-items: center;
   padding: 12px;
+}
+
+.agent-card-meta {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: max-content max-content max-content minmax(270px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.agent-card-meta .pill {
+  min-width: 0;
 }
 
 .user-expand {
@@ -1823,6 +1852,7 @@ body.is-super-admin #appLoginPanel {
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
+  justify-self: end;
 }
 
 .inline-balance input {
@@ -1834,6 +1864,24 @@ body.is-super-admin #appLoginPanel {
   min-height: 30px;
   padding: 0 10px;
   white-space: nowrap;
+}
+
+.agent-level-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+.agent-level-head { display: grid; grid-template-columns: minmax(150px, 1.4fr) minmax(120px, 1fr) minmax(90px, .7fr) auto auto; gap: 8px; margin-top: 10px; padding: 0 8px; color: var(--muted); font-size: 12px; }
+.agent-level-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.agent-level-list { display: grid; gap: 8px; margin-top: 10px; }
+.agent-level-row { display: grid; grid-template-columns: minmax(150px, 1.4fr) minmax(120px, 1fr) minmax(90px, .7fr) auto auto; align-items: center; gap: 8px; }
+.agent-level-row input[type="number"] { min-width: 0; }
+@media (max-width: 760px) {
+  .agent-level-head { display: none; }
+  .agent-level-row { grid-template-columns: 1fr 1fr; }
+  .agent-level-row .checkline { grid-column: 1; }
 }
 
 label {
@@ -2306,6 +2354,13 @@ tr.row-highlight {
   font-size: 13px;
 }
 
+.invite-lock-note {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: normal;
+}
+
 .invite-result-card {
   width: min(620px, calc(100vw - 32px));
 }
@@ -2571,6 +2626,15 @@ tr.row-highlight {
 
   .user-card-main {
     grid-template-columns: auto 34px 38px minmax(0, 1fr);
+  }
+
+  .agent-card-meta {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .agent-card-meta .inline-balance {
+    grid-column: 1 / -1;
+    justify-self: stretch;
   }
 
   .user-card-main .pill {
@@ -3095,6 +3159,14 @@ body.sidebar-collapsed .nav.active {
   .user-card-main .pill:nth-of-type(2),
   .user-card-main .pill:nth-of-type(3) {
     grid-column: span 2;
+  }
+
+  .agent-card-meta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .agent-card-meta .pill {
+    grid-column: auto;
   }
 
   .inline-balance {
