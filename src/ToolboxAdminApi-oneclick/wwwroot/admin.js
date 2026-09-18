@@ -1354,6 +1354,10 @@ function ensureAuditView() {
     <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>用户</th><th>操作日志</th><th>时间</th><th>IP 地址</th><th>风险评估</th></tr></thead><tbody id="auditLogRows"><tr><td colspan="5">正在读取日志...</td></tr></tbody></table></div>
   </div>`;
   document.querySelector('main').appendChild(view);
+  const announcementCreate = $('announcementCreateBtn');
+  const announcementStats = $('announcementStats');
+  if (announcementCreate) announcementCreate.hidden = !isSuper();
+  if (announcementStats) announcementStats.hidden = !isSuper();
   $('refreshAuditBtn').onclick = () => loadAuditLog().catch(error => setStatus(error.message, true));
   $('clearAuditBtn').onclick = () => clearAuditLog().catch(error => setStatus(error.message, true));
   $('clearFilteredAuditBtn').onclick = () => clearFilteredAuditLog().catch(error => setStatus(error.message, true));
@@ -6146,6 +6150,10 @@ function localDateTimeValue(value) {
 }
 
 function openAnnouncementEditor(item = null) {
+  if (!isSuper()) {
+    showToast('只有总管理员可以发布更新公告。', 'error');
+    return;
+  }
   const overlay = ensureAnnouncementEditor();
   overlay.dataset.announcementId = item?.id || '';
   $('announcementEditorTitle').textContent = item ? '编辑公告' : '新建公告';
@@ -6168,6 +6176,7 @@ function announcementEditorPayload() {
 }
 
 async function saveAdminAnnouncement(publish) {
+  if (!isSuper()) throw new Error('只有总管理员可以发布更新公告。');
   const overlay = ensureAnnouncementEditor(); const id = overlay.dataset.announcementId || ''; const payload = announcementEditorPayload();
   if (!payload.title || !payload.content) throw new Error('公告标题和更新内容不能为空。');
   const current = state.announcements.find((x) => x.id === id);
@@ -6178,11 +6187,13 @@ async function saveAdminAnnouncement(publish) {
 }
 
 async function announcementAction(id, action) {
+  if (!isSuper()) throw new Error('只有总管理员可以修改公告。');
   await api(`/api/admin/announcements/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' });
   await refreshAdminAnnouncements(); showToast(action === 'publish' ? '公告已发布。' : '公告已撤回。', 'success');
 }
 
 async function deleteAdminAnnouncement(id) {
+  if (!isSuper()) throw new Error('只有总管理员可以删除公告。');
   if (!window.confirm('删除后无法恢复，确定删除该公告吗？')) return;
   await api(`/api/admin/announcements/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await refreshAdminAnnouncements(); showToast('公告已删除。', 'success');
