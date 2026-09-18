@@ -244,6 +244,7 @@ namespace ToolboxClient
         private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
         private readonly object activeDownloadsLock = new object();
+        private readonly object pausedDownloadsFileLock = new object();
         private readonly object launchDownloadedFileLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
         private readonly List<Vst76InlineDownloadProgress> vst76InlineDownloadProgress = new List<Vst76InlineDownloadProgress>();
@@ -252,6 +253,7 @@ namespace ToolboxClient
         private const int MaxSegmentedDownloadConnections = 32;
         private const long SegmentedDownloadMinBytes = 8L * 1024L * 1024L;
         private const long SegmentedDownloadMinSegmentBytes = 2L * 1024L * 1024L;
+        private const int MaxDownloadAttemptsPerUrl = 6;
         private const int MaxVisibleDownloadTaskRows = 5;
         private const int DownloadTaskRowHeight = 84;
         private const int DownloadTaskRowGap = 8;
@@ -3521,8 +3523,21 @@ namespace ToolboxClient
 
         private bool IsVst76HomePage(string id, Dictionary<string, object> page)
         {
-            return String.Equals(id, Vst76HomePageId, StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(id, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase);
+            if (String.Equals(id, Vst76HomePageId, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(id, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase)) return true;
+
+            string label = page == null ? "" : PageLabel(page, id);
+            if (String.Equals((label ?? "").Trim(), "系统概览", StringComparison.OrdinalIgnoreCase)) return true;
+
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            foreach (object item in AsList(Get(config, "sidebar")))
+            {
+                Dictionary<string, object> row = AsDict(item);
+                if (!String.Equals(GetText(row, "id", ""), id, StringComparison.OrdinalIgnoreCase)) continue;
+                string navLabel = NavLabel(row, id, pages);
+                return String.Equals((navLabel ?? "").Trim(), "系统概览", StringComparison.OrdinalIgnoreCase);
+            }
+            return false;
         }
 
         private bool IsConfiguredVst76HomeLabel(string id, Dictionary<string, object> page)
@@ -3930,7 +3945,11 @@ namespace ToolboxClient
         private void QueueShowPage(string id)
         {
             if (String.IsNullOrWhiteSpace(id)) return;
-            if (id.Equals(currentPage, StringComparison.OrdinalIgnoreCase) && String.IsNullOrWhiteSpace(pendingPageId)) return;
+            if (id.Equals(currentPage, StringComparison.OrdinalIgnoreCase) && String.IsNullOrWhiteSpace(pendingPageId))
+            {
+                RenderCurrentVisiblePage();
+                return;
+            }
             pendingPageId = id;
             if (pageSwitchTimer == null)
             {
@@ -4028,6 +4047,7 @@ namespace ToolboxClient
             }
             if (currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase))
             {
+                RestorePausedDownloadTasksOnce();
                 if (audioVariant) RenderAudioDownloadsPage();
                 else if (portalVariant) RenderPortalDownloadsPage();
                 else if (tunerVariant || vst76Variant) RenderTunerDownloadsPage();
@@ -4183,6 +4203,7 @@ namespace ToolboxClient
                 progressPanel.Visible = !id.Equals("downloads", StringComparison.OrdinalIgnoreCase);
             if (audioVariant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
             {
+                RestorePausedDownloadTasksOnce();
                 ShowAudioDownloadsPage();
                 return;
             }
@@ -4206,6 +4227,7 @@ namespace ToolboxClient
             }
             if (vst76Variant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
             {
+                RestorePausedDownloadTasksOnce();
                 currentPage = id;
                 MarkNavButtonActive(id);
                 title.Text = "下载管理";
@@ -4214,6 +4236,7 @@ namespace ToolboxClient
             }
             if (tunerVariant && id.Equals("downloads", StringComparison.OrdinalIgnoreCase))
             {
+                RestorePausedDownloadTasksOnce();
                 currentPage = id;
                 MarkNavButtonActive(id);
                 title.Text = "下载页面";
@@ -4583,7 +4606,8 @@ namespace ToolboxClient
                     CustomScript = GetText(item, "custom_script", ""),
                     Name = GetText(item, "name", "未命名"),
                     BackupUrl = GetBackupUrl(item),
-                    BackupPageUrl = GetBackupPageUrl(item)
+                    BackupPageUrl = GetBackupPageUrl(item),
+                    DownloadKey = BuildActionDownloadKey(item)
                 };
                 RoundButton button = new RoundButton
                 {
@@ -5004,7 +5028,7 @@ namespace ToolboxClient
                 string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
                 if (vst76Variant && !useCards && action == "download")
                 {
-                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false);
+                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false, BuildActionDownloadKey(buttons[i]));
                     progress.Left = button.Left;
                     progress.Top = button.Bottom;
                     progress.Width = button.Width;
@@ -5042,7 +5066,8 @@ namespace ToolboxClient
                 CustomScript = GetText(item, "custom_script", ""),
                 Name = nameText,
                 BackupUrl = GetBackupUrl(item),
-                BackupPageUrl = GetBackupPageUrl(item)
+                BackupPageUrl = GetBackupPageUrl(item),
+                DownloadKey = BuildActionDownloadKey(item)
             };
             RoundedPanel card = new RoundedPanel
             {
@@ -5141,6 +5166,7 @@ namespace ToolboxClient
             if (action == "download")
             {
                 Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(nameText, true);
+                progress.DownloadKey = info.DownloadKey;
                 progress.Left = actionButton.Left;
                 progress.Top = actionButton.Top + 4;
                 progress.Width = actionButton.Width;
@@ -5183,7 +5209,7 @@ namespace ToolboxClient
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
                 HideIcon = true,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
@@ -5662,7 +5688,7 @@ namespace ToolboxClient
                 string action = GetText(buttons[i], "action", Has(buttons[i], "url") ? "link" : "cmd").ToLowerInvariant();
                 if (action == "download")
                 {
-                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false);
+                    Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(GetText(buttons[i], "name", "未命名"), false, BuildActionDownloadKey(buttons[i]));
                     progress.Left = button.Left;
                     progress.Top = button.Bottom;
                     progress.Width = button.Width;
@@ -5998,6 +6024,7 @@ namespace ToolboxClient
 
         private void RenderStudioSettingsPage()
         {
+            RestorePausedDownloadTasksOnce();
             if (content == null) return;
             if (!BeginContentRender()) return;
             bool oldVisible = content.Visible;
@@ -6639,6 +6666,7 @@ namespace ToolboxClient
 
         private void RenderPortalDownloadsPage()
         {
+            RestorePausedDownloadTasksOnce();
             content.SuspendLayout();
             ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
@@ -8424,7 +8452,7 @@ namespace ToolboxClient
             }
             if (vst76Variant)
             {
-                Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(entry.Name, true);
+                Vst76InlineDownloadProgress progress = CreateVst76InlineProgress(entry.Name, true, BuildSoftwareCatalogDownloadKey(entry));
                 progress.Left = install.Left;
                 progress.Top = install.Top + 4;
                 progress.Width = 76;
@@ -8699,7 +8727,7 @@ namespace ToolboxClient
                 OpenSoftwareCatalogWebsite(entry);
                 return;
             }
-            ShowVst76InlineDownloadPreparing(entry.Name);
+            ShowVst76InlineDownloadPreparing(entry.Name, BuildSoftwareCatalogDownloadKey(entry));
             if (!String.IsNullOrWhiteSpace(entry.Id) && entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase))
             {
                 ResolveRemoteSoftwareCatalogEntry(entry);
@@ -8708,7 +8736,7 @@ namespace ToolboxClient
             if (!String.IsNullOrWhiteSpace(entry.DownloadUrl))
             {
                 status.Text = "正在加入下载：" + entry.Name;
-                DownloadFile(entry.DownloadUrl, entry.Name);
+                DownloadFile(entry.DownloadUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
                 return;
             }
             if (!String.IsNullOrWhiteSpace(entry.PackageId))
@@ -8721,7 +8749,7 @@ namespace ToolboxClient
                 ResolveAndDownloadSoftwareCatalogEntry(entry);
                 return;
             }
-            ResetVst76InlineDownloadProgress(entry.Name);
+            ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
             SearchSoftwareWithWinget(entry.Name);
         }
 
@@ -8745,12 +8773,12 @@ namespace ToolboxClient
                 {
                     if (String.IsNullOrWhiteSpace(url))
                     {
-                        ResetVst76InlineDownloadProgress(entry.Name);
+                        ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
                         status.Text = "下载地址暂不可用：" + entry.Name;
                         return;
                     }
                     status.Text = "正在加入下载：" + entry.Name;
-                    DownloadFile(url, entry.Name);
+                    DownloadFile(url, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
                 }));
             });
         }
@@ -8780,13 +8808,13 @@ namespace ToolboxClient
                     if (!String.IsNullOrWhiteSpace(installerUrl))
                     {
                         status.Text = "正在加入下载：" + entry.Name;
-                        DownloadFile(installerUrl, entry.Name);
+                        DownloadFile(installerUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
                         return;
                     }
                     status.Text = String.IsNullOrWhiteSpace(error)
                         ? "未解析到安装包地址：" + entry.Name
                         : "解析安装包失败：" + entry.Name;
-                    ResetVst76InlineDownloadProgress(entry.Name);
+                    ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
                 }));
             });
         }
@@ -9428,7 +9456,7 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
@@ -9992,7 +10020,8 @@ namespace ToolboxClient
                 GetBackupUrl(entry.Item),
                 GetBackupPageUrl(entry.Item),
                 GetText(entry.Item, "download_directory", GetText(entry.Item, "download_path", "")),
-                BoolValue(entry.Item, "download_delete_on_exit", false));
+                BoolValue(entry.Item, "download_delete_on_exit", false),
+                BuildActionDownloadKey(entry.Item));
         }
 
         private void RunResourceItemAction(Dictionary<string, object> item, ActionInfo info)
@@ -10008,7 +10037,8 @@ namespace ToolboxClient
                 info.BackupUrl,
                 info.BackupPageUrl,
                 GetText(item, "download_directory", GetText(item, "download_path", "")),
-                BoolValue(item, "download_delete_on_exit", false));
+                BoolValue(item, "download_delete_on_exit", false),
+                info.DownloadKey);
         }
 
         private bool ConfirmButtonGuard(Dictionary<string, object> guard, string name)
@@ -10070,7 +10100,7 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item) }
+                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl));
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
@@ -10230,7 +10260,7 @@ namespace ToolboxClient
                     businessIconRefreshTimer.Stop();
                     if (IsDisposed || Disposing || !configApplied) return;
                     Point scrollPosition = CaptureContentScroll();
-                    RenderCurrentSections();
+                    RenderCurrentVisiblePage();
                     RestoreContentScrollSoon(scrollPosition);
                 };
             }
@@ -10503,11 +10533,36 @@ namespace ToolboxClient
             return path;
         }
 
-        private void RunAction(string action, string target, string customScript, string name, string backupUrl = "", string backupPageUrl = "", string customDownloadDirectory = "", bool deleteOnExit = false)
+        private string BuildActionDownloadKey(Dictionary<string, object> item)
+        {
+            if (item == null) return "";
+            string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
+            string name = GetText(item, "name", "未命名");
+            return BuildDownloadKey(
+                GetText(item, "id", ""),
+                GetTarget(item, action),
+                GetBackupUrl(item),
+                GetBackupPageUrl(item),
+                name);
+        }
+
+        private static string BuildSoftwareCatalogDownloadKey(SoftwareCatalogEntry entry)
+        {
+            if (entry == null) return "";
+            string primary = !String.IsNullOrWhiteSpace(entry.DownloadUrl) ? entry.DownloadUrl : entry.Website;
+            if (String.IsNullOrWhiteSpace(primary)) primary = entry.PackageId;
+            return BuildDownloadKey(entry.Id, primary, "", entry.Website, entry.Name);
+        }
+
+        private void RunAction(string action, string target, string customScript, string name, string backupUrl = "", string backupPageUrl = "", string customDownloadDirectory = "", bool deleteOnExit = false, string downloadKey = "")
         {
             try
             {
-                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(name, ""))) return;
+                DownloadTask existingTask = String.IsNullOrWhiteSpace(downloadKey)
+                    ? FindActiveDownloadByName(name, "")
+                    : FindActiveDownloadByKey(downloadKey);
+                if (existingTask == null && !String.IsNullOrWhiteSpace(downloadKey)) existingTask = FindActiveDownloadByName(name, "");
+                if (ResumeMatchedDownloadTask(existingTask)) return;
                 if (String.IsNullOrWhiteSpace(target) && String.IsNullOrWhiteSpace(backupUrl) && String.IsNullOrWhiteSpace(customScript))
                 {
                     status.Text = "按钮没有配置网址或命令。";
@@ -10517,7 +10572,7 @@ namespace ToolboxClient
                 {
                     string primary = String.IsNullOrWhiteSpace(target) ? backupUrl : target;
                     string fallback = String.IsNullOrWhiteSpace(target) ? "" : backupUrl;
-                    DownloadFile(ResolveServerUrl(primary), name, ResolveServerUrl(fallback), ResolveServerUrl(backupPageUrl), customDownloadDirectory, deleteOnExit);
+                    DownloadFile(ResolveServerUrl(primary), name, ResolveServerUrl(fallback), ResolveServerUrl(backupPageUrl), customDownloadDirectory, deleteOnExit, downloadKey);
                 }
                 else if (action == "cmd") RunCommand(target, false);
                 else if (action == "script") RunScript(target, customScript, name);
@@ -10967,33 +11022,35 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName)
         {
-            DownloadFile(url, displayName, "", "", "", false);
+            DownloadFile(url, displayName, "", "", "", false, "");
         }
 
         private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl)
         {
-            DownloadFile(url, displayName, backupUrl, backupPageUrl, "", false);
+            DownloadFile(url, displayName, backupUrl, backupPageUrl, "", false, "");
         }
 
-        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit)
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey = "")
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
-            ShowVst76InlineDownloadPreparing(displayName);
+            if (String.IsNullOrWhiteSpace(downloadKey)) downloadKey = BuildDownloadKey("", originalUrl, backupUrl, backupPageUrl, displayName);
+            ShowVst76InlineDownloadPreparing(displayName, downloadKey);
             if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
             status.Text = LooksLikeDirectDownloadFile(originalUrl)
                 ? PortalText("正在加入下载队列...", "Adding to download queue...")
                 : PortalText("正在解析下载地址...", "Preparing download...");
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
+            result.DownloadKey = downloadKey ?? "";
             result.CustomDirectory = customDirectory;
             result.DeleteOnExit = deleteOnExit;
             result.BackupUrl = (backupUrl ?? "").Trim();
@@ -11001,86 +11058,19 @@ namespace ToolboxClient
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
-                // A web page or an unreachable main URL should not prevent a configured backup from being tried.
-                if ((result.Download == null || result.Download.BrowserOnly) && !String.IsNullOrWhiteSpace(result.BackupUrl) && !String.Equals(result.BackupUrl, originalUrl, StringComparison.OrdinalIgnoreCase))
+                if (result.Download == null && IsHttpUrl(originalUrl))
+                    result.Download = CreateRawDownloadRequest(originalUrl, result.DisplayName);
+                // BrowserOnly is only a preparation result. With a backup configured,
+                // still create a raw main-url candidate so the main URL is tried first.
+                if (result.Download == null || (result.Download.BrowserOnly && !String.IsNullOrWhiteSpace(result.BackupUrl)))
                 {
-                    DownloadRequest backup = ResolveDownloadRequest(result.BackupUrl);
-                    if (backup != null && !backup.BrowserOnly)
-                    {
-                        result.Download = backup;
-                        result.UsingBackup = true;
-                    }
-                    else if (IsHttpUrl(result.BackupUrl))
-                    {
-                        result.Download = new DownloadRequest
-                        {
-                            OriginalUrl = result.BackupUrl,
-                            Url = result.BackupUrl,
-                            FileName = SafeDownloadFileName(result.DisplayName),
-                            BrowserUrl = result.BackupUrl,
-                            FastStartDirectDownload = true
-                        };
-                        result.UsingBackup = true;
-                    }
-                }
-                if (result.Download != null && !result.Download.BrowserOnly)
-                {
-                    if (IsServerDownloadEndpoint(result.Download.Url) && !IsUsefulDownloadFileName(result.Download.FileName))
-                    {
-                        string fallbackName = SafeDownloadFileName(result.DisplayName);
-                        if (String.IsNullOrWhiteSpace(fallbackName)) fallbackName = "download";
-                        if (!Path.HasExtension(fallbackName)) fallbackName += ".exe";
-                        result.Download.FileName = fallbackName;
-                    }
-                    result.FileName = SafeDownloadFileName(result.Download.FileName);
-                    string dir = EnsureWritableDownloadDirectory(customDirectory);
-                    result.Path = Path.Combine(dir, result.FileName);
-                    result.ExistingRecord = FindExistingDownloadRecord(originalUrl, result.Path);
+                    DownloadRequest rawMain = CreateRawDownloadRequest(originalUrl, result.DisplayName);
+                    if (rawMain != null) result.Download = rawMain;
                 }
             }
             catch (Exception ex)
             {
-                if (!String.IsNullOrWhiteSpace(result.BackupUrl) && !String.Equals(result.BackupUrl, originalUrl, StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        DownloadRequest backup = ResolveDownloadRequest(result.BackupUrl);
-                        if (backup != null)
-                        {
-                            result.Download = backup;
-                            result.UsingBackup = true;
-                            result.Error = null;
-                        }
-                        else if (IsHttpUrl(result.BackupUrl))
-                        {
-                            result.Download = new DownloadRequest
-                            {
-                                OriginalUrl = result.BackupUrl,
-                                Url = result.BackupUrl,
-                                FileName = SafeDownloadFileName(result.DisplayName),
-                                BrowserUrl = result.BackupUrl,
-                                FastStartDirectDownload = true
-                            };
-                            result.UsingBackup = true;
-                            result.Error = null;
-                        }
-                    }
-                    catch
-                    {
-                    }
-                }
-                if (result.Download == null && IsHttpUrl(originalUrl))
-                {
-                    result.Download = new DownloadRequest
-                    {
-                        OriginalUrl = originalUrl,
-                        Url = originalUrl,
-                        FileName = FileNameFromUrl(originalUrl),
-                        BrowserUrl = originalUrl,
-                        FastStartDirectDownload = true
-                    };
-                    result.Error = null;
-                }
+                result.Download = CreateRawDownloadRequest(originalUrl, result.DisplayName);
                 if (result.Download == null) result.Error = ex;
             }
 
@@ -11119,9 +11109,10 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
-                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
-                ResetVst76InlineDownloadProgress(result.DisplayName);
-                if (!String.IsNullOrWhiteSpace(result.BackupPageUrl)) Open(result.BackupPageUrl);
+                DownloadTask existingErrorTask = FindActiveDownloadByKey(result.DownloadKey);
+                if (existingErrorTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingErrorTask = FindActiveDownloadByName(result.DisplayName, "");
+                if (ResumeMatchedDownloadTask(existingErrorTask)) return;
+                ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
                 if (result.Error is IOException || result.Error is UnauthorizedAccessException)
                 {
                     status.Text = PortalText("下载目录不可用，且没有找到其他可写磁盘。", "No writable download folder is available.");
@@ -11133,9 +11124,10 @@ namespace ToolboxClient
             DownloadRequest download = result.Download;
             if (download == null)
             {
-                if (ResumeMatchedDownloadTask(FindActiveDownloadByName(result.DisplayName, ""))) return;
-                ResetVst76InlineDownloadProgress(result.DisplayName);
-                if (!String.IsNullOrWhiteSpace(result.BackupPageUrl)) Open(result.BackupPageUrl);
+                DownloadTask existingNullTask = FindActiveDownloadByKey(result.DownloadKey);
+                if (existingNullTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingNullTask = FindActiveDownloadByName(result.DisplayName, "");
+                if (ResumeMatchedDownloadTask(existingNullTask)) return;
+                ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
                 status.Text = PortalText("下载地址解析失败，请检查网络或文件地址。", "Could not prepare the download. Please check the URL.");
                 return;
             }
@@ -11143,10 +11135,11 @@ namespace ToolboxClient
             {
                 DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
-                if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
+                if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByKey(result.DownloadKey);
+                if (browserOnlyTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) browserOnlyTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(browserOnlyTask)) return;
-                ResetVst76InlineDownloadProgress(result.DisplayName);
-                Open(String.IsNullOrWhiteSpace(result.BackupPageUrl) ? (String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl) : result.BackupPageUrl);
+                ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
+                Open(String.IsNullOrWhiteSpace(download.BrowserUrl) ? result.OriginalUrl : download.BrowserUrl);
                 status.Text = String.IsNullOrWhiteSpace(download.Message) ? "该链接需要在浏览器中完成下载。" : download.Message;
                 return;
             }
@@ -11162,15 +11155,16 @@ namespace ToolboxClient
             DownloadRecord existingRecord = result.ExistingRecord;
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
-                ResetVst76InlineDownloadProgress(result.DisplayName);
+                ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
                 string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
                 status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
                 FillDownloadRecords();
                 return;
             }
-            DownloadTask existingTask = FindActiveDownload(result.OriginalUrl, path);
-            if (existingTask == null) existingTask = FindActiveDownload(download.Url, path);
-            if (existingTask == null) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
+            DownloadTask existingTask = FindActiveDownloadByKey(result.DownloadKey);
+            if (existingTask == null) existingTask = FindActiveDownload(result.OriginalUrl, "");
+            if (existingTask == null) existingTask = FindActiveDownload(download.Url, "");
+            if (existingTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingTask = FindActiveDownloadByName(result.DisplayName, fileName);
             if (existingTask != null)
             {
                 ResumeMatchedDownloadTask(existingTask);
@@ -11179,12 +11173,12 @@ namespace ToolboxClient
             fileName = Path.GetFileName(path);
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
             task.DisplayName = result.DisplayName;
+            task.DownloadKey = result.DownloadKey;
             task.CustomDownloadDirectory = result.CustomDirectory;
             task.DeleteOnExit = result.DeleteOnExit;
             task.BrowserUrl = download.BrowserUrl;
             task.BackupUrl = result.BackupUrl;
             task.BackupPageUrl = result.BackupPageUrl;
-            task.UsingBackup = result.UsingBackup;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
@@ -11445,6 +11439,12 @@ namespace ToolboxClient
                    contentType.IndexOf("application/json", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static void EnsureDownloadResponseIsFile(HttpWebResponse response)
+        {
+            if (ResponseLooksLikeWebPage(response))
+                throw new InvalidOperationException("下载地址返回了网页内容，未返回安装包。");
+        }
+
         private static string FileNameFromMetadata(Dictionary<string, object> data)
         {
             string[] keys = new string[] { "filename", "fileName", "file_name", "originalName", "original_name", "name", "title" };
@@ -11616,6 +11616,21 @@ namespace ToolboxClient
             return null;
         }
 
+        private DownloadTask FindActiveDownloadByKey(string downloadKey)
+        {
+            string key = (downloadKey ?? "").Trim();
+            if (String.IsNullOrWhiteSpace(key)) return null;
+            lock (activeDownloadsLock)
+            {
+                foreach (DownloadTask task in activeDownloads)
+                {
+                    if (task == null || task.Finished || task.CancelRequested) continue;
+                    if (String.Equals(task.DownloadKey, key, StringComparison.OrdinalIgnoreCase)) return task;
+                }
+            }
+            return null;
+        }
+
         private DownloadTask FindActiveDownloadByName(string displayName, string fileName)
         {
             string displayKey = NormalizeDownloadMatchText(displayName);
@@ -11626,15 +11641,14 @@ namespace ToolboxClient
                 foreach (DownloadTask task in activeDownloads)
                 {
                     if (task == null || task.Finished || task.CancelRequested) continue;
+                    if (!String.IsNullOrWhiteSpace(task.DownloadKey)) continue;
                     string taskFileKey = NormalizeDownloadMatchText(task.FileName);
                     string taskPathKey = NormalizeDownloadMatchText(Path.GetFileName(task.Path));
                     string taskDisplayKey = NormalizeDownloadMatchText(task.DisplayName);
                     bool matches =
-                        DownloadNameMatches(taskFileKey, fileKey) ||
-                        DownloadNameMatches(taskPathKey, fileKey) ||
-                        DownloadNameMatches(taskDisplayKey, displayKey) ||
-                        DownloadNameMatches(taskFileKey, displayKey) ||
-                        DownloadNameMatches(taskPathKey, displayKey);
+                        (!String.IsNullOrWhiteSpace(fileKey) && String.Equals(taskFileKey, fileKey, StringComparison.OrdinalIgnoreCase)) ||
+                        (!String.IsNullOrWhiteSpace(fileKey) && String.Equals(taskPathKey, fileKey, StringComparison.OrdinalIgnoreCase)) ||
+                        (!String.IsNullOrWhiteSpace(displayKey) && String.Equals(taskDisplayKey, displayKey, StringComparison.OrdinalIgnoreCase));
                     if (!matches) continue;
                     if (match != null && !Object.ReferenceEquals(match, task)) return null;
                     match = task;
@@ -11643,13 +11657,22 @@ namespace ToolboxClient
             return match;
         }
 
-        private static bool DownloadNameMatches(string haystack, string needle)
+
+        private static string BuildDownloadKey(string id, string primaryUrl, string backupUrl, string backupPageUrl, string displayName)
         {
-            if (String.IsNullOrWhiteSpace(haystack) || String.IsNullOrWhiteSpace(needle)) return false;
-            if (needle.Length < 2) return false;
-            if (String.Equals(haystack, needle, StringComparison.OrdinalIgnoreCase)) return true;
-            if (haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            return haystack.Length >= 4 && needle.IndexOf(haystack, StringComparison.OrdinalIgnoreCase) >= 0;
+            StringBuilder raw = new StringBuilder();
+            raw.Append("id:").Append((id ?? "").Trim()).Append("\n");
+            raw.Append("primary:").Append((primaryUrl ?? "").Trim()).Append("\n");
+            raw.Append("backup:").Append((backupUrl ?? "").Trim()).Append("\n");
+            raw.Append("page:").Append((backupPageUrl ?? "").Trim()).Append("\n");
+            raw.Append("name:").Append((displayName ?? "").Trim());
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(raw.ToString()));
+                StringBuilder hex = new StringBuilder(bytes.Length * 2);
+                foreach (byte value in bytes) hex.Append(value.ToString("x2"));
+                return hex.ToString();
+            }
         }
 
         private static string NormalizeDownloadMatchText(string text)
@@ -11860,10 +11883,19 @@ namespace ToolboxClient
                         }
                         if (ex is OperationCanceledException || task.CancelRequested) break;
                         if (String.IsNullOrWhiteSpace(task.BackupUrl) && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;
-                        if (task.UsingBackup && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;
+                        if (attempt >= MaxDownloadAttemptsPerUrl)
+                        {
+                            task.StateText = task.UsingBackup
+                                ? "备用下载地址多次失败，准备打开备用网页"
+                                : "下载地址多次失败";
+                            QueueDownloadTaskRowUpdate(task);
+                            break;
+                        }
                         if (task.DisableSegmentedDownload) CleanupSegmentedPart(task);
                         int nextAttempt = attempt == Int32.MaxValue ? attempt : attempt + 1;
-                        task.StateText = "下载中断，自动续传第 " + nextAttempt + " 次";
+                        task.StateText = task.UsingBackup
+                            ? "备用下载中断，自动续传第 " + nextAttempt + " 次"
+                            : "下载中断，自动续传第 " + nextAttempt + " 次";
                         QueueDownloadTaskRowUpdate(task);
                         SavePausedDownloadTasks();
                         Thread.Sleep(Math.Min(5000, 900 * Math.Max(1, Math.Min(attempt, 6))));
@@ -11896,7 +11928,13 @@ namespace ToolboxClient
             catch
             {
             }
-            task.Url = task.BackupUrl;
+            DownloadRequest backup = null;
+            try { backup = ResolveDownloadRequest(task.BackupUrl); } catch { }
+            if (backup == null || backup.BrowserOnly) backup = CreateRawDownloadRequest(task.BackupUrl, task.DisplayName);
+            if (backup == null || String.IsNullOrWhiteSpace(backup.Url)) return false;
+            task.Url = backup.Url;
+            task.BrowserUrl = backup.BrowserUrl;
+            task.FastStartDirectDownload = backup.FastStartDirectDownload;
             task.UsingBackup = true;
             task.LastResolvedUrl = "";
             task.Segmented = false;
@@ -11907,6 +11945,23 @@ namespace ToolboxClient
             task.StateText = "主下载地址不可用，正在切换备用地址";
             QueueDownloadTaskRowUpdate(task);
             return true;
+        }
+
+        private DownloadRequest CreateRawDownloadRequest(string url, string displayName)
+        {
+            string value = (url ?? "").Trim();
+            if (!IsHttpUrl(value)) return null;
+            string fileName = FileNameFromUrl(value);
+            if (!IsUsefulDownloadFileName(fileName)) fileName = SafeDownloadFileName(displayName);
+            if (String.IsNullOrWhiteSpace(fileName)) fileName = "download.exe";
+            return new DownloadRequest
+            {
+                OriginalUrl = value,
+                Url = value,
+                FileName = SafeDownloadFileName(fileName),
+                BrowserUrl = value,
+                FastStartDirectDownload = true
+            };
         }
 
         private void DownloadFileSingleConnection(DownloadTask task, int attempt)
@@ -11927,6 +11982,7 @@ namespace ToolboxClient
             {
                 using (HttpWebResponse response = OpenSingleDownloadResponse(task, resumeFrom, out request))
                 {
+                    EnsureDownloadResponseIsFile(response);
                     bool resumed = resumeFrom > 0 && response.StatusCode == HttpStatusCode.PartialContent;
                     if (resumeFrom > 0 && !resumed)
                     {
@@ -12171,6 +12227,7 @@ namespace ToolboxClient
                 {
                     using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, true, rangeStart, segment.End, out request))
                     {
+                        EnsureDownloadResponseIsFile(response);
                         if (response.StatusCode != HttpStatusCode.PartialContent)
                         {
                             throw new InvalidOperationException("服务器没有按 Range 返回分片内容。");
@@ -12340,6 +12397,7 @@ namespace ToolboxClient
                 int timeout = task.FastStartDirectDownload ? 1500 : 12000;
                 using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, timeout, timeout))
                 {
+                    if (ResponseLooksLikeWebPage(response)) throw new InvalidOperationException("下载地址返回了网页内容。");
                     info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
                     info.TotalLength = ParseContentRangeTotal(response.Headers["Content-Range"]);
                     if (info.TotalLength <= 0 && response.StatusCode != HttpStatusCode.PartialContent) info.TotalLength = response.ContentLength;
@@ -12597,7 +12655,7 @@ namespace ToolboxClient
             CleanupSegmentedPart(task);
             ResetVst76InlineDownloadProgress(task);
             // Keep interrupted partial downloads in the queue so they survive restart and can resume.
-            if (!task.CancelRequested && task.Received > 0 && File.Exists(task.Path))
+            if (!task.UsingBackup && !task.CancelRequested && task.Received > 0 && File.Exists(task.Path))
             {
                 task.Finished = false;
                 task.RestoredPaused = true;
@@ -12665,12 +12723,25 @@ namespace ToolboxClient
                 }
                 string path = PausedDownloadsPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
-                if (states.Count == 0)
+                lock (pausedDownloadsFileLock)
                 {
-                    if (File.Exists(path)) File.Delete(path);
-                    return;
+                    if (states.Count == 0)
+                    {
+                        if (File.Exists(path)) File.Delete(path);
+                        return;
+                    }
+                    string tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        File.WriteAllText(tempPath, serializer.Serialize(states), Encoding.UTF8);
+                        if (File.Exists(path)) File.Replace(tempPath, path, null);
+                        else File.Move(tempPath, path);
+                    }
+                    finally
+                    {
+                        try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                    }
                 }
-                File.WriteAllText(path, serializer.Serialize(states), Encoding.UTF8);
             }
             catch
             {
@@ -12682,10 +12753,13 @@ namespace ToolboxClient
             try
             {
                 string path = PausedDownloadsPath();
-                if (!File.Exists(path)) return new List<PausedDownloadTaskState>();
-                string json = File.ReadAllText(path, Encoding.UTF8);
-                List<PausedDownloadTaskState> states = serializer.Deserialize<List<PausedDownloadTaskState>>(json);
-                return states ?? new List<PausedDownloadTaskState>();
+                lock (pausedDownloadsFileLock)
+                {
+                    if (!File.Exists(path)) return new List<PausedDownloadTaskState>();
+                    string json = File.ReadAllText(path, Encoding.UTF8);
+                    List<PausedDownloadTaskState> states = serializer.Deserialize<List<PausedDownloadTaskState>>(json);
+                    return states ?? new List<PausedDownloadTaskState>();
+                }
             }
             catch
             {
@@ -12715,6 +12789,7 @@ namespace ToolboxClient
                     if (HasActiveDownload(originalUrl, path) || HasActiveDownload(url, path)) continue;
                     DownloadTask task = new DownloadTask(url, fileName, path, String.IsNullOrWhiteSpace(originalUrl) ? url : originalUrl);
                     task.DisplayName = state.DisplayName ?? "";
+                    task.DownloadKey = state.DownloadKey ?? "";
                     task.Received = Math.Max(0, state.Received);
                     task.Total = state.Total;
                     task.Segmented = state.Segmented;
@@ -12753,7 +12828,8 @@ namespace ToolboxClient
             if (restored > 0)
             {
                 UpdateDownloadBadges();
-                RenderActiveDownloads();
+                if (activeDownloadsList != null && !activeDownloadsList.IsDisposed)
+                    RenderActiveDownloads();
                 status.Text = PortalText("已恢复暂停下载任务", "Restored paused download task(s)");
             }
             SavePausedDownloadTasks();
@@ -12767,6 +12843,7 @@ namespace ToolboxClient
             state.OriginalUrl = task.OriginalUrl;
             state.FileName = task.FileName;
             state.DisplayName = task.DisplayName;
+            state.DownloadKey = task.DownloadKey;
             state.Path = task.Path;
             state.Received = task.Received;
             state.Total = task.Total;
@@ -13227,6 +13304,7 @@ namespace ToolboxClient
 
         private void ShowDownloadRecords()
         {
+            RestorePausedDownloadTasksOnce();
             if (recordsPanel == null) BuildRecordsPanel();
             RenderActiveDownloads();
             FillDownloadRecords();
@@ -13241,6 +13319,7 @@ namespace ToolboxClient
 
         private void ShowDownloadRecordsPanel()
         {
+            RestorePausedDownloadTasksOnce();
             if (recordsPanel == null) BuildRecordsPanel();
             RenderActiveDownloads();
             FillDownloadRecords();
@@ -14072,11 +14151,12 @@ namespace ToolboxClient
             return padding.Top + padding.Bottom + MaxVisibleDownloadTaskRows * DownloadTaskRowHeight + Math.Max(0, MaxVisibleDownloadTaskRows - 1) * DownloadTaskRowGap;
         }
 
-        private Vst76InlineDownloadProgress CreateVst76InlineProgress(string downloadName, bool compact)
+        private Vst76InlineDownloadProgress CreateVst76InlineProgress(string downloadName, bool compact, string downloadKey = "")
         {
             return new Vst76InlineDownloadProgress
             {
                 DownloadName = downloadName ?? "",
+                DownloadKey = String.IsNullOrWhiteSpace(downloadKey) ? BuildDownloadKey("", "", "", "", downloadName) : downloadKey,
                 Compact = compact,
                 Visible = false,
                 FillColor = Accent,
@@ -14096,11 +14176,12 @@ namespace ToolboxClient
                     vst76InlineDownloadProgress.RemoveAt(i);
             }
             vst76InlineDownloadProgress.Add(progress);
-            DownloadTask task = FindActiveDownloadByName(progress.DownloadName, "");
+            DownloadTask task = FindActiveDownloadByKey(progress.DownloadKey);
+            if (task == null && String.IsNullOrWhiteSpace(progress.DownloadKey)) task = FindActiveDownloadByName(progress.DownloadName, "");
             if (task != null) ApplyVst76InlineDownloadProgress(progress, task);
         }
 
-        private void ShowVst76InlineDownloadPreparing(string displayName)
+        private void ShowVst76InlineDownloadPreparing(string displayName, string downloadKey = "")
         {
             if (!vst76Variant || String.IsNullOrWhiteSpace(displayName)) return;
             string key = NormalizeDownloadMatchText(displayName);
@@ -14112,7 +14193,8 @@ namespace ToolboxClient
                     vst76InlineDownloadProgress.RemoveAt(i);
                     continue;
                 }
-                if (!String.Equals(NormalizeDownloadMatchText(progress.DownloadName), key, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!String.IsNullOrWhiteSpace(downloadKey) && !String.Equals(progress.DownloadKey, downloadKey, StringComparison.OrdinalIgnoreCase)) continue;
+                if (String.IsNullOrWhiteSpace(downloadKey) && !String.Equals(NormalizeDownloadMatchText(progress.DownloadName), key, StringComparison.OrdinalIgnoreCase)) continue;
                 progress.Value = 0;
                 progress.Detail = "准备下载";
                 progress.Complete = false;
@@ -14132,8 +14214,6 @@ namespace ToolboxClient
         private void UpdateVst76InlineDownloadProgress(DownloadTask task)
         {
             if (!vst76Variant || task == null) return;
-            string displayKey = NormalizeDownloadMatchText(task.DisplayName);
-            string fileKey = NormalizeDownloadMatchText(task.FileName);
             for (int i = vst76InlineDownloadProgress.Count - 1; i >= 0; i--)
             {
                 Vst76InlineDownloadProgress progress = vst76InlineDownloadProgress[i];
@@ -14142,8 +14222,14 @@ namespace ToolboxClient
                     vst76InlineDownloadProgress.RemoveAt(i);
                     continue;
                 }
-                string progressKey = NormalizeDownloadMatchText(progress.DownloadName);
-                if (!String.Equals(displayKey, progressKey, StringComparison.OrdinalIgnoreCase) && !String.Equals(fileKey, progressKey, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!String.IsNullOrWhiteSpace(task.DownloadKey) && !String.Equals(task.DownloadKey, progress.DownloadKey, StringComparison.OrdinalIgnoreCase)) continue;
+                if (String.IsNullOrWhiteSpace(task.DownloadKey))
+                {
+                    string progressKey = NormalizeDownloadMatchText(progress.DownloadName);
+                    string displayKey = NormalizeDownloadMatchText(task.DisplayName);
+                    string fileKey = NormalizeDownloadMatchText(task.FileName);
+                    if (!String.Equals(displayKey, progressKey, StringComparison.OrdinalIgnoreCase) && !String.Equals(fileKey, progressKey, StringComparison.OrdinalIgnoreCase)) continue;
+                }
                 ApplyVst76InlineDownloadProgress(progress, task);
             }
         }
@@ -14172,15 +14258,20 @@ namespace ToolboxClient
         private void ResetVst76InlineDownloadProgress(DownloadTask task)
         {
             if (!vst76Variant || task == null) return;
-            ResetVst76InlineDownloadProgress(task.DisplayName, task.FileName);
+            ResetVst76InlineDownloadProgress(task.DownloadKey, task.DisplayName, task.FileName);
         }
 
         private void ResetVst76InlineDownloadProgress(string displayName)
         {
-            ResetVst76InlineDownloadProgress(displayName, "");
+            ResetVst76InlineDownloadProgress("", displayName, "");
         }
 
         private void ResetVst76InlineDownloadProgress(string displayName, string fileName)
+        {
+            ResetVst76InlineDownloadProgress("", displayName, fileName);
+        }
+
+        private void ResetVst76InlineDownloadProgress(string downloadKey, string displayName, string fileName)
         {
             if (!vst76Variant) return;
             string displayKey = NormalizeDownloadMatchText(displayName);
@@ -14188,8 +14279,15 @@ namespace ToolboxClient
             foreach (Vst76InlineDownloadProgress progress in vst76InlineDownloadProgress)
             {
                 if (progress == null || progress.IsDisposed) continue;
+                if (!String.IsNullOrWhiteSpace(downloadKey))
+                {
+                    if (!String.Equals(downloadKey, progress.DownloadKey, StringComparison.OrdinalIgnoreCase)) continue;
+                }
+                else
+                {
                 string progressKey = NormalizeDownloadMatchText(progress.DownloadName);
                 if (!String.Equals(displayKey, progressKey, StringComparison.OrdinalIgnoreCase) && !String.Equals(fileKey, progressKey, StringComparison.OrdinalIgnoreCase)) continue;
+                }
                 progress.Visible = false;
                 if (progress.DownloadButton != null) progress.DownloadButton.Visible = true;
                 if (progress.CardHost != null)
@@ -14234,10 +14332,38 @@ namespace ToolboxClient
             catch { }
         }
 
+        private void QueueActiveDownloadsRender()
+        {
+            FlowLayoutPanel list = activeDownloadsList;
+            if (list == null || list.IsDisposed) return;
+            if (list.IsHandleCreated)
+            {
+                BeginInvokeIfReady(delegate
+                {
+                    if (activeDownloadsList == list && !list.IsDisposed) SafeRenderActiveDownloads();
+                });
+                return;
+            }
+            list.HandleCreated -= ActiveDownloadsList_HandleCreated;
+            list.HandleCreated += ActiveDownloadsList_HandleCreated;
+        }
+
+        private void ActiveDownloadsList_HandleCreated(object sender, EventArgs e)
+        {
+            Control list = sender as Control;
+            if (list != null) list.HandleCreated -= ActiveDownloadsList_HandleCreated;
+            if (activeDownloadsList == list && list != null && !list.IsDisposed) SafeRenderActiveDownloads();
+        }
+
         private void RenderActiveDownloads()
         {
             UpdateAudioOverallProgress();
-            if (activeDownloadsList == null || activeDownloadsList.IsDisposed || !activeDownloadsList.IsHandleCreated) return;
+            if (activeDownloadsList == null || activeDownloadsList.IsDisposed) return;
+            if (!activeDownloadsList.IsHandleCreated)
+            {
+                QueueActiveDownloadsRender();
+                return;
+            }
             List<DownloadTask> tasks;
             lock (activeDownloadsLock) tasks = new List<DownloadTask>(activeDownloads);
             Point scrollPosition = activeDownloadsList.AutoScrollPosition;
@@ -15397,6 +15523,7 @@ namespace ToolboxClient
         private void ShowAudioDownloadsPage()
         {
             if (!audioVariant) return;
+            RestorePausedDownloadTasksOnce();
             currentPage = "downloads";
             if (progressPanel != null) progressPanel.Visible = false;
             DeactivateNavButtons();
@@ -15507,6 +15634,7 @@ namespace ToolboxClient
 
         private void RenderAudioDownloadsPage()
         {
+            RestorePausedDownloadTasksOnce();
             if (content == null) return;
             if (!BeginContentRender()) return;
             bool oldVisible = content.Visible;
@@ -15590,7 +15718,8 @@ namespace ToolboxClient
                 actions.Controls.Add(clear);
                 content.Controls.Add(actions);
                 FillDownloadRecordsIntoList(recordsList);
-                RenderActiveDownloads();
+                if (activeDownloadsList != null && !activeDownloadsList.IsDisposed)
+                    RenderActiveDownloads();
                 status.Text = "下载进度：等待任务";
             }
             finally
@@ -15618,6 +15747,7 @@ namespace ToolboxClient
 
         private void RenderTunerDownloadsPage()
         {
+            RestorePausedDownloadTasksOnce();
             if (content == null) return;
             if (recordsPanel != null) recordsPanel.Visible = false;
             if (settingsPanel != null) settingsPanel.Visible = false;
@@ -18458,6 +18588,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string Name;
             public string BackupUrl;
             public string BackupPageUrl;
+            public string DownloadKey;
         }
 
         private sealed class SoftwareCatalogEntry
@@ -19080,6 +19211,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl { get; set; }
             public string BackupPageUrl { get; set; }
             public bool UsingBackup { get; set; }
+            public string DownloadKey { get; set; }
             public string PartPath { get; set; }
             public List<DownloadSegmentState> Segments { get; set; }
         }
@@ -19117,7 +19249,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public bool DeleteOnExit;
             public string BackupUrl = "";
             public string BackupPageUrl = "";
-            public bool UsingBackup;
+            public string DownloadKey = "";
         }
 
         private sealed class CommandRunResult
@@ -19180,6 +19312,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BrowserUrl = "";
             public string BackupUrl = "";
             public string BackupPageUrl = "";
+            public string DownloadKey = "";
             public bool UsingBackup;
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
@@ -19502,6 +19635,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
     {
         private int progressValue;
         public string DownloadName = "";
+        public string DownloadKey = "";
         public string Detail = "";
         public bool Compact;
         public bool Complete;

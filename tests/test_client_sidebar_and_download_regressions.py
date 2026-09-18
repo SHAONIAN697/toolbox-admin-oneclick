@@ -151,6 +151,18 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("for (int attempt = 0; attempt < 3 && image == null; attempt++)", button_loader)
         self.assertIn("failedIcons.Remove(cacheKey)", button_loader)
 
+    def test_async_icon_refresh_keeps_the_current_flagship_page_route(self):
+        refresh = self.method("private void ScheduleBusinessIconRefresh", "private Image LoadRemoteImage")
+        self.assertIn("RenderCurrentVisiblePage();", refresh)
+        self.assertNotIn("RenderCurrentSections();", refresh)
+
+        home = self.method("private bool IsVst76HomePage", "private bool IsConfiguredVst76HomeLabel")
+        self.assertIn('String.Equals((label ?? "").Trim(), "系统概览"', home)
+        self.assertIn("NavLabel(row, id, pages)", home)
+
+        queue = self.method("private void QueueShowPage", "private void QueueContentResizeRender")
+        self.assertIn("RenderCurrentVisiblePage();", queue)
+
     def test_non_studio_variants_hide_overview_by_id_or_label(self):
         self.assertIn("private bool IsStudioOverviewPage", self.source)
         self.assertIn('String.Equals(label.Trim(), "系统概览", StringComparison.OrdinalIgnoreCase)', self.source)
@@ -175,6 +187,15 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         closing = self.method("protected override void OnFormClosing", "private void PositionSettingsPanel")
         self.assertIn("ThreadPool.QueueUserWorkItem", closing)
         self.assertIn("CleanupDownloadedFilesOnExit", closing)
+
+    def test_legacy_hta_backup_url_retries_before_backup_page(self):
+        hta = (
+            CLIENT_SOURCE.parent / "toolbox.hta"
+        ).read_text(encoding="utf-8")
+        self.assertIn("function downloadUrl(url, backupUrl, backupPageUrl, isBackup, backupAttempt)", hta)
+        self.assertIn("if (isBackup && backupAttempt < 5)", hta)
+        self.assertIn('downloadUrl(url, \"\", backupPageUrl, true, nextAttempt);', hta)
+        self.assertIn("if (backupPageUrl)", hta)
 
 
 if __name__ == "__main__":

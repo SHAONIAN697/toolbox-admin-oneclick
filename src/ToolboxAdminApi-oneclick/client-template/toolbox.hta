@@ -243,8 +243,10 @@
       }
     }
 
-    function downloadUrl(url, backupUrl, backupPageUrl) {
-      if (!url && backupUrl) { downloadUrl(backupUrl, "", backupPageUrl); return; }
+    function downloadUrl(url, backupUrl, backupPageUrl, isBackup, backupAttempt) {
+      isBackup = isBackup === true;
+      backupAttempt = backupAttempt || 0;
+      if (!url && backupUrl) { downloadUrl(backupUrl, "", backupPageUrl, true, 0); return; }
       if (!url) {
         if (backupPageUrl) openUrl(backupPageUrl);
         $("status").innerHTML = backupPageUrl ? "下载地址未配置，已打开备用网页。" : "下载地址未配置。";
@@ -255,9 +257,17 @@
       var path = shell().ExpandEnvironmentStrings("%USERPROFILE%") + "\\\\Downloads\\\\" + fileName;
       $("status").innerHTML = "正在下载：" + esc(fileName);
       function failed(message) {
-        if (backupUrl && backupUrl !== url) {
+        if (!isBackup && backupUrl && backupUrl !== url) {
           $("status").innerHTML = "主下载地址不可用，正在切换备用地址。";
-          downloadUrl(backupUrl, "", backupPageUrl);
+          downloadUrl(backupUrl, "", backupPageUrl, true, 0);
+          return;
+        }
+        if (isBackup && backupAttempt < 5) {
+          var nextAttempt = backupAttempt + 1;
+          $("status").innerHTML = "备用下载中断，正在重试第 " + (nextAttempt + 1) + " 次。";
+          window.setTimeout(function () {
+            downloadUrl(url, "", backupPageUrl, true, nextAttempt);
+          }, Math.min(5000, 1000 * nextAttempt));
           return;
         }
         if (backupPageUrl) {

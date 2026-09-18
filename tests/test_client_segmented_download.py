@@ -38,12 +38,48 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
 
         self.assertIn("int timeout = task.FastStartDirectDownload ? 1500 : 12000;", probe)
 
+    def test_backup_download_retries_before_opening_backup_page(self):
+        worker_start = self.source.index("private void DownloadFileWorker(")
+        worker_end = self.source.index("private bool TrySwitchToBackupDownload(", worker_start)
+        worker = self.source[worker_start:worker_end]
+
+        self.assertIn("private const int MaxDownloadAttemptsPerUrl = 6;", self.source)
+        self.assertIn("if (attempt >= MaxDownloadAttemptsPerUrl)", worker)
+        self.assertIn("task.UsingBackup", worker)
+        self.assertNotIn("if (task.UsingBackup && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;", worker)
+
+        finish_start = self.source.index("private void FinishControlledDownload(")
+        finish_end = self.source.index("private void CleanupSegmentedPart(", finish_start)
+        finish = self.source[finish_start:finish_end]
+        self.assertIn("Open(task.BackupPageUrl);", finish)
+        self.assertIn("备用下载地址多次失败，准备打开备用网页", worker)
+
     def test_legacy_download_path_does_not_run_drive_switching(self):
         attempt_start = self.source.index("private void DownloadFileAttempt(")
         attempt_end = self.source.index("private bool TryCreateSegmentedDownloadPlan(", attempt_start)
         attempt = self.source[attempt_start:attempt_end]
 
         self.assertNotIn("EnsureDownloadDriveSpace", attempt)
+
+    def test_restored_tasks_render_after_download_list_handle_is_created(self):
+        render_start = self.source.index("private void RenderActiveDownloads()")
+        render_end = self.source.index("private void RestoreActiveDownloadScroll(", render_start)
+        render = self.source[render_start:render_end]
+        self.assertIn("if (!activeDownloadsList.IsHandleCreated)", render)
+        self.assertIn("QueueActiveDownloadsRender();", render)
+
+        queue_start = self.source.index("private void QueueActiveDownloadsRender()")
+        queue_end = self.source.index("private void RenderActiveDownloads()", queue_start)
+        queue = self.source[queue_start:queue_end]
+        self.assertIn("list.HandleCreated -= ActiveDownloadsList_HandleCreated;", queue)
+        self.assertIn("list.HandleCreated += ActiveDownloadsList_HandleCreated;", queue)
+        self.assertIn("SafeRenderActiveDownloads();", queue)
+
+        restore_start = self.source.index("private void RestorePausedDownloadTasksOnce()")
+        restore_end = self.source.index("private static PausedDownloadTaskState CreatePausedDownloadTaskState", restore_start)
+        restore = self.source[restore_start:restore_end]
+        self.assertIn("if (activeDownloadsList != null && !activeDownloadsList.IsDisposed)", restore)
+        self.assertIn("RenderActiveDownloads();", restore)
 
 
 if __name__ == "__main__":
