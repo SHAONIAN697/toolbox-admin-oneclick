@@ -5905,13 +5905,24 @@ function safeAnnouncementMarkdown(source) {
   const closeList = () => { if (list) { html += `</${list}>`; list = ''; } };
   lines.forEach((line) => {
     const heading = line.match(/^(#{2,3})\s+(.+)$/);
-    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    const ordered = line.match(/^(\d+)\.\s+(.+)$/);
     const unordered = line.match(/^[-*]\s+(.+)$/);
     if (heading) { closeList(); html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`; return; }
     if (ordered || unordered) {
       const kind = ordered ? 'ol' : 'ul';
-      if (list !== kind) { closeList(); list = kind; html += `<${kind}>`; }
-      html += `<li>${inline((ordered || unordered)[1])}</li>`;
+      if (list !== kind) {
+        closeList();
+        list = kind;
+        if (ordered) {
+          // Preserve the number typed by the author when a nested bullet list
+          // or a blank line starts a new ordered-list segment.
+          const start = Math.max(1, Math.min(10000, Number(ordered[1]) || 1));
+          html += `<ol start="${start}">`;
+        } else {
+          html += '<ul>';
+        }
+      }
+      html += `<li>${inline(ordered ? ordered[2] : unordered[1])}</li>`;
       return;
     }
     closeList();
