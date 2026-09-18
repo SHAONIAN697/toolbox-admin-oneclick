@@ -2919,8 +2919,8 @@ const PAY_GATEWAYS = [
     route: 'alipay',
     fields: [
       ['appId', '支付宝 APPID'],
-      ['notifyUrl', '支付宝回调地址'],
-      ['returnUrl', '支付宝支付返回地址'],
+      ['notifyUrl', '支付宝异步通知地址（应为 /api/payment/callback）'],
+      ['returnUrl', '支付宝支付返回地址（应为 /api/payment/return）'],
       ['privateKey', '支付宝应用私钥', 'textarea'],
       ['publicKey', '支付宝公钥', 'textarea']
     ]

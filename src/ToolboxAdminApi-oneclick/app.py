@@ -3746,8 +3746,11 @@ def _rsa_public_numbers(value):
     return int.from_bytes(inner[0][1], "big"), int.from_bytes(inner[1][1], "big")
 
 
-def alipay_sign_payload(params):
-    values = {str(k): v for k, v in (params or {}).items() if str(k) not in ("sign", "sign_type") and v not in (None, "")}
+def alipay_sign_payload(params, include_sign_type=True):
+    excluded = {"sign"}
+    if not include_sign_type:
+        excluded.add("sign_type")
+    values = {str(k): v for k, v in (params or {}).items() if str(k) not in excluded and v not in (None, "")}
     return "&".join(f"{key}={values[key]}" for key in sorted(values))
 
 
@@ -3766,7 +3769,8 @@ def verify_alipay_signature(data, public_key):
         signature = base64.b64decode(str(data.get("sign") or ""), validate=True)
         size = (n.bit_length() + 7) // 8
         decoded = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
-        digest = hashlib.sha256(alipay_sign_payload(data).encode("utf-8")).digest()
+        # Alipay's notify signature content excludes the transport-level sign_type.
+        digest = hashlib.sha256(alipay_sign_payload(data, include_sign_type=False).encode("utf-8")).digest()
         digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + digest
         expected = b"\x00\x01" + b"\xff" * (size - len(digest_info) - 3) + b"\x00" + digest_info
         return hmac.compare_digest(decoded, expected)
@@ -3789,6 +3793,12 @@ def build_payment_url(order, settings, base_url):
     config = payment_route_config(settings, channel, payment_type)
     notify = config.get("notifyUrl") or f"{base_url.rstrip('/')}/api/payment/callback"
     return_url = config.get("returnUrl") or base_url.rstrip("/") + "/api/payment/return"
+    # A return URL is a browser redirect endpoint. If it was entered in the
+    # notification field by mistake, use the server-to-server callback route
+    # so the provider receives the expected plain-text success response.
+    notify_path = urlparse(str(notify)).path.rstrip("/")
+    if str(notify).rstrip("/") == str(return_url).rstrip("/") or notify_path == "/api/payment/return":
+        notify = f"{base_url.rstrip('/')}/api/payment/callback"
     amount = f"{float(order.get('amount') or 0):.2f}"
     if config["provider"] in ("easypay", "easypay2"):
         params = {"pid": config["pid"], "type": config["type"], "out_trade_no": order["id"], "notify_url": notify, "return_url": return_url, "name": order.get("detail") or "邀请码", "money": amount, "sitename": "工具箱"}
