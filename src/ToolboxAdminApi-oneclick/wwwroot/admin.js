@@ -1035,12 +1035,7 @@ function renderUserContext() {
   if (superMode && selector) {
     const previous = state.targetUserId || state.currentUser.id;
     selector.innerHTML = '';
-    state.users.filter((user) => {
-    const query = ($('userListSearch')?.value || '').trim().toLowerCase();
-    return !query || `${user.displayName || ''} ${user.username || ''} ${user.email || ''}`
-      .toLowerCase()
-      .includes(query);
-  }).forEach((user) => {
+    state.users.forEach((user) => {
       const opt = document.createElement('option');
       opt.value = user.id;
       opt.textContent = displayNameOf(user, user.username);
@@ -1795,7 +1790,17 @@ function renderUsers() {
   }
   const panel = tbody.closest('.panel');
   ensureUserBatchTools(panel);
-  setPanelCounter(panel, 'userTotalCount', state.users.length);
+  const query = ($('userListSearch')?.value || '').trim().toLowerCase();
+  const visibleUsers = state.users.filter((user) => !query ||
+    [user.displayName, user.username, user.email].some((value) =>
+      String(value || '').toLowerCase().includes(query)));
+  const counterText = query ? `${visibleUsers.length}/${state.users.length}` : state.users.length;
+  setPanelCounter(panel, 'userTotalCount', counterText);
+  const selectAll = $('userSelectAll');
+  if (selectAll) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+  }
   let cards = $('userCards');
   if (!cards && panel) {
     cards = document.createElement('div');
@@ -1808,7 +1813,14 @@ function renderUsers() {
   cards.hidden = !!panel?.classList.contains('is-collapsed');
   cards.innerHTML = '';
 
-  state.users.forEach((user) => {
+  if (!visibleUsers.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-cell';
+    empty.textContent = query ? '未找到匹配的用户。' : '暂无用户。';
+    cards.appendChild(empty);
+  }
+
+  visibleUsers.forEach((user) => {
     const endpoint = `${location.origin}/api/toolbox/config?key=${encodeURIComponent(user.apiKey || '')}`;
     const card = document.createElement('div');
     card.className = 'user-card';
