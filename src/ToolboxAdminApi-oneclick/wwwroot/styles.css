@@ -662,6 +662,18 @@ p { color: var(--muted); margin-top: 6px; }
   width: 100%;
 }
 
+.balance-recharge-form {
+  display: grid;
+  gap: 14px;
+}
+
+.balance-recharge-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .pay-route-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));

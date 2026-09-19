@@ -952,6 +952,24 @@ async function handlePaymentReturnStatus() {
   try {
     // 支付状态和卡密必须以已登录账号可访问的服务端订单为准。
     const order = await api(`/api/super/orders/${encodeURIComponent(orderId)}`);
+    if (order.action === 'recharge_balance') {
+      if (!['paid', 'done'].includes(order.status) || !order.fulfilledAt) {
+        setStatus('充值订单尚未完成入账，请稍后刷新重试；已支付请勿重复充值。', true);
+        return true;
+      }
+      const me = await api('/api/admin/me');
+      state.currentUser = me.user;
+      state.targetUser = me.targetUser;
+      renderUserContext();
+      params.delete('payment');
+      params.delete('order');
+      const query = params.toString();
+      window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+      const balance = formatMoney(state.currentUser?.balance, order.currency || state.inviteCurrency || 'CNY');
+      setStatus(`充值成功，当前代理余额为 ${balance}。`);
+      showToast('充值金额已到账。', 'success');
+      return true;
+    }
     const fulfilledCodes = order.fulfilledInviteCodes || [];
     if (!['paid', 'done'].includes(order.status) || !order.fulfilledAt || !fulfilledCodes.length) {
       setStatus('订单尚未完成发卡，请稍后刷新重试；已支付请勿重复购买。', true);
@@ -1010,6 +1028,8 @@ function renderUserContext() {
     userText += ` · 余额：${formatMoney(state.currentUser.balance, state.inviteCurrency)}`;
   }
   $('currentUserLabel').textContent = userText;
+  const rechargeButton = $('agentRechargeBtn');
+  if (rechargeButton) rechargeButton.hidden = !isAgent();
 
   const selector = $('targetUserSelect');
   if (superMode && selector) {
@@ -2882,9 +2902,9 @@ function renderOrders() {
   const paymentLabels = { balance: '余额支付', manual: '人工审核', interface: '接口支付' };
   const orderStatusLabels = { pending: '待处理', paid: '已支付', done: '已处理', cancelled: '已取消' };
   tbody.innerHTML = orders.map((order) => `
-    <tr data-order-id="${escapeAttr(order.id || '')}" data-order-agent-id="${escapeAttr(order.agentId || '')}">
+    <tr data-order-id="${escapeAttr(order.id || '')}" data-order-agent-id="${escapeAttr(order.userId || order.agentId || '')}">
       <td>${escapeHtml(order.id || '')}<br><small>${escapeHtml(formatDateTime(order.createdAt))}</small></td>
-      <td>${escapeHtml(order.agentDisplayName || userNameFromId(order.agentId, order.agentUsername || ''))}</td>
+      <td>${escapeHtml(order.displayName || order.agentDisplayName || userNameFromId(order.userId || order.agentId, order.username || order.agentUsername || ''))}</td>
       <td>${Number(order.amount || 0).toFixed(2)} ${escapeHtml(order.currency || 'CNY')}</td>
       <td>${escapeHtml(orderStatusLabels[order.status] || order.status || '待处理')}</td>
       <td>
@@ -4719,6 +4739,134 @@ function showInvitePaymentDialog(quote) {
   });
 }
 
+function closeBalanceRechargeDialog() {
+  const overlay = $('balanceRechargeOverlay');
+  if (overlay) overlay.hidden = true;
+}
+
+function ensureBalanceRechargeDialog() {
+  let overlay = $('balanceRechargeOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'balanceRechargeOverlay';
+  overlay.className = 'modal-overlay';
+  overlay.hidden = true;
+  overlay.innerHTML = `
+    <div class="modal-card invite-payment-card" role="dialog" aria-modal="true" aria-labelledby="balanceRechargeTitle">
+      <div class="modal-head">
+        <h2 id="balanceRechargeTitle">代理余额充值</h2>
+        <button id="closeBalanceRechargeBtn" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="balance-recharge-form">
+        <div class="invite-pay-grid">
+          <div><span>当前余额</span><strong id="balanceRechargeCurrent"></strong></div>
+          <div><span>充值后余额</span><strong id="balanceRechargeAfter">输入金额后显示</strong></div>
+        </div>
+        <label>充值金额
+          <input id="balanceRechargeAmount" type="number" min="0.01" max="1000000" step="0.01" inputmode="decimal" placeholder="请输入充值金额">
+        </label>
+        <p id="balanceRechargeMessage" class="invite-pay-note">充值将通过总管理员已启用的支付宝或微信支付接口完成。</p>
+        <div id="balanceRechargeActions" class="invite-payment-actions">
+          <button id="loadBalanceRechargeChannelsBtn" type="button">选择支付方式</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.onclick = (event) => {
+    if (event.target === overlay) closeBalanceRechargeDialog();
+  };
+  $('closeBalanceRechargeBtn').onclick = closeBalanceRechargeDialog;
+  $('balanceRechargeAmount').oninput = () => {
+    const currency = overlay.dataset.currency || state.inviteCurrency || 'CNY';
+    const current = Number(state.currentUser?.balance || 0);
+    const amount = Number($('balanceRechargeAmount').value || 0);
+    $('balanceRechargeAfter').textContent = amount > 0 ? formatMoney(current + amount, currency) : '输入金额后显示';
+    $('balanceRechargeMessage').textContent = '充值将通过总管理员已启用的支付宝或微信支付接口完成。';
+    $('balanceRechargeActions').innerHTML = '<button id="loadBalanceRechargeChannelsBtn" type="button">选择支付方式</button>';
+    $('loadBalanceRechargeChannelsBtn').onclick = loadBalanceRechargeChannels;
+  };
+  $('loadBalanceRechargeChannelsBtn').onclick = loadBalanceRechargeChannels;
+  return overlay;
+}
+
+function openBalanceRechargeDialog() {
+  if (!isAgent()) return;
+  const overlay = ensureBalanceRechargeDialog();
+  const currency = state.inviteCurrency || 'CNY';
+  overlay.dataset.currency = currency;
+  $('balanceRechargeCurrent').textContent = formatMoney(state.currentUser?.balance, currency);
+  $('balanceRechargeAfter').textContent = '输入金额后显示';
+  $('balanceRechargeAmount').value = '';
+  $('balanceRechargeMessage').textContent = '充值将通过总管理员已启用的支付宝或微信支付接口完成。';
+  $('balanceRechargeActions').innerHTML = '<button id="loadBalanceRechargeChannelsBtn" type="button">选择支付方式</button>';
+  $('loadBalanceRechargeChannelsBtn').onclick = loadBalanceRechargeChannels;
+  overlay.hidden = false;
+  window.setTimeout(() => $('balanceRechargeAmount')?.focus(), 0);
+}
+
+async function loadBalanceRechargeChannels() {
+  const amount = Number($('balanceRechargeAmount')?.value || 0);
+  if (!Number.isFinite(amount) || amount < 0.01) {
+    $('balanceRechargeMessage').textContent = '请输入不少于 0.01 的充值金额。';
+    $('balanceRechargeAmount')?.focus();
+    return;
+  }
+  const actions = $('balanceRechargeActions');
+  const loadButton = $('loadBalanceRechargeChannelsBtn');
+  if (loadButton) loadButton.disabled = true;
+  try {
+    const quote = await api('/api/super/balance/quote', {
+      method: 'POST',
+      body: JSON.stringify({ amount })
+    });
+    state.inviteCurrency = quote.currency || state.inviteCurrency || 'CNY';
+    if (state.currentUser) state.currentUser.balance = quote.balance;
+    renderUserContext();
+    $('balanceRechargeCurrent').textContent = formatMoney(quote.balance, quote.currency);
+    $('balanceRechargeAfter').textContent = formatMoney(Number(quote.balance || 0) + Number(quote.amount || 0), quote.currency);
+    actions.innerHTML = '';
+    (quote.channels || []).forEach((channel) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `${channel.label || channel.key}，充值 ${formatMoney(quote.amount, quote.currency)}`;
+      button.onclick = () => submitBalanceRecharge(quote, channel);
+      actions.appendChild(button);
+    });
+    if (!(quote.channels || []).length) {
+      $('balanceRechargeMessage').textContent = '总管理员尚未启用可用的支付宝或微信支付接口，请联系总管理员配置。';
+      actions.innerHTML = '<button type="button" disabled>暂无可用支付方式</button>';
+      return;
+    }
+    $('balanceRechargeMessage').textContent = '请选择支付方式，点击后将直接前往支付页面。';
+  } catch (error) {
+    $('balanceRechargeMessage').textContent = error.message || '读取支付方式失败。';
+    if (loadButton) loadButton.disabled = false;
+  }
+}
+
+async function submitBalanceRecharge(quote, channel) {
+  const actions = $('balanceRechargeActions');
+  actions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  $('balanceRechargeMessage').textContent = '正在创建充值订单，请稍候…';
+  try {
+    const result = await api('/api/super/balance/recharge', {
+      method: 'POST',
+      body: JSON.stringify({
+        amount: quote.amount,
+        paymentChannel: channel.key,
+        paymentType: channel.paymentType || ''
+      })
+    });
+    const paymentUrl = result.paymentUrl || result.order?.paymentUrl;
+    if (!paymentUrl) throw new Error('支付接口没有返回付款地址。');
+    window.location.href = paymentUrl;
+  } catch (error) {
+    $('balanceRechargeMessage').textContent = error.message || '创建充值订单失败。';
+    actions.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+  }
+}
+
 async function createInvite() {
   const payload = invitePayloadFromForm();
   let payment = {};
@@ -6399,6 +6547,7 @@ $('addAgentLevelBtn').onclick = () => {
   renderNewUserAgentLevel();
 };
 $('createInviteBtn').onclick = () => createInvite().catch((error) => setStatus(error.message, true));
+if ($('agentRechargeBtn')) $('agentRechargeBtn').onclick = openBalanceRechargeDialog;
 if ($('downloadCurrentClientBtn')) {
   $('downloadCurrentClientBtn').onclick = () => downloadClient().catch((error) => setStatus(error.message, true));
 }

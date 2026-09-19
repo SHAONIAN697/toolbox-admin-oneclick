@@ -5,6 +5,7 @@ import base64
 import gzip
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import re
@@ -4096,6 +4097,68 @@ def invite_quote_for_actor(store, actor, body):
     }
 
 
+def balance_quote_for_actor(actor, body):
+    if not is_agent(actor):
+        raise ValueError("只有代理账号可以充值余额。")
+    try:
+        amount = round(float(body.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("充值金额必须是数字。")
+    if not math.isfinite(amount):
+        raise ValueError("充值金额必须是有效数字。")
+    if amount < 0.01:
+        raise ValueError("充值金额不能少于 0.01。")
+    if amount > 1000000:
+        raise ValueError("单次充值金额不能超过 1000000。")
+    settings = read_system_settings()
+    agent_settings = settings.get("agent") or {}
+    try:
+        balance = round(float(actor.get("balance") or 0), 2)
+    except (TypeError, ValueError):
+        balance = 0.0
+    return {
+        "amount": amount,
+        "currency": agent_settings.get("currency") or "CNY",
+        "balance": balance,
+        "channels": public_payment_channels(settings),
+    }
+
+
+def create_balance_recharge_order(actor, body, base_url=""):
+    quote = balance_quote_for_actor(actor, body)
+    payment_channel = str(body.get("paymentChannel") or "").strip()
+    payment_type = str(body.get("paymentType") or "").strip().lower()
+    settings = read_system_settings()
+    valid_channels = public_payment_channels(settings)
+    selected = next((row for row in valid_channels
+                     if row.get("key") == payment_channel and row.get("paymentType") == payment_type), None)
+    if not selected:
+        matches = [row for row in valid_channels if row.get("key") == payment_channel]
+        if len(matches) == 1:
+            selected = matches[0]
+            payment_type = selected.get("paymentType") or "alipay"
+    if not selected:
+        raise ValueError("支付通道未配置或未启用。")
+    detail = f"代理余额充值 {quote['amount']:.2f} {quote['currency']}"
+    order, _ = create_admin_order(actor, "recharge_balance", quote["amount"], quote["currency"], detail,
+                                  request={"amount": quote["amount"]}, payment_method="interface",
+                                  payment_channel=payment_channel)
+    order["paymentType"] = payment_type or selected.get("paymentType") or "alipay"
+    order["paymentProvider"] = payment_channel
+    order["paymentUrl"] = build_payment_url(order, settings, base_url)
+    order["updatedAt"] = now_iso()
+    data = read_orders()
+    for current in data.get("orders", []):
+        if current.get("id") == order.get("id"):
+            current.update({"paymentType": order.get("paymentType"),
+                            "paymentProvider": order.get("paymentProvider"),
+                            "paymentUrl": order.get("paymentUrl"),
+                            "updatedAt": order.get("updatedAt")})
+    write_orders(data)
+    return {"order": public_order(order), "paymentUrl": order["paymentUrl"],
+            "message": "充值订单已创建，正在跳转支付。"}
+
+
 def normalize_invite_request_for_actor(store, actor, request):
     normalized = dict(request or {})
     normalized["registerRole"] = "user"
@@ -4224,6 +4287,31 @@ def fulfill_invite_order(order, approver=None, paid=False, external_trade_no="")
     # Payment completion must also clear the super-admin's pending-order alert.
     resolve_order_pending_notice(order)
     return order["fulfilledInviteCodes"]
+
+
+def fulfill_balance_recharge_order(order, paid=False, external_trade_no=""):
+    if order.get("action") != "recharge_balance":
+        return False
+    if order.get("fulfilledAt"):
+        return True
+    store = read_users()
+    agent = next((u for u in store.get("users", [])
+                  if u.get("id") == (order.get("userId") or order.get("agentId"))), None)
+    if not agent or not is_agent(agent):
+        raise ValueError("充值订单对应的代理不存在。")
+    amount = round(float(order.get("amount") or 0), 2)
+    if not math.isfinite(amount) or amount < 0.01:
+        raise ValueError("充值订单金额无效。")
+    agent["balance"] = round(float(agent.get("balance") or 0) + amount, 2)
+    write_users(store)
+    order["status"] = "paid" if paid else order.get("status", "done")
+    order["fulfilledAt"] = now_iso()
+    order["paidAt"] = order.get("paidAt") or now_iso()
+    order["externalTradeNo"] = external_trade_no or order.get("externalTradeNo", "")
+    order["fulfilledBy"] = "payment_callback"
+    order["balanceAfter"] = agent["balance"]
+    resolve_order_pending_notice(order)
+    return True
 
 def get_target(button):
     action = button.get("action", "link")
@@ -5191,18 +5279,22 @@ class Handler(BaseHTTPRequestHandler):
                 return False, order_id
             amount = float(data.get("money") or data.get("amount") or -1)
             status = str(data.get("trade_status") or data.get("status") or "").upper()
-            if abs(float(order.get("amount") or 0) - amount) > 0.00001 or status not in ("TRADE_SUCCESS", "TRADE_FINISHED", "SUCCESS", "PAID"):
+            if not math.isfinite(amount) or abs(float(order.get("amount") or 0) - amount) > 0.00001 or status not in ("TRADE_SUCCESS", "TRADE_FINISHED", "SUCCESS", "PAID"):
                 return False, order_id
         else:
             if str(data.get("app_id") or "") != config.get("appId") or not verify_alipay_signature(data, config.get("publicKey")):
                 return False, order_id
             amount = float(data.get("total_amount") or data.get("buyer_pay_amount") or -1)
             status = str(data.get("trade_status") or "").upper()
-            if abs(float(order.get("amount") or 0) - amount) > 0.00001 or status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+            if not math.isfinite(amount) or abs(float(order.get("amount") or 0) - amount) > 0.00001 or status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
                 return False, order_id
         if not order.get("fulfilledAt"):
             order["paidAt"] = order.get("paidAt") or now_iso()
-            fulfill_invite_order(order, paid=True, external_trade_no=str(data.get("trade_no") or data.get("transaction_id") or ""))
+            external_trade_no = str(data.get("trade_no") or data.get("transaction_id") or "")
+            if order.get("action") == "recharge_balance":
+                fulfill_balance_recharge_order(order, paid=True, external_trade_no=external_trade_no)
+            else:
+                fulfill_invite_order(order, paid=True, external_trade_no=external_trade_no)
             order["status"] = "paid"
             order["updatedAt"] = now_iso()
             write_orders(orders)
@@ -5664,6 +5756,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "user": public_user(user, store)})
         if path == "/api/super/invites/quote" and method == "POST":
             return self.send_json(invite_quote_for_actor(store, auth["user"], self.read_body()))
+        if path == "/api/super/balance/quote" and method == "POST":
+            return self.send_json(balance_quote_for_actor(auth["user"], self.read_body()))
+        if path == "/api/super/balance/recharge" and method == "POST":
+            if not is_agent(auth["user"]):
+                return self.send_json({"error": "只有代理账号可以充值余额。"}, 403)
+            return self.send_json(create_balance_recharge_order(auth["user"], self.read_body(), self.base_url()))
         if path.startswith("/api/super/orders/") and method == "GET":
             order_id = unquote(path.rsplit("/", 1)[-1]).strip()
             if not order_id:
