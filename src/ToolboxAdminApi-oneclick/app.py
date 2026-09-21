@@ -1233,7 +1233,11 @@ def default_config():
         },
         "license": {"enabled": False, "api_base": "", "product_code": ""},
         "popup": default_popup_settings(),
-        "features": {"software_catalog_enabled": True, "delete_downloads_on_exit": False},
+        "features": {
+            "software_catalog_enabled": True,
+            "resource_search_enabled": False,
+            "delete_downloads_on_exit": False,
+        },
         "page_locks": {},
         "page_lock_groups": {},
         "sidebar": [],
@@ -1281,6 +1285,10 @@ def normalize_feature_settings(config):
     enabled = config_bool(features.get("software_catalog_enabled"), True)
     if features.get("software_catalog_enabled") is not enabled:
         features["software_catalog_enabled"] = enabled
+        changed = True
+    resource_search_enabled = config_bool(features.get("resource_search_enabled"), False)
+    if features.get("resource_search_enabled") is not resource_search_enabled:
+        features["resource_search_enabled"] = resource_search_enabled
         changed = True
     delete_downloads_on_exit = config_bool(features.get("delete_downloads_on_exit"), False)
     if features.get("delete_downloads_on_exit") is not delete_downloads_on_exit:

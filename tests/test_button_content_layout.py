@@ -99,12 +99,17 @@ class ButtonContentLayoutClientTests(unittest.TestCase):
         self.assertIn("if (button == null || !hasConfiguredIcon) return", method)
         self.assertIn("if (hasConfiguredIcon)", method)
 
-    def test_layout_uses_dpi_aware_font_metrics_and_wrapped_top_text(self):
-        self.assertIn("52 + Font.Height * 2", self.cs)
-        self.assertIn("card.Width = squareSize", self.cs)
-        self.assertIn("card.Height = squareSize", self.cs)
-        self.assertIn("button.Width = squareSize", self.cs)
-        self.assertIn("button.Height = squareSize", self.cs)
+    def test_layout_preserves_grid_width_and_wraps_top_text(self):
+        layout = self.cs[self.cs.index("private void ApplyBusinessButtonLayout"):self.cs.index("private string BuildActionTip")]
+        self.assertIn("BusinessIconTopHeight(card.Width)", layout)
+        self.assertIn("BusinessIconTopHeight(button.Width)", layout)
+        self.assertNotIn("card.Width = squareSize", layout)
+        self.assertNotIn("button.Width = squareSize", layout)
+        self.assertNotIn("card.Width =", layout)
+        self.assertNotIn("button.Width =", layout)
+        self.assertIn("card.Height = Math.Max(card.Height, BusinessIconTopHeight(card.Width));", layout)
+        self.assertIn("button.Height = Math.Max(button.Height, BusinessIconTopHeight(button.Width));", layout)
+        self.assertIn("private int BusinessIconTopHeight(int width)", self.cs)
         self.assertIn("TextFormatFlags.WordBreak", self.cs)
         self.assertIn("TextFormatFlags.EndEllipsis", self.cs)
         self.assertIn("TextImageRelation.ImageAboveText", self.cs)

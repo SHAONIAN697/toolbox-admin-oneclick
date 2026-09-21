@@ -776,7 +776,7 @@ namespace ToolboxClient
 
             gridModeButton = MakeTopButton("▦");
             listModeButton = MakeTopButton("☰");
-            recordsButton = MakeTopButton("⇩");
+            recordsButton = MakeOriginalDownloadChromeButton();
             settingsButton = MakeTopButton("⚙");
             Button minButton = MakeTopButton("−");
             Button maxButton = MakeTopButton("□");
@@ -919,13 +919,14 @@ namespace ToolboxClient
 
             FlowLayoutPanel chrome = new FlowLayoutPanel
             {
-                Dock = DockStyle.Right, Width = 256, Height = 42,
+                Dock = DockStyle.Right, Width = 294, Height = 42,
                 FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
                 Padding = new Padding(0, 8, 0, 0), BackColor = Color.Transparent
             };
             chrome.MouseDown += DragWindow;
             titleBar.Controls.Add(chrome);
-            downloadTasksButton = MakeAudioChromeButton("↓", "下载任务");
+            resourceSearchButtonHost = chrome;
+            downloadTasksButton = MakeAudioDownloadChromeButton("下载任务");
             settingsButton = MakeAudioChromeButton("⚙", "系统设置");
             topMostButton = MakeAudioChromeButton("◆", "窗口置顶");
             Button minButton = MakeAudioChromeButton("−", "最小化");
@@ -1038,6 +1039,37 @@ namespace ToolboxClient
             return button;
         }
 
+        private Button MakeAudioDownloadChromeButton(string tip)
+        {
+            TunerDownloadChromeButton button = new TunerDownloadChromeButton
+            {
+                Width = 38, Height = 28, Margin = Padding.Empty,
+                BackColor = Color.Transparent, ForeColor = Color.Black,
+                FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false,
+                Cursor = Cursors.Hand
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.TabStop = false;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 235, 238);
+            if (topToolTip == null) topToolTip = new ToolTip();
+            topToolTip.SetToolTip(button, tip);
+            return button;
+        }
+
+        private Button MakeOriginalDownloadChromeButton()
+        {
+            TunerDownloadChromeButton button = new TunerDownloadChromeButton
+            {
+                Width = 31, Height = 30, Margin = new Padding(3, 0, 0, 0),
+                BackColor = Color.FromArgb(36, 50, 68), ForeColor = Muted,
+                FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false,
+                Cursor = Cursors.Hand
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.BorderColor = Color.FromArgb(54, 69, 88);
+            return button;
+        }
+
         private void BuildTunerShell()
         {
             ApplyTunerPalette();
@@ -1126,7 +1158,7 @@ namespace ToolboxClient
             topToolTip.SetToolTip(topMostButton, vst76Variant ? "锁屏" : "窗口置顶");
             topToolTip.SetToolTip(contactButton, "联系方式");
             topToolTip.SetToolTip(themeButton, "浅色 / 深色模式");
-            if (!vst76Variant) windowControls.Controls.Add(downloadTasksButton);
+            windowControls.Controls.Add(downloadTasksButton);
             if (!vst76Variant) windowControls.Controls.Add(recordsButton);
             windowControls.Controls.Add(topMostButton);
             if (vst76Variant) windowControls.Controls.Add(themeButton);
@@ -3409,6 +3441,7 @@ namespace ToolboxClient
         private bool ResourceSearchEnabled()
         {
             Dictionary<string, object> features = AsDict(Get(config, "features"));
+            // Resource search is an admin-controlled feature for every client variant.
             return BoolValue(features, "resource_search_enabled", false);
         }
 
@@ -4176,7 +4209,10 @@ namespace ToolboxClient
 
         private void ShowPage(string id)
         {
-            if (resourceSearchActive)
+            bool refreshCurrentSearchPage = resourceSearchActive && resourceSearchVisible &&
+                String.Equals(id, currentPage, StringComparison.OrdinalIgnoreCase) &&
+                !String.IsNullOrWhiteSpace(resourceSearchQuery);
+            if (resourceSearchActive && !refreshCurrentSearchPage)
             {
                 resourceSearchActive = false;
                 resourceSearchQuery = "";
@@ -4185,6 +4221,13 @@ namespace ToolboxClient
                 if (resourceSearchBox != null && resourceSearchBox.TextLength > 0) resourceSearchBox.Text = "";
             }
             if (String.IsNullOrWhiteSpace(id)) return;
+            if (refreshCurrentSearchPage)
+            {
+                currentPage = id;
+                MarkNavButtonActive(id);
+                ExecuteResourceSearch();
+                return;
+            }
             if (recordsPanel != null) recordsPanel.Visible = false;
             if (settingsPanel != null) settingsPanel.Visible = false;
             if (contentRendering)
@@ -4554,14 +4597,19 @@ namespace ToolboxClient
             {
                 for (int i = 0; i < buttons.Count; i++)
                 {
+                    string buttonText = GetText(buttons[i], "name", "未命名");
+                    Size measured = TextRenderer.MeasureText(buttonText, measureFont, new Size(Math.Max(40, buttonWidth - 18), 96), TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
                     bool hasTopIcon = iconTopLayout && !String.IsNullOrWhiteSpace(GetText(buttons[i], "icon", ""));
                     if (hasTopIcon)
                     {
-                        rowHeights[i / columns] = 104;
+                        int iconSize = Math.Min(34, Math.Max(26, measureFont.Height + 16));
+                        int textHeight = Math.Min(46, Math.Max(measured.Height, measureFont.Height));
+                        int iconRequiredHeight = 8 + iconSize + 5 + textHeight + 9;
+                        int minIconHeight = expandedLayout ? 86 : 82;
+                        int maxIconHeight = expandedLayout ? 116 : 108;
+                        rowHeights[i / columns] = Math.Max(rowHeights[i / columns], Math.Max(minIconHeight, Math.Min(maxIconHeight, iconRequiredHeight)));
                         continue;
                     }
-                    string buttonText = GetText(buttons[i], "name", "未命名");
-                    Size measured = TextRenderer.MeasureText(buttonText, measureFont, new Size(Math.Max(40, buttonWidth - 18), 96), TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
                     int requiredHeight = expandedLayout
                         ? Math.Max(42, Math.Min(72, measured.Height + 14))
                         : Math.Max(31, Math.Min(62, measured.Height + 10));
@@ -4596,7 +4644,7 @@ namespace ToolboxClient
                 string iconUrl = GetText(item, "icon", "");
                 string displayIconUrl = pageUsesConfiguredLayout ? iconUrl : "";
                 bool useIconLayout = iconTopLayout && !String.IsNullOrWhiteSpace(displayIconUrl);
-                int buttonHeight = useIconLayout ? 104 : rowHeights[row];
+                int buttonHeight = rowHeights[row];
                 int buttonTop = 24;
                 for (int priorRow = 0; priorRow < row; priorRow++) buttonTop += rowHeights[priorRow] + gap;
                 ActionInfo info = new ActionInfo
@@ -4623,6 +4671,8 @@ namespace ToolboxClient
                 button.Radius = 15;
                 button.InsetBorder = true;
                 button.OpaqueHoverBorder = true;
+                button.BorderColor = CardAccent(action, info.Name, i);
+                button.AccentStripeColor = button.BorderColor;
                 button.TabStop = false;
                 button.TextImageRelation = useIconLayout ? TextImageRelation.ImageAboveText : TextImageRelation.ImageBeforeText;
                 button.ImageAlign = useIconLayout ? ContentAlignment.TopCenter : ContentAlignment.MiddleLeft;
@@ -9564,14 +9614,18 @@ namespace ToolboxClient
                 content.HorizontalScroll.Visible = false;
                 return;
             }
+            content.PerformLayout();
             int requiredBottom = content.Padding.Top;
             foreach (Control child in content.Controls)
             {
                 if (!child.Visible) continue;
                 requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
             }
-            bool needsVerticalScroll = requiredBottom > content.ClientSize.Height + 2;
+            int bottomPadding = Math.Max(16, content.Padding.Bottom + 12);
+            int requiredScrollBottom = requiredBottom + bottomPadding;
+            bool needsVerticalScroll = requiredScrollBottom > content.ClientSize.Height + 2;
             if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
+            if (needsVerticalScroll) content.AutoScrollMinSize = new Size(0, requiredScrollBottom);
             if (!needsVerticalScroll)
             {
                 content.AutoScrollPosition = Point.Empty;
@@ -9635,7 +9689,7 @@ namespace ToolboxClient
 
         private void AddResourceSearchButtonToChrome()
         {
-            if (resourceSearchButtonHost == null || vst76Variant) return;
+            if (resourceSearchButtonHost == null) return;
             Control template = null;
             if (resourceSearchButtonHost.Controls.Count > 0)
             {
@@ -9689,7 +9743,7 @@ namespace ToolboxClient
             if (resourceSearchHost == null) return;
             Color back = (studioVariant || tunerVariant) ? (LightTheme ? Color.White : PanelBg) : PanelBg;
             resourceSearchHost.BackColor = back;
-            resourceSearchHost.Padding = new Padding(1);
+            resourceSearchHost.Padding = Padding.Empty;
             resourceSearchBox.BackColor = back;
             resourceSearchBox.ForeColor = TextColor;
             if (studioVariant)
@@ -9710,7 +9764,7 @@ namespace ToolboxClient
                 resourceSearchButton.BackColor = back;
                 resourceSearchButton.ForeColor = TextColor;
                 SearchGlyphButton searchGlyph = resourceSearchButton as SearchGlyphButton;
-                if (searchGlyph != null) searchGlyph.BorderColor = Line;
+                if (searchGlyph != null) searchGlyph.BorderColor = Color.Transparent;
             }
             resourceSearchClearButton.BackColor = back;
             resourceSearchClearButton.ForeColor = Muted;
@@ -9720,16 +9774,8 @@ namespace ToolboxClient
                 SearchGlyphButton glyph = child as SearchGlyphButton;
                 if (glyph != null) { glyph.BackColor = back; glyph.ForeColor = glyph.IsCloseGlyph ? Muted : Accent; glyph.BorderColor = Color.Transparent; }
             }
-            resourceSearchHost.Paint -= PaintResourceSearchBorder;
-            resourceSearchHost.Paint += PaintResourceSearchBorder;
             SetSearchPlaceholder();
             resourceSearchHost.Invalidate();
-        }
-
-        private void PaintResourceSearchBorder(object sender, PaintEventArgs e)
-        {
-            using (Pen pen = new Pen(resourceSearchBox != null && resourceSearchBox.Focused ? Accent : Line, resourceSearchBox != null && resourceSearchBox.Focused ? 2F : 1F))
-                e.Graphics.DrawRectangle(pen, 0, 0, resourceSearchHost.Width - 1, resourceSearchHost.Height - 1);
         }
 
         private void SetSearchPlaceholder()
@@ -10136,10 +10182,9 @@ namespace ToolboxClient
                 {
                     if (iconTop)
                     {
-                        int squareSize = Math.Max(80, Math.Min(96, 52 + Font.Height * 2));
-                        card.Width = squareSize;
-                        card.Height = squareSize;
-                        card.Margin = new Padding(0, 0, 10, 10);
+                        // Keep the FlowLayoutPanel's calculated column width; only add room for the icon and wrapped title.
+                        card.Height = Math.Max(card.Height, BusinessIconTopHeight(card.Width));
+                        card.Margin = new Padding(card.Margin.Left, card.Margin.Top, card.Margin.Right, Math.Max(card.Margin.Bottom, 10));
                     }
                     else card.Height = Math.Max(card.Height, Math.Max(50, Font.Height * 3));
                 }
@@ -10153,13 +10198,19 @@ namespace ToolboxClient
             button.Padding = iconTop ? new Padding(8, 7, 8, 7) : new Padding(10, 4, 10, 4);
             if (iconTop)
             {
-                int squareSize = Math.Max(80, Math.Min(96, 52 + Font.Height * 2));
-                button.Width = squareSize;
-                button.Height = squareSize;
-                button.Margin = new Padding(0, 0, 10, 10);
+                // Search results use their own responsive width; do not turn them into narrow square tiles.
+                button.Height = Math.Max(button.Height, BusinessIconTopHeight(button.Width));
+                button.Margin = new Padding(button.Margin.Left, button.Margin.Top, button.Margin.Right, Math.Max(button.Margin.Bottom, 10));
             }
             else button.Height = Math.Max(button.Height, Math.Max(50, Font.Height * 3));
             button.AutoEllipsis = true;
+        }
+
+        private int BusinessIconTopHeight(int width)
+        {
+            int iconSize = Math.Min(34, Math.Max(26, Math.Min(Math.Max(26, width - 24), Font.Height + 18)));
+            int textHeight = Math.Max(36, Font.Height * 2 + 6);
+            return Math.Max(94, iconSize + textHeight + 24);
         }
 
         private string BuildActionTip(string name, string action, string target, string description)
@@ -11036,7 +11087,6 @@ namespace ToolboxClient
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             if (String.IsNullOrWhiteSpace(downloadKey)) downloadKey = BuildDownloadKey("", originalUrl, backupUrl, backupPageUrl, displayName);
             ShowVst76InlineDownloadPreparing(displayName, downloadKey);
-            if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
             status.Text = LooksLikeDirectDownloadFile(originalUrl)
                 ? PortalText("正在加入下载队列...", "Adding to download queue...")
                 : PortalText("正在解析下载地址...", "Preparing download...");
@@ -11191,7 +11241,6 @@ namespace ToolboxClient
                     : false;
             UpdateDownloadBadges();
             RenderActiveDownloads();
-            if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
             StartQueuedDownloads();
         }
 
@@ -11704,7 +11753,6 @@ namespace ToolboxClient
             }
             UpdateDownloadBadges();
             RenderActiveDownloads();
-            if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant) ShowDownloadRecordsPanel();
             return true;
         }
 
@@ -13519,6 +13567,19 @@ namespace ToolboxClient
         private void UpdateDownloadBadges()
         {
             int count = ActiveDownloadCount();
+            if (!studioVariant && !tunerVariant && !portalVariant && !audioVariant && !vst76Variant)
+            {
+                TunerDownloadChromeButton chrome = recordsButton as TunerDownloadChromeButton;
+                if (chrome != null)
+                {
+                    chrome.BadgeText = count > 0 ? Math.Min(99, count).ToString() : "";
+                    if (topToolTip != null)
+                    {
+                        topToolTip.SetToolTip(recordsButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载任务");
+                    }
+                    chrome.Invalidate();
+                }
+            }
             if (studioVariant)
             {
                 StudioChromeButton chrome = downloadTasksButton as StudioChromeButton;
@@ -13541,6 +13602,19 @@ namespace ToolboxClient
                     if (topToolTip != null)
                     {
                         topToolTip.SetToolTip(downloadTasksButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载任务和记录");
+                    }
+                    chrome.Invalidate();
+                }
+            }
+            if (audioVariant || vst76Variant)
+            {
+                TunerDownloadChromeButton chrome = downloadTasksButton as TunerDownloadChromeButton;
+                if (chrome != null)
+                {
+                    chrome.BadgeText = count > 0 ? Math.Min(99, count).ToString() : "";
+                    if (topToolTip != null)
+                    {
+                        topToolTip.SetToolTip(downloadTasksButton, count > 0 ? "正在下载 " + count + " 个任务" : "下载任务");
                     }
                     chrome.Invalidate();
                 }
@@ -17975,7 +18049,7 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                e.Graphics.Clear(EffectiveBackColor(Parent));
+                e.Graphics.Clear(EffectiveBackColor(this));
                 if (hovered)
                 {
                     using (GraphicsPath path = UiRoundRect(new Rectangle(2, 2, Width - 5, Height - 5), 4))
@@ -18001,7 +18075,7 @@ namespace ToolboxClient
                     Rectangle badge = new Rectangle(Width - badgeWidth - 1, 0, badgeWidth, badgeHeight);
                     using (GraphicsPath path = RoundRect(badge, 7))
                     using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(239, 68, 68) : Color.FromArgb(255, 96, 96)))
-                    using (Pen border = new Pen(EffectiveBackColor(Parent), 1F))
+                    using (Pen border = new Pen(EffectiveBackColor(this), 1F))
                     {
                         g.FillPath(bg, path);
                         g.DrawPath(border, path);
@@ -18393,12 +18467,18 @@ namespace ToolboxClient
 
                 if (IconTop)
                 {
-                    int iconSize = Math.Min(32, Math.Max(24, Height / 3));
+                    int iconSize = Math.Min(34, Math.Max(26, Math.Min(Math.Max(26, Width - 24), Height - 60)));
                     Rectangle iconRect = new Rectangle((Width - iconSize) / 2, 10, iconSize, iconSize);
-                    if (IconImage != null) e.Graphics.DrawImage(IconImage, iconRect);
+                    if (IconImage != null)
+                    {
+                        double scale = Math.Min((double)iconSize / Math.Max(1, IconImage.Width), (double)iconSize / Math.Max(1, IconImage.Height));
+                        int drawW = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
+                        int drawH = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
+                        e.Graphics.DrawImage(IconImage, iconRect.Left + (iconSize - drawW) / 2, iconRect.Top + (iconSize - drawH) / 2, drawW, drawH);
+                    }
                     else using (SolidBrush placeholder = new SolidBrush(Color.FromArgb(28, AccentColor))) e.Graphics.FillRectangle(placeholder, iconRect);
-                    Rectangle topTitle = new Rectangle(12, iconRect.Bottom + 5, Width - 24, Math.Max(22, Height - iconRect.Bottom - 10));
-                    TextRenderer.DrawText(e.Graphics, Title, Font, topTitle, TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+                    Rectangle topTitle = new Rectangle(12, iconRect.Bottom + 5, Math.Max(1, Width - 24), Math.Max(22, Height - iconRect.Bottom - 10));
+                    TextRenderer.DrawText(e.Graphics, Title, Font, topTitle, TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
                     return;
                 }
 
@@ -18870,6 +18950,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             private int regionRadius = -1;
             public int Radius = 9;
             public Color BorderColor = Line;
+            public Color AccentStripeColor = Color.Transparent;
             public Color HoverBackColor = PanelBg2;
             public bool InsetBorder;
             public bool OpaqueHoverBorder;
@@ -18916,6 +18997,20 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                 {
                     EnsureRoundedRegion(this, Radius, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, path);
+                    if (AccentStripeColor.A > 0)
+                    {
+                        GraphicsState stripeState = e.Graphics.Save();
+                        try
+                        {
+                            e.Graphics.SetClip(path);
+                            using (SolidBrush stripe = new SolidBrush(AccentStripeColor))
+                                e.Graphics.FillRectangle(stripe, rect.Left, rect.Top, Math.Min(6, rect.Width), rect.Height);
+                        }
+                        finally
+                        {
+                            e.Graphics.Restore(stripeState);
+                        }
+                    }
                     if (DrawBorder)
                     {
                         using (Pen border = new Pen(!Enabled ? Color.FromArgb(70, BorderColor) : (hovered ? hoverBorder : BorderColor), 1F))
@@ -18923,17 +19018,29 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                     }
                 }
                 Rectangle textRect = rect;
-                if (Image != null)
+                bool iconTop = TextImageRelation == TextImageRelation.ImageAboveText;
+                if (iconTop)
                 {
-                    bool iconTop = TextImageRelation == TextImageRelation.ImageAboveText;
-                    int imageSize = iconTop ? Math.Min(58, Math.Max(24, Height - 42)) : Math.Min(24, Height - 8);
-                    Rectangle imageRect = iconTop
-                        ? new Rectangle((Width - imageSize) / 2, 9, imageSize, imageSize)
-                        : new Rectangle(10, (Height - imageSize) / 2, imageSize, imageSize);
-                    e.Graphics.DrawImage(Image, imageRect);
-                    textRect = iconTop
-                        ? new Rectangle(5, imageRect.Bottom + 4, Width - 10, Math.Max(18, Height - imageRect.Bottom - 8))
-                        : new Rectangle(imageRect.Right + 7, 1, Math.Max(10, Width - imageRect.Right - 12), Height - 3);
+                    int imageSize = Math.Min(34, Math.Max(26, Height - 48));
+                    Rectangle imageRect = new Rectangle((Width - imageSize) / 2, 8, imageSize, imageSize);
+                    if (Image != null)
+                    {
+                        double scale = Math.Min((double)imageSize / Math.Max(1, Image.Width), (double)imageSize / Math.Max(1, Image.Height));
+                        int drawW = Math.Max(1, (int)Math.Round(Image.Width * scale));
+                        int drawH = Math.Max(1, (int)Math.Round(Image.Height * scale));
+                        e.Graphics.DrawImage(Image, imageRect.Left + (imageSize - drawW) / 2, imageRect.Top + (imageSize - drawH) / 2, drawW, drawH);
+                    }
+                    textRect = new Rectangle(5, imageRect.Bottom + 4, Math.Max(1, Width - 10), Math.Max(18, Height - imageRect.Bottom - 8));
+                }
+                else if (Image != null)
+                {
+                    int imageSize = Math.Min(24, Height - 8);
+                    Rectangle imageRect = new Rectangle(10, (Height - imageSize) / 2, imageSize, imageSize);
+                    double scale = Math.Min((double)imageSize / Math.Max(1, Image.Width), (double)imageSize / Math.Max(1, Image.Height));
+                    int drawW = Math.Max(1, (int)Math.Round(Image.Width * scale));
+                    int drawH = Math.Max(1, (int)Math.Round(Image.Height * scale));
+                    e.Graphics.DrawImage(Image, imageRect.Left + (imageSize - drawW) / 2, imageRect.Top + (imageSize - drawH) / 2, drawW, drawH);
+                    textRect = new Rectangle(imageRect.Right + 7, 1, Math.Max(10, Width - imageRect.Right - 12), Height - 3);
                 }
                 TextRenderer.DrawText(e.Graphics, Text, Font, textRect, Enabled ? ForeColor : Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.WordBreak);

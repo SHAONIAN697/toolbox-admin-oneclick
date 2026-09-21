@@ -49,7 +49,12 @@ class AudioNavIconSizingTests(unittest.TestCase):
             self.assertIn("Math.Min(72, measured.Height + 14)", source)
             self.assertIn("int gap = expandedLayout ? 10 : 5;", source)
             self.assertIn("expandedLayout ? 9.5F : 8.5F", source)
-            self.assertIn("int buttonHeight = useIconLayout ? 104 : rowHeights[row];", source)
+            self.assertIn("int iconRequiredHeight = 8 + iconSize + 5 + textHeight + 9;", source)
+            self.assertIn("int buttonHeight = rowHeights[row];", source)
+            self.assertNotIn("int buttonHeight = useIconLayout ? 104 : rowHeights[row];", source)
+            self.assertIn("button.BorderColor = CardAccent(action, info.Name, i);", source)
+            self.assertIn("button.AccentStripeColor = button.BorderColor;", source)
+            self.assertIn("public Color AccentStripeColor = Color.Transparent;", source)
             self.assertIn("AutoEllipsis = useIconLayout", source)
 
 
