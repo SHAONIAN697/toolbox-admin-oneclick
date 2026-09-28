@@ -3467,6 +3467,10 @@ function renderScopeIconPicker(iconUrl, enabled) {
         updateScopeSearch(event);
       }
     };
+    scopeSearch.onkeyup = (event) => {
+      if (!composingScopeSearch && !event.isComposing && scopeSearch.value.trim() !== query) updateScopeSearch(event);
+    };
+    scopeSearch.onchange = (event) => { if (!composingScopeSearch) updateScopeSearch(event); };
     picker.querySelector('[data-scope-picker-back]')?.addEventListener('click', () => { folderId = ''; renderPicker(); });
     picker.querySelectorAll('[data-scope-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.scopePickerFolder; renderPicker(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(button => button.onclick = () => { const value = button.dataset.iconPickerValue || ''; const item = state.menuIcons.find(row => row.url === value); preset.value = value; if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = ''; preview.src = item?.url || ''; preview.hidden = !item; label.textContent = item?.name || '选择图标'; picker.hidden = true; });
@@ -3723,6 +3727,10 @@ function initButtonIconPicker(root, input, preview) {
         updateIconSearch(event);
       }
     };
+    iconSearch.onkeyup = (event) => {
+      if (!composingIconSearch && !event.isComposing && iconSearch.value.trim() !== query) updateIconSearch(event);
+    };
+    iconSearch.onchange = (event) => { if (!composingIconSearch) updateIconSearch(event); };
     picker.querySelector('[data-icon-picker-back]')?.addEventListener('click', () => { folderId = ''; render(); });
     picker.querySelectorAll('[data-icon-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.iconPickerFolder; render(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(row => row.onclick = () => { input.value = row.dataset.iconPickerValue; input.dispatchEvent(new Event('input', { bubbles: true })); if (preview.tagName === 'IMG') { preview.src = input.value; preview.hidden = false; } picker.hidden = true; });
