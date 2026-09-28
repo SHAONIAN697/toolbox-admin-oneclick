@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,30 @@ class IpLocationConsensusTests(unittest.TestCase):
             item = self.app.read_audit_events()["items"][0]
             self.assertEqual("内蒙古巴彦淖尔市", item["ipAddress"])
             self.assertEqual(64, len(item["eventKey"]))
+
+    def test_system_provider_uses_ipchk_aggregation_endpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.app.IP_CACHE_PATH = Path(temp_dir) / "ip-location-cache.json"
+            responses = []
+
+            def fake_fetch(url):
+                responses.append(url)
+                if url.startswith("https://ipchk.cn/v1/location/"):
+                    return {
+                        "country": "中国",
+                        "region": "浙江省",
+                        "city": "宁波市",
+                    }
+                raise AssertionError("system provider used an unrelated source")
+
+            with patch.object(self.app, "fetch_json_url", side_effect=fake_fetch), \
+                    patch.object(self.app, "read_system_settings", return_value={
+                        "ipLocation": {"mode": "system", "providers": ["system"], "unifiedChinese": True}
+                    }):
+                address = self.app.locate_ip("2408:822a:c403:a750:2008:cef8:7904:fa6", bypass_cache=True)
+
+            self.assertTrue(address)
+            self.assertTrue(any(url.startswith("https://ipchk.cn/v1/location/") for url in responses))
 
 
 if __name__ == "__main__":

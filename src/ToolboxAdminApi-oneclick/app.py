@@ -594,12 +594,18 @@ def locate_ip(ip, bypass_cache=False):
         address = ""
         try:
             if provider == "system":
+                # Match ipchk.cn's own aggregation endpoint. It returns the
+                # same ip-api result shown by the site and includes its local
+                # database fallbacks in one response.
                 try:
-                    data = fetch_json_url("https://whois.pconline.com.cn/ipJson.jsp?json=true&ip=%s" % quote(ip))
-                    address = "".join(str(data.get(k) or "") for k in ("pro", "city", "region", "addr"))
+                    data = fetch_json_url("https://ipchk.cn/v1/location/%s" % quote(ip, safe=""))
+                    if data.get("country") or data.get("region") or data.get("city"):
+                        address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
                 except Exception:
-                    data = fetch_json_url("https://ipwho.is/" + quote(ip))
-                    if data.get("success") is not False: address = "".join(str(data.get(k) or "") for k in ("country", "region", "city"))
+                    # Keep a network failure fallback for deployments that
+                    # cannot reach ipchk.cn.
+                    data = fetch_json_url("http://ip-api.com/json/%s?lang=zh-CN" % quote(ip, safe=""))
+                    if data.get("status") == "success": address = "".join(str(data.get(k) or "") for k in ("country", "regionName", "city", "district"))
             elif provider == "amap" and cfg.get("amapKey"):
                 data = fetch_json_url("https://restapi.amap.com/v3/ip?output=json&ip=%s&key=%s" % (quote(ip), quote(cfg["amapKey"])))
                 if str(data.get("status")) == "1": address = str(data.get("province") or "") + str(data.get("city") or "")
