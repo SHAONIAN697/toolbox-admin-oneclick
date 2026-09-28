@@ -3448,7 +3448,7 @@ function renderScopeIconPicker(iconUrl, enabled) {
     const filtered = query ? allIcons.filter(item => String(item.name || '').toLocaleLowerCase().includes(query.toLocaleLowerCase())) : icons;
     const active = folders.find(item => item.id === folderId);
     picker.innerHTML = `<div class="icon-picker-head"><button type="button" data-scope-picker-back ${folderId ? '' : 'hidden'}>返回文件夹</button><strong>${escapeHtml(active?.name || '选择图标')}</strong><input data-scope-picker-search type="search" placeholder="搜索图片名称" value="${escapeAttr(query)}"></div><div class="icon-picker-grid">${query ? filtered.map(item => `<button class="icon-picker-item" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('') : !folderId ? `<button class="icon-picker-item${selected ? '' : ' is-selected'}" data-icon-picker-value="" type="button"><span class="icon-picker-built-in">内置</span><strong>使用内置图标</strong></button>${folders.map(item => `<button class="icon-picker-item" data-scope-picker-folder="${escapeAttr(item.id)}" type="button"><span class="folder-glyph"></span><strong>${escapeHtml(item.name)}</strong></button>`).join('')}` : icons.map(item => `<button class="icon-picker-item${selected?.url === item.url ? ' is-selected' : ''}" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}</div>`;
-    picker.querySelector('[data-scope-picker-search]').oninput = (event) => {
+    const updateScopeSearch = (event) => {
       const caret = event.target.selectionStart ?? event.target.value.length;
       query = event.target.value.trim();
       renderPicker();
@@ -3456,6 +3456,11 @@ function renderScopeIconPicker(iconUrl, enabled) {
       search.focus();
       search.setSelectionRange(caret, caret);
     };
+    const scopeSearch = picker.querySelector('[data-scope-picker-search]');
+    let composingScopeSearch = false;
+    scopeSearch.oncompositionstart = () => { composingScopeSearch = true; };
+    scopeSearch.oncompositionend = (event) => { composingScopeSearch = false; updateScopeSearch(event); };
+    scopeSearch.oninput = (event) => { if (!composingScopeSearch) updateScopeSearch(event); };
     picker.querySelector('[data-scope-picker-back]')?.addEventListener('click', () => { folderId = ''; renderPicker(); });
     picker.querySelectorAll('[data-scope-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.scopePickerFolder; renderPicker(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(button => button.onclick = () => { const value = button.dataset.iconPickerValue || ''; const item = state.menuIcons.find(row => row.url === value); preset.value = value; if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = ''; preview.src = item?.url || ''; preview.hidden = !item; label.textContent = item?.name || '选择图标'; picker.hidden = true; });
@@ -3693,7 +3698,7 @@ function initButtonIconPicker(root, input, preview) {
     const icons = allIcons.filter(item => (item.folderId || 'default') === (folderId || 'default'));
     const filtered = query ? allIcons.filter(item => String(item.name || '').toLocaleLowerCase().includes(query.toLocaleLowerCase())) : icons;
     picker.innerHTML = `<div class="icon-picker-head"><button type="button" data-icon-picker-back ${folderId ? '' : 'hidden'}>返回文件夹</button><strong>${escapeHtml(active?.name || '选择图标')}</strong><input data-icon-picker-search type="search" placeholder="搜索图片名称" value="${escapeAttr(query)}"></div><div class="icon-picker-grid">${query ? filtered.map(item => `<button class="icon-picker-item" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('') : !folderId ? folders.map(item => `<button class="icon-picker-item" data-icon-picker-folder="${escapeAttr(item.id)}" type="button"><span class="folder-glyph"></span><strong>${escapeHtml(item.name)}</strong></button>`).join('') : icons.map(item => `<button class="icon-picker-item" data-icon-picker-value="${escapeAttr(item.url)}" type="button"><img src="${escapeAttr(item.url)}" alt=""><strong>${escapeHtml(item.name)}</strong></button>`).join('')}</div>`;
-    picker.querySelector('[data-icon-picker-search]').oninput = (event) => {
+    const updateIconSearch = (event) => {
       const caret = event.target.selectionStart ?? event.target.value.length;
       query = event.target.value.trim();
       render();
@@ -3701,6 +3706,11 @@ function initButtonIconPicker(root, input, preview) {
       search.focus();
       search.setSelectionRange(caret, caret);
     };
+    const iconSearch = picker.querySelector('[data-icon-picker-search]');
+    let composingIconSearch = false;
+    iconSearch.oncompositionstart = () => { composingIconSearch = true; };
+    iconSearch.oncompositionend = (event) => { composingIconSearch = false; updateIconSearch(event); };
+    iconSearch.oninput = (event) => { if (!composingIconSearch) updateIconSearch(event); };
     picker.querySelector('[data-icon-picker-back]')?.addEventListener('click', () => { folderId = ''; render(); });
     picker.querySelectorAll('[data-icon-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.iconPickerFolder; render(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(row => row.onclick = () => { input.value = row.dataset.iconPickerValue; input.dispatchEvent(new Event('input', { bubbles: true })); if (preview.tagName === 'IMG') { preview.src = input.value; preview.hidden = false; } picker.hidden = true; });
