@@ -2817,14 +2817,17 @@ def write_system_settings(body):
     if isinstance(body.get("menuIconFolders"), list):
         folders = []
         used = set()
+        used_names = set()
         for index, source in enumerate(body.get("menuIconFolders")[:100]):
             if not isinstance(source, dict):
                 continue
             folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or "")) or new_id("folder")
             name = str(source.get("name") or "").strip()[:80]
-            if not name or folder_id in used:
+            name_key = name.casefold()
+            if not name or folder_id in used or name_key in used_names:
                 continue
             used.add(folder_id)
+            used_names.add(name_key)
             try:
                 sort = max(-999999, min(999999, int(source.get("sort", index))))
             except (TypeError, ValueError):
@@ -5920,12 +5923,27 @@ class Handler(BaseHTTPRequestHandler):
             }
             if not signatures.get(extension, False):
                 return self.send_json({"error": "图片内容与文件格式不匹配。"}, 400)
-            MENU_ICON_DIR.mkdir(parents=True, exist_ok=True)
+            settings = read_system_settings()
+            folder_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(body.get("folderId") or "default")) or "default"
+            folder = next((item for item in settings.get("menuIconFolders", []) if str(item.get("id")) == folder_id), None)
+            folder_name = str((folder or {}).get("name") or "默认").strip() or "默认"
+            # Keep the user-facing folder name in the URL while removing path traversal characters.
+            folder_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", folder_name).strip(" .") or "默认"
+            relative_parts = []
+            raw_relative = str(body.get("relativePath") or "").replace("\\", "/")
+            for part in raw_relative.split("/")[:-1]:
+                clean_part = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", part).strip(" .")
+                if clean_part and clean_part not in (".", ".."): relative_parts.append(clean_part[:80])
+            target_dir = MENU_ICON_DIR / folder_name
+            for part in relative_parts[:8]:
+                target_dir /= part
+            target_dir.mkdir(parents=True, exist_ok=True)
             owner = "global" if path.startswith("/api/super/") else re.sub(r"[^a-zA-Z0-9_-]", "", str(user_id))
             file_name = f"{owner}-{int(time.time())}-{random_hex(4)}.{extension}"
-            (MENU_ICON_DIR / file_name).write_bytes(image_data)
+            (target_dir / file_name).write_bytes(image_data)
             audit_event("menu_icon_upload", auth["user"], owner, self, {"fileName": file_name, "scope": "global" if path.startswith("/api/super/") else "user"})
-            return self.send_json({"url": f"/uploads/menu-icons/{file_name}"})
+            url_parts = [folder_name] + relative_parts[:8]
+            return self.send_json({"url": "/uploads/menu-icons/" + "/".join(quote(part) for part in url_parts) + f"/{file_name}"})
         if path == "/api/super/system/popup/upload" and method == "POST":
             return self.send_json({"error": "联系方式图片只支持图床或外链图片地址，不能本地上传。"}, 400)
         if path == "/api/super/orders":
