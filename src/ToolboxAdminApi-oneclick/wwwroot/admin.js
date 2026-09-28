@@ -3459,8 +3459,8 @@ function renderScopeIconPicker(iconUrl, enabled) {
     const scopeSearch = picker.querySelector('[data-scope-picker-search]');
     let composingScopeSearch = false;
     scopeSearch.oncompositionstart = () => { composingScopeSearch = true; };
-    scopeSearch.oncompositionend = (event) => { composingScopeSearch = false; updateScopeSearch(event); };
-    scopeSearch.oninput = (event) => { if (!composingScopeSearch) updateScopeSearch(event); };
+    scopeSearch.oncompositionend = (event) => { composingScopeSearch = false; setTimeout(() => updateScopeSearch(event), 0); };
+    scopeSearch.oninput = (event) => { if (!composingScopeSearch && !event.isComposing) updateScopeSearch(event); };
     picker.querySelector('[data-scope-picker-back]')?.addEventListener('click', () => { folderId = ''; renderPicker(); });
     picker.querySelectorAll('[data-scope-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.scopePickerFolder; renderPicker(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(button => button.onclick = () => { const value = button.dataset.iconPickerValue || ''; const item = state.menuIcons.find(row => row.url === value); preset.value = value; if ($('manageScopeIconUrl')) $('manageScopeIconUrl').value = ''; preview.src = item?.url || ''; preview.hidden = !item; label.textContent = item?.name || '选择图标'; picker.hidden = true; });
@@ -3709,8 +3709,8 @@ function initButtonIconPicker(root, input, preview) {
     const iconSearch = picker.querySelector('[data-icon-picker-search]');
     let composingIconSearch = false;
     iconSearch.oncompositionstart = () => { composingIconSearch = true; };
-    iconSearch.oncompositionend = (event) => { composingIconSearch = false; updateIconSearch(event); };
-    iconSearch.oninput = (event) => { if (!composingIconSearch) updateIconSearch(event); };
+    iconSearch.oncompositionend = (event) => { composingIconSearch = false; setTimeout(() => updateIconSearch(event), 0); };
+    iconSearch.oninput = (event) => { if (!composingIconSearch && !event.isComposing) updateIconSearch(event); };
     picker.querySelector('[data-icon-picker-back]')?.addEventListener('click', () => { folderId = ''; render(); });
     picker.querySelectorAll('[data-icon-picker-folder]').forEach(row => row.onclick = () => { folderId = row.dataset.iconPickerFolder; render(); });
     picker.querySelectorAll('[data-icon-picker-value]').forEach(row => row.onclick = () => { input.value = row.dataset.iconPickerValue; input.dispatchEvent(new Event('input', { bubbles: true })); if (preview.tagName === 'IMG') { preview.src = input.value; preview.hidden = false; } picker.hidden = true; });
