@@ -7859,11 +7859,12 @@ namespace ToolboxClient
 
             if (softwareCatalogStatus != null)
             {
-                string prefix = remoteSoftwareCatalogLoading ? "正在读取在线目录" : (String.IsNullOrWhiteSpace(query) ? "当前目录" : "搜索结果");
-                string wingetText = wingetCatalogSearching && hasQuery ? "，Winget 正在搜索" : "";
+                string prefix = String.IsNullOrWhiteSpace(query) ? "当前目录" : "搜索结果";
+                string wingetText = wingetCatalogSearching && hasQuery ? "；系统源正在后台补充" : "";
+                string remoteText = remoteSoftwareCatalogLoading && hasQuery ? "；在线目录正在后台补充" : "";
                 string countText = totalResults == results.Count ? results.Count.ToString() : results.Count + "/" + totalResults;
                 string sourceText = String.IsNullOrWhiteSpace(remoteSoftwareCatalogSource) ? "本地回退" : remoteSoftwareCatalogSource;
-                softwareCatalogStatus.Text = prefix + "：" + countText + " 个，来源 " + sourceText + wingetText + "；下载会先安全解析，再加入下载任务。";
+                softwareCatalogStatus.Text = prefix + "：" + countText + " 个，来源 " + sourceText + wingetText + remoteText + "；下载会先安全解析，再加入下载任务。";
             }
 
             int available = SoftwareCatalogContentWidth();
@@ -7886,7 +7887,9 @@ namespace ToolboxClient
                 softwareResultsPanel.Height = Math.Max(188, rows * (cardHeight + gap) + 6);
                 content.AutoScrollMinSize = new Size(0, softwareResultsPanel.Bottom + softwareResultsPanel.Margin.Bottom + 12);
                 ClearChildControls(softwareResultsPanel);
-                if ((hasQuery && remoteSoftwareCatalogLoading) || wingetCatalogSearching)
+                // Local catalog and directory entries are available immediately. Remote
+                // sources must not hide those results behind a blocking-looking spinner.
+                if (results.Count == 0 && ((hasQuery && remoteSoftwareCatalogLoading) || wingetCatalogSearching))
                 {
                     Panel loading = new Panel
                     {
@@ -7948,7 +7951,8 @@ namespace ToolboxClient
                 try
                 {
                     string url = SoftwareCatalogApiUrl(String.IsNullOrWhiteSpace(requestedQuery) ? "home" : "search?q=" + Uri.EscapeDataString(requestedQuery));
-                    Dictionary<string, object> payload = AsDict(new JavaScriptSerializer().DeserializeObject(DownloadText(url, 12000, false)));
+                    int catalogTimeout = String.IsNullOrWhiteSpace(requestedQuery) ? 6000 : 4500;
+                    Dictionary<string, object> payload = AsDict(new JavaScriptSerializer().DeserializeObject(DownloadText(url, catalogTimeout, false)));
                     source = GetText(payload, "source", "online");
                     foreach (object raw in AsList(Get(payload, "items")))
                     {
@@ -8209,11 +8213,9 @@ namespace ToolboxClient
             string safe = CleanCommandArgument(wingetKeyword);
             if (String.IsNullOrWhiteSpace(safe)) return results;
             string args = "search " + CmdArgument(safe) + " --source winget --accept-source-agreements --disable-interactivity";
-            string output = RunWingetAndCapture(args, 26000);
-            if (String.IsNullOrWhiteSpace(output) && !safe.Equals(originalQuery, StringComparison.OrdinalIgnoreCase))
-            {
-                output = RunWingetAndCapture("search " + CmdArgument(CleanCommandArgument(originalQuery)) + " --source winget --accept-source-agreements --disable-interactivity", 26000);
-            }
+            // Winget is an optional background source. Keep its first-run source
+            // initialization from delaying the local catalog search.
+            string output = RunWingetAndCapture(args, 5500);
             return ParseWingetSearchOutput(output, originalQuery);
         }
 
@@ -8231,12 +8233,18 @@ namespace ToolboxClient
                 psi.StandardErrorEncoding = Encoding.UTF8;
                 using (Process process = Process.Start(psi))
                 {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    if (!process.WaitForExit(timeoutMs))
+                    // Wait before reading redirected streams. The previous order made
+                    // the timeout ineffective because ReadToEnd could wait indefinitely
+                    // during Winget source initialization.
+                    bool exited = process.WaitForExit(timeoutMs);
+                    if (!exited)
                     {
                         try { process.Kill(); } catch { }
+                        try { process.WaitForExit(1000); } catch { }
+                        return "";
                     }
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
                     return output + Environment.NewLine + error;
                 }
             }
@@ -9741,11 +9749,15 @@ namespace ToolboxClient
         private void ApplyResourceSearchTheme()
         {
             if (resourceSearchHost == null) return;
-            Color back = (studioVariant || tunerVariant) ? (LightTheme ? Color.White : PanelBg) : PanelBg;
+            // The flagship shell uses a light title bar even though it shares the
+            // generic resource-search control with the dark-theme variants.
+            Color back = (audioVariant || vst76Variant)
+                ? Color.FromArgb(248, 249, 250)
+                : ((studioVariant || tunerVariant) ? (LightTheme ? Color.White : PanelBg) : PanelBg);
             resourceSearchHost.BackColor = back;
             resourceSearchHost.Padding = Padding.Empty;
             resourceSearchBox.BackColor = back;
-            resourceSearchBox.ForeColor = TextColor;
+            resourceSearchBox.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(28, 28, 28) : TextColor;
             if (studioVariant)
             {
                 resourceSearchButton.TabStop = false;
@@ -9762,17 +9774,24 @@ namespace ToolboxClient
             else
             {
                 resourceSearchButton.BackColor = back;
-                resourceSearchButton.ForeColor = TextColor;
+                resourceSearchButton.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(71, 85, 105) : TextColor;
                 SearchGlyphButton searchGlyph = resourceSearchButton as SearchGlyphButton;
                 if (searchGlyph != null) searchGlyph.BorderColor = Color.Transparent;
             }
             resourceSearchClearButton.BackColor = back;
-            resourceSearchClearButton.ForeColor = Muted;
+            resourceSearchClearButton.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(86, 98, 108) : Muted;
             resourceSearchClearButton.BorderColor = Color.Transparent;
             foreach (Control child in resourceSearchHost.Controls)
             {
                 SearchGlyphButton glyph = child as SearchGlyphButton;
-                if (glyph != null) { glyph.BackColor = back; glyph.ForeColor = glyph.IsCloseGlyph ? Muted : Accent; glyph.BorderColor = Color.Transparent; }
+                if (glyph != null)
+                {
+                    glyph.BackColor = back;
+                    glyph.ForeColor = glyph.IsCloseGlyph
+                        ? ((audioVariant || vst76Variant) ? Color.FromArgb(86, 98, 108) : Muted)
+                        : ((audioVariant || vst76Variant) ? Color.FromArgb(43, 105, 180) : Accent);
+                    glyph.BorderColor = Color.Transparent;
+                }
             }
             SetSearchPlaceholder();
             resourceSearchHost.Invalidate();
@@ -18049,11 +18068,13 @@ namespace ToolboxClient
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                e.Graphics.Clear(EffectiveBackColor(this));
+                Color chromeBack = EffectiveBackColor(Parent);
+                e.Graphics.Clear(chromeBack);
                 if (hovered)
                 {
                     using (GraphicsPath path = UiRoundRect(new Rectangle(2, 2, Width - 5, Height - 5), 4))
-                    using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76)))
+                    using (SolidBrush bg = new SolidBrush(chromeBack.R > 180 && chromeBack.G > 180 && chromeBack.B > 180
+                        ? Color.FromArgb(244, 247, 250) : Color.FromArgb(53, 61, 76)))
                     {
                         e.Graphics.FillPath(bg, path);
                     }
@@ -18075,7 +18096,7 @@ namespace ToolboxClient
                     Rectangle badge = new Rectangle(Width - badgeWidth - 1, 0, badgeWidth, badgeHeight);
                     using (GraphicsPath path = RoundRect(badge, 7))
                     using (SolidBrush bg = new SolidBrush(LightTheme ? Color.FromArgb(239, 68, 68) : Color.FromArgb(255, 96, 96)))
-                    using (Pen border = new Pen(EffectiveBackColor(this), 1F))
+                    using (Pen border = new Pen(EffectiveBackColor(Parent), 1F))
                     {
                         g.FillPath(bg, path);
                         g.DrawPath(border, path);
