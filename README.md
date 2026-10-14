@@ -83,12 +83,12 @@
 首次下载或重新下载最新版管理脚本，统一使用以下命令：
 
 ```bash
-curl -fsSL --retry 3 "https://gh-proxy.com/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o /tmp/toolbox-admin.sh && sudo bash /tmp/toolbox-admin.sh
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh"; TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; for MIRROR in "https://ghfast.top/$URL" "$URL"; do curl -fsSL --retry 3 --connect-timeout 12 --max-time 60 "$MIRROR" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT" && break; done; test -s "$TMP_SCRIPT" && sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh
 ```
 
 下载完成后，以后在服务器任意目录输入 `toolbox-admin` 即可进入管理脚本。需要重新下载管理脚本时，再执行一次上面的命令即可。
 
-选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车不使用代理并继续执行；需要加速时可填写 `https://gh-proxy.com/`。
+选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车也会自动尝试 `ghfast.top` 和 GitHub 直连；需要指定加速时可填写 `https://ghfast.top/`。
 
 > 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 

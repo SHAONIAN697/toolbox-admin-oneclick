@@ -51,26 +51,29 @@ is_installed(){
 
 ask_proxy(){
   PROXY=""
-  echo "如需 GitHub 加速，请输入代理地址，例如：https://gh-proxy.com/"
+  echo "如需 GitHub 加速，请输入代理地址，例如：https://ghfast.top/"
   read -r -p "代理地址（直接回车不使用代理）: " PROXY || true
   [ -z "$PROXY" ] || PROXY="${PROXY%/}/"
   [ -n "$PROXY" ] && green "本次使用代理：$PROXY" || green "本次不使用代理"
 }
 
 download_source(){
-  local tmp="$1" sha url api_url="https://api.github.com/repos/${REPO}/commits/${BRANCH}"
+  local tmp="$1" url archive_url="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
+  local -a urls=()
   mkdir -p "$tmp"
-  yellow "正在读取 GitHub 最新提交..." >&2
-  sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "${PROXY}${api_url}" 2>/dev/null | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1 || true)"
-  if [ "${#sha}" -lt 40 ]; then
-    sha="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "$api_url" 2>/dev/null | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' | head -n 1 || true)"
-  fi
-  [ "${#sha}" -ge 40 ] || return 1
-  url="https://codeload.github.com/${REPO}/tar.gz/${sha}"
-  yellow "正在下载最新版源码..." >&2
-  curl -fL --retry 3 --connect-timeout 15 --max-time 180 -o "$tmp/source.tar.gz" "${PROXY}${url}" || return 1
-  tar -xzf "$tmp/source.tar.gz" -C "$tmp" || return 1
-  find "$tmp" -path '*/src/ToolboxAdminApi-oneclick/install-baota.sh' -print -quit | xargs -r dirname
+  [ -n "$PROXY" ] && urls+=("${PROXY}${archive_url}")
+  urls+=("https://ghfast.top/${archive_url}" "$archive_url")
+  for url in "${urls[@]}"; do
+    yellow "正在下载最新版源码：$url" >&2
+    rm -f "$tmp/source.tar.gz"
+    if curl -fL --retry 2 --connect-timeout 12 --max-time 180 -o "$tmp/source.tar.gz" "$url" \
+      && tar -xzf "$tmp/source.tar.gz" -C "$tmp"; then
+      find "$tmp" -path '*/src/ToolboxAdminApi-oneclick/install-baota.sh' -print -quit | xargs -r dirname
+      return 0
+    fi
+    yellow "该下载线路不可用，正在切换备用线路..." >&2
+  done
+  return 1
 }
 
 source_matches_installed(){
