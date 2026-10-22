@@ -1,6 +1,7 @@
 """Personal cloud-share resource management and Provider adapters."""
 import hashlib
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import html
 import http.cookiejar
@@ -33,6 +34,8 @@ PROVIDERS = {
 }
 QAIU_LEGACY_CLOUD_PROVIDERS = {"123pan", "xiaofeiji", "tianyi", "weiyun"}
 LOCK = threading.RLock()
+PARSE_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="cloud-resolver")
+ACTIVE_PARSE_TASKS = set()
 HTTP_TIMEOUT = 15
 MAX_PAGE_BYTES = 1024 * 1024
 LANZOU_CHALLENGE_ORDER = (0xf, 0x23, 0x1d, 0x18, 0x21, 0x10, 0x1, 0x26, 0xa, 0x9, 0x13, 0x1f, 0x28, 0x1b, 0x16, 0x17, 0x19, 0xd, 0x6, 0xb, 0x27, 0x12, 0x14, 0x8, 0xe, 0x15, 0x20, 0x1a, 0x2, 0x1e, 0x7, 0x4, 0x11, 0x5, 0x3, 0x1c, 0x22, 0x25, 0xc, 0x24)
@@ -1269,6 +1272,54 @@ def _parse_task_files(task, access_code="", api_key=""):
     return files
 
 
+def _process_parse_task(app, task_id):
+    with LOCK:
+        store = _load(app)
+        saved_task = next((row for row in store["tasks"] if row.get("id") == task_id), None)
+        if not saved_task or saved_task.get("status") != "processing":
+            return
+        task = dict(saved_task)
+        access_code = _unprotect(app, saved_task.get("accessCodeEncrypted"))
+        api_key = _qaiu_api_key(app, store)
+
+    try:
+        _parse_task_files(task, access_code, api_key)
+    except ProviderError as exc:
+        task.update({"status": "failed", "errorCode": str(exc), "updatedAt": _iso(_now())})
+    except Exception:
+        task.update({"status": "failed", "errorCode": "PROVIDER_UNAVAILABLE", "updatedAt": _iso(_now())})
+
+    with LOCK:
+        store = _load(app)
+        saved_task = next((row for row in store["tasks"] if row.get("id") == task_id), None)
+        if not saved_task or saved_task.get("status") != "processing":
+            return
+        for key in ("files", "status", "errorCode", "resolverType", "providerName", "updatedAt"):
+            saved_task[key] = task.get(key)
+        _save(app, store)
+
+
+def _run_parse_task(app, task_id):
+    try:
+        return _process_parse_task(app, task_id)
+    finally:
+        with LOCK:
+            ACTIVE_PARSE_TASKS.discard(task_id)
+
+
+def _schedule_parse_task(app, task_id):
+    with LOCK:
+        if task_id in ACTIVE_PARSE_TASKS:
+            return
+        ACTIVE_PARSE_TASKS.add(task_id)
+    try:
+        PARSE_EXECUTOR.submit(_run_parse_task, app, task_id)
+    except Exception:
+        with LOCK:
+            ACTIVE_PARSE_TASKS.discard(task_id)
+        raise
+
+
 def defaults():
     return {
         "enabled": True,
@@ -1796,6 +1847,7 @@ def route(handler, app, path, method, auth):
             quota = int(entitlement.get("parseQuota", -1))
             if quota >= 0 and int(entitlement.get("parseUsed", 0)) + len(links) > quota:
                 return handler.send_json({"error": "PARSE_QUOTA_EXCEEDED"}, 429)
+            pending_parse_task_ids = []
             for item in links:
                 if not isinstance(item, dict):
                     return handler.send_json({"error": "链接参数格式错误。"}, 400)
@@ -1830,20 +1882,23 @@ def route(handler, app, path, method, auth):
                                       "path": str(x.get("path") or "/"), "size": max(0, int(x.get("size") or 0)),
                                       "type": str(x.get("type") or "file")} for x in (item.get("mockFiles") or body.get("mockFiles") or [])]
                 elif provider != "mock":
-                    try:
-                        _parse_task_files(task, access_code, _qaiu_api_key(app, store))
-                    except ProviderError as exc:
-                        task["status"] = "failed"; task["errorCode"] = str(exc)
-                    except Exception:
-                        task["status"] = "failed"; task["errorCode"] = "PROVIDER_UNAVAILABLE"
-                store["tasks"].insert(0, task); tasks.append(_public_task(task))
+                    pending_parse_task_ids.append(task["id"])
+                store["tasks"].insert(0, task); tasks.append(task)
                 entitlement["parseUsed"] = int(entitlement.get("parseUsed") or 0) + 1
                 entitlement["dailyParseUsed"] = used + len(tasks); entitlement["lastUsedAt"] = task["createdAt"]
             _save(app, store); _audit(app, user, handler, "parse_submit", ",".join(x["id"] for x in tasks), {"count": len(tasks), "providers": sorted({x["provider"] for x in tasks})})
+            for task_id in pending_parse_task_ids:
+                _schedule_parse_task(app, task_id)
+            latest_tasks = {row.get("id"): row for row in _load(app)["tasks"]}
+            tasks = [_public_task(latest_tasks.get(task.get("id"), task)) for task in tasks]
             return handler.send_json({"tasks": tasks}, 201)
         if path == "/api/cloud-resolver/parse-tasks" and method == "GET":
             _require_entitlement(app, store, user)
-            return handler.send_json({"tasks": [_public_task(x) for x in store["tasks"] if x.get("ownerUserId") == user_id]})
+            owned_tasks = [x for x in store["tasks"] if x.get("ownerUserId") == user_id]
+            for task in owned_tasks:
+                if task.get("status") == "processing":
+                    _schedule_parse_task(app, task.get("id"))
+            return handler.send_json({"tasks": [_public_task(x) for x in owned_tasks]})
         if path == "/api/cloud-resolver/parse-tasks/batch" and method == "POST":
             _require_entitlement(app, store, user)
             body = handler.read_body()
@@ -1869,21 +1924,25 @@ def route(handler, app, path, method, auth):
                     task["updatedAt"] = task["archivedAt"]
                     results.append({"id": task.get("id"), "ok": True})
             else:
+                retry_task_ids = []
                 for task in targets:
                     if task.get("status") not in ("failed", "parsed", "pending"):
                         results.append({"id": task.get("id"), "ok": False, "reason": "当前任务状态不能重试。"})
                         continue
-                    try:
-                        _parse_task_files(task, _unprotect(app, task.get("accessCodeEncrypted")), _qaiu_api_key(app, store))
-                        results.append({"id": task.get("id"), "ok": task.get("status") != "failed",
-                                        "reason": task.get("errorCode") or ""})
-                    except ProviderError as exc:
-                        task.update({"status": "failed", "errorCode": str(exc), "updatedAt": _iso(_now())})
-                        results.append({"id": task.get("id"), "ok": False, "reason": str(exc)})
+                    if task.get("provider") == "mock":
+                        task.update({"status": "failed", "errorCode": "OFFICIAL_API_UNSUPPORTED", "updatedAt": _iso(_now())})
+                        results.append({"id": task.get("id"), "ok": False, "reason": task["errorCode"]})
+                        continue
+                    task.update({"status": "processing", "errorCode": "", "files": [], "updatedAt": _iso(_now())})
+                    retry_task_ids.append(task["id"])
+                    results.append({"id": task.get("id"), "ok": True, "reason": "PROCESSING"})
             _save(app, store)
             _audit(app, user, handler, "task_batch_" + action, ",".join(requested[:100]),
                    {"requested": len(requested), "succeeded": sum(1 for row in results if row["ok"]),
                     "failed": rejected + sum(1 for row in results if not row["ok"])})
+            if action == "retry":
+                for task_id in retry_task_ids:
+                    _schedule_parse_task(app, task_id)
             return handler.send_json({"succeeded": sum(1 for row in results if row["ok"]),
                                       "failed": rejected + sum(1 for row in results if not row["ok"]),
                                       "results": results})
@@ -1918,17 +1977,15 @@ def route(handler, app, path, method, auth):
                                           {"selectedFileCount": task["selectedFileCount"]})
                 return handler.send_json(_public_task(task))
             if method == "POST" and action == "retry":
-                if task.get("provider") != "mock":
-                    try:
-                        _parse_task_files(task, _unprotect(app, task.get("accessCodeEncrypted")), _qaiu_api_key(app, store))
-                    except ProviderError as exc:
-                        task["status"] = "failed"; task["errorCode"] = str(exc); task["updatedAt"] = _iso(_now())
-                    except Exception:
-                        task["status"] = "failed"; task["errorCode"] = "PROVIDER_UNAVAILABLE"; task["updatedAt"] = _iso(_now())
-                else:
+                if task.get("provider") == "mock":
                     task["status"] = "failed"; task["errorCode"] = "OFFICIAL_API_UNSUPPORTED"; task["updatedAt"] = _iso(_now())
+                    _save(app, store); _audit(app, user, handler, "parse_retry", task["id"], {"provider": task["provider"]})
+                    return handler.send_json(_public_task(task))
+                task.update({"status": "processing", "errorCode": "", "files": [], "updatedAt": _iso(_now())})
                 _save(app, store); _audit(app, user, handler, "parse_retry", task["id"], {"provider": task["provider"]})
-                return handler.send_json(_public_task(task))
+                _schedule_parse_task(app, task["id"])
+                latest_task = next((row for row in _load(app)["tasks"] if row.get("id") == task["id"]), task)
+                return handler.send_json(_public_task(latest_task))
             if method == "POST" and action == "cancel":
                 task["status"] = "cancelled"; task["updatedAt"] = _iso(_now()); _save(app, store)
                 _audit(app, user, handler, "parse_cancel", task["id"]); return handler.send_json(_public_task(task))

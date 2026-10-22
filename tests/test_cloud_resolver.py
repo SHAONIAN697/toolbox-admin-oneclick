@@ -37,6 +37,11 @@ class FakeHandler:
         return value
 
 
+class InlineExecutor:
+    def submit(self, function, *args):
+        return function(*args)
+
+
 class CloudResolverTests(unittest.TestCase):
     def test_order_dates_parse_without_native_fromisoformat(self):
         class LegacyDateTime:
@@ -85,6 +90,9 @@ class CloudResolverTests(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.original_parse_executor = RESOLVER.PARSE_EXECUTOR
+        RESOLVER.PARSE_EXECUTOR = InlineExecutor()
+        RESOLVER.ACTIVE_PARSE_TASKS.clear()
         data = Path(self.temp.name)
         APP.DATA = data
         APP.USERS_PATH = data / "users.json"
@@ -111,6 +119,7 @@ class CloudResolverTests(unittest.TestCase):
         RESOLVER._save(APP, resolver_store)
 
     def tearDown(self):
+        RESOLVER.PARSE_EXECUTOR = self.original_parse_executor
         APP.CLOUD_RESOLVER_MOCK_ENABLED = False
         self.temp.cleanup()
 
@@ -175,6 +184,65 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(saved_task["files"][0]["resolverType"], "qaiu")
         self.assertEqual(parser.call_count, 2)
         self.assertEqual([call.args[0] for call in parser.call_args_list], ["/v2/linkInfo", "/v2/getFileList"])
+
+    def test_parse_endpoint_returns_before_upstream_work_finishes(self):
+        self.grant("alice", ["tianyi"])
+
+        class DeferredExecutor:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, function, *args):
+                self.jobs.append((function, args))
+
+        executor = DeferredExecutor()
+        RESOLVER.PARSE_EXECUTOR = executor
+        files = [{"id": "f1", "name": "demo.zip", "path": "/demo.zip", "size": 10,
+                  "type": "file", "downloadUrl": "https://download.example/demo.zip"}]
+        with patch.object(RESOLVER, "_provider_parse", return_value=files) as parser:
+            status, payload = self.call("alice", "/api/cloud-resolver/parse", "POST", {
+                "url": "https://cloud.189.cn/t/6VvEryMnyYZz", "accessCode": "secret",
+            })
+            self.assertEqual(status, 201)
+            task = payload["tasks"][0]
+            self.assertEqual(task["status"], "processing")
+            parser.assert_not_called()
+            self.assertEqual(len(executor.jobs), 1)
+
+            function, args = executor.jobs.pop()
+            function(*args)
+            parser.assert_called_once()
+
+        status, payload = self.call("alice", f"/api/cloud-resolver/parse-tasks/{task['id']}", "GET")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "parsed")
+        self.assertEqual(payload["files"][0]["resolvedUrl"], "https://download.example/demo.zip")
+
+    def test_parse_task_list_resumes_orphaned_processing_jobs(self):
+        self.grant("alice", ["tianyi"])
+
+        class DeferredExecutor:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, function, *args):
+                self.jobs.append((function, args))
+
+        task = {"id": "orphaned-task", "ownerUserId": "alice", "provider": "tianyi",
+                "shareUrl": "https://cloud.189.cn/t/6VvEryMnyYZz", "status": "processing", "files": []}
+        store = RESOLVER._load(APP)
+        store["tasks"].append(task)
+        RESOLVER._save(APP, store)
+        executor = DeferredExecutor()
+        RESOLVER.PARSE_EXECUTOR = executor
+        RESOLVER.ACTIVE_PARSE_TASKS.clear()
+
+        status, payload = self.call("alice", "/api/cloud-resolver/parse-tasks", "GET")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tasks"][0]["status"], "processing")
+        self.assertEqual(len(executor.jobs), 1)
+        self.assertIn(task["id"], RESOLVER.ACTIVE_PARSE_TASKS)
 
     def test_qaiu_xiaofeiji_parser_uses_code_query_as_password(self):
         calls = []

@@ -35,6 +35,10 @@
   auditRefreshBusy: false,
   auditItems: [],
   cloudResolver: { config: null, entitlement: null, tasks: [], resources: [], sources: [], adminPlans: [], agentCodes: [], agentSales: [] },
+  cloudResolverPendingPickerIds: new Set(),
+  cloudResolverPollTimer: null,
+  cloudResolverPollBusy: false,
+  cloudResolverPollRequested: false,
   cloudOrderSelectedIds: new Set(),
   cloudUserEntitlements: {}
 };
@@ -1120,9 +1124,75 @@ async function cloudTaskBatch(action, ids) {
   if (!ids.length) throw new Error('请先选择解析任务。');
   const result = await api('/api/cloud-resolver/parse-tasks/batch', {method:'POST', body:JSON.stringify({action, ids})});
   await loadAndRenderCloudResolver();
-  showToast(`操作完成：成功 ${Number(result.succeeded || 0)} 项，失败 ${Number(result.failed || 0)} 项。`, result.failed ? 'error' : 'success');
+  const prefix = action === 'retry' ? '已提交重试' : '操作完成';
+  showToast(`${prefix}：成功 ${Number(result.succeeded || 0)} 项，失败 ${Number(result.failed || 0)} 项。`, result.failed ? 'error' : 'success');
 }
-async function loadAndRenderCloudResolver() { await loadCloudResolver(); renderCloudResolver(); renderCloudTaskTables(state.cloudResolver || {}); }
+function finishCloudResolverPickerTasks() {
+  if (state.activeView !== 'cloud-resolver') return;
+  const tasks = state.cloudResolver.tasks || [];
+  for (const task of tasks) {
+    if (!state.cloudResolverPendingPickerIds.has(task.id)) continue;
+    if (task.status === 'parsed') {
+      state.cloudResolverPendingPickerIds.delete(task.id);
+      openCloudFilePicker(task);
+      showToast('解析完成，请选择要添加的文件。', 'success');
+    } else if (task.status === 'failed') {
+      state.cloudResolverPendingPickerIds.delete(task.id);
+      showToast('解析失败：' + cloudErrorMessage({ message: task.errorCode || '解析失败' }), 'error');
+    } else if (task.status === 'cancelled' || task.status === 'archived') {
+      state.cloudResolverPendingPickerIds.delete(task.id);
+    }
+  }
+}
+function finishCloudResolverPoll() {
+  state.cloudResolverPollBusy = false;
+  if (state.cloudResolverPollRequested) {
+    state.cloudResolverPollRequested = false;
+    refreshCloudResolverTaskStatuses().catch(() => {});
+  } else {
+    scheduleCloudResolverTaskPoll();
+  }
+}
+function scheduleCloudResolverTaskPoll() {
+  const feature = state.cloudResolver || {};
+  const processing = (feature.tasks || []).some((task) => task.status === 'processing');
+  if (!state.token || !feature.entitlement?.allowed || !processing) {
+    if (state.cloudResolverPollTimer) clearTimeout(state.cloudResolverPollTimer);
+    state.cloudResolverPollTimer = null;
+    return;
+  }
+  if (state.cloudResolverPollTimer) return;
+  state.cloudResolverPollTimer = setTimeout(async () => {
+    state.cloudResolverPollTimer = null;
+    if (state.cloudResolverPollBusy) { state.cloudResolverPollRequested = true; return; }
+    state.cloudResolverPollBusy = true;
+    try {
+      const result = await api('/api/cloud-resolver/parse-tasks');
+      state.cloudResolver.tasks = result.tasks || [];
+      renderCloudResolver();
+      renderCloudTaskTables(state.cloudResolver);
+      finishCloudResolverPickerTasks();
+    } catch {} finally { finishCloudResolverPoll(); }
+  }, 2000);
+}
+async function refreshCloudResolverTaskStatuses() {
+  if (state.cloudResolverPollBusy) { state.cloudResolverPollRequested = true; return; }
+  state.cloudResolverPollBusy = true;
+  try {
+    const result = await api('/api/cloud-resolver/parse-tasks');
+    state.cloudResolver.tasks = result.tasks || [];
+    renderCloudResolver();
+    renderCloudTaskTables(state.cloudResolver);
+    finishCloudResolverPickerTasks();
+  } finally { finishCloudResolverPoll(); }
+}
+async function loadAndRenderCloudResolver() {
+  await loadCloudResolver();
+  renderCloudResolver();
+  renderCloudTaskTables(state.cloudResolver || {});
+  finishCloudResolverPickerTasks();
+  scheduleCloudResolverTaskPoll();
+}
 setInterval(() => {
   const orders = state.cloudResolver?.orders || [];
   if (!orders.length) return;
@@ -1297,7 +1367,11 @@ async function parseCloudResolver() {
   const accessCode = accessInput || (embeddedCode ? embeddedCode[1].replace(/[）)\]}>，,；;。.!！?？]+$/, '').trim() : '');
   if (!url) throw new Error('请先填写网盘分享链接。');
   const result = await api('/api/cloud-resolver/parse', { method: 'POST', body: JSON.stringify({ links: [{ url: url, provider: $('cloudResolverProvider').value, accessCode: accessCode, version: $('cloudResolverVersion').value, platform: $('cloudResolverPlatform').value, architecture: $('cloudResolverArchitecture').value, language: $('cloudResolverLanguage').value, remark: $('cloudResolverRemark').value }] }) });
-  $('cloudResolverAccessCode').value = ''; await loadAndRenderCloudResolver(); const completed = (result.tasks || []).find((task) => task.status === 'parsed'); if (completed) openCloudFilePicker(completed); showToast('已创建 ' + ((result.tasks || []).length) + ' 个解析任务。', 'success');
+  $('cloudResolverAccessCode').value = '';
+  const tasks = result.tasks || [];
+  for (const task of tasks) state.cloudResolverPendingPickerIds.add(task.id);
+  if (tasks.some((task) => task.status === 'processing')) showToast('解析任务已提交，正在后台处理。', 'success');
+  await refreshCloudResolverTaskStatuses();
 }
 async function assignCloudTask(taskId) {
   const task = state.cloudResolver.tasks.find(function(item) { return item.id === taskId; }); if (!task) return;
@@ -1659,6 +1733,7 @@ function switchView(view) {
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
   if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
+  if (view === 'cloud-resolver') loadAndRenderCloudResolver().catch(error => setStatus(cloudErrorMessage(error), true));
   syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
