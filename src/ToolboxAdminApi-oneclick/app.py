@@ -65,6 +65,7 @@ DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
 STUDIO_OVERVIEW_PAGE_ID = "system_overview"
 
+CLOUD_RESOLVER_IMPORT_ERROR = ""
 try:
     import cloud_resolver
 except ImportError:
@@ -73,8 +74,9 @@ except ImportError:
         _resolver_spec = _importlib_util.spec_from_file_location("cloud_resolver", ROOT / "cloud_resolver.py")
         cloud_resolver = _importlib_util.module_from_spec(_resolver_spec)
         _resolver_spec.loader.exec_module(cloud_resolver)
-    except Exception:
+    except Exception as exc:
         cloud_resolver = None
+        CLOUD_RESOLVER_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 
 class _AppContext:
@@ -5929,6 +5931,14 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                cloud_resolver_path = (
+                    path.startswith("/api/cloud-resolver/") or
+                    path.startswith("/api/admin/cloud-resolver/") or
+                    path.startswith("/api/agent/cloud-resolver/") or
+                    path.startswith("/api/admin/users/") and "/cloud-entitlement" in path
+                )
+                if cloud_resolver_path and not cloud_resolver:
+                    return self.send_json({"error": "服务端网盘解析模块未部署或加载失败，请重新同步程序文件并重启后台。"}, 503)
                 if cloud_resolver and (path.startswith("/api/cloud-resolver/") or
                                        path.startswith("/api/admin/users/") and "/cloud-entitlement" in path or
                                        path.startswith("/api/admin/cloud-resolver/") or
@@ -6812,6 +6822,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if not cloud_resolver:
+        print(f"WARNING: cloud resolver module unavailable: {CLOUD_RESOLVER_IMPORT_ERROR or 'cloud_resolver.py not found'}", flush=True)
     ensure_admin_announcement_files()
     read_users()
     threading.Thread(target=run_client_build_cleanup_loop, daemon=True).start()

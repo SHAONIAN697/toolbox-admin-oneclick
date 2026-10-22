@@ -37,6 +37,11 @@ class FakeHandler:
 
 
 class CloudResolverTests(unittest.TestCase):
+    def test_backend_reports_missing_resolver_module_instead_of_unknown_route(self):
+        source = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn('cloud_resolver_path and not cloud_resolver', source)
+        self.assertIn('服务端网盘解析模块未部署或加载失败', source)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         data = Path(self.temp.name)

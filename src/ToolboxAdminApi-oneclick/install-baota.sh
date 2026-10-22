@@ -199,6 +199,7 @@ copy_source() {
 
   yellow "正在复制程序文件到：$app_dir"
   cp -a "$src_dir/app.py" "$app_dir/"
+  cp -a "$src_dir/cloud_resolver.py" "$app_dir/"
   cp -a "$src_dir/assets" "$app_dir/"
   cp -a "$src_dir/client-template" "$app_dir/"
   cp -a "$src_dir/wwwroot" "$app_dir/"

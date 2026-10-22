@@ -7,7 +7,7 @@ PKG_NAME="toolbox-admin-local-latest.tar.gz"
 URL_RAW="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/${BRANCH}/packages/${PKG_NAME}"
 URL_GITHUB="https://github.com/SHAONIAN697/toolbox-admin-oneclick/raw/${BRANCH}/packages/${PKG_NAME}"
 URL_CODELOAD="https://codeload.github.com/SHAONIAN697/toolbox-admin-oneclick/tar.gz/refs/heads/${BRANCH}"
-SHA="2ca40836f61e15ac7a730d37d3bc67465c8c43fdad59d415d984958a2518c4f6"
+SHA="9b63964b877990911a8fe89722df56962160bcf68c7be055d201558fda4b2635"
 TS="$(date +%Y%m%d-%H%M%S)"
 PKG="/tmp/toolbox-admin-update-$TS.tar.gz"
 TMP="/tmp/toolbox-admin-update-$TS"
@@ -55,11 +55,12 @@ SRC="$TMP/ToolboxAdminApi-oneclick"
 python3 -m py_compile "$SRC/app.py"
 
 cd "$APP"
-cp -a app.py server.ps1 wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
+cp -a app.py cloud_resolver.py server.ps1 wwwroot client-template assets deploy admin-desktop-template "$BACKUP/" 2>/dev/null || true
 cp -a data "$BACKUP/data.current" 2>/dev/null || true
 
 rm -rf app.py wwwroot client-template assets deploy admin-desktop-template __pycache__ data/client-cache data/client-jobs
 \cp -a "$SRC/app.py" "$APP/app.py"
+\cp -a "$SRC/cloud_resolver.py" "$APP/cloud_resolver.py"
 [ -f "$SRC/server.ps1" ] && \cp -a "$SRC/server.ps1" "$APP/server.ps1" || true
 \cp -a "$SRC/wwwroot" "$APP/wwwroot"
 \cp -a "$SRC/client-template" "$APP/client-template"

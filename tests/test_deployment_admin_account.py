@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ ROOT = Path(__file__).parents[1]
 APP_PATH = ROOT / "src" / "ToolboxAdminApi-oneclick" / "app.py"
 INSTALL_SCRIPT = ROOT / "src" / "ToolboxAdminApi-oneclick" / "install-baota.sh"
 MANAGER_SCRIPT = ROOT / "script" / "toolbox-admin.sh"
+LATEST_PACKAGE = ROOT / "packages" / "toolbox-admin-local-latest.tar.gz"
 
 os.environ.setdefault("TOOLBOX_ADMIN_TOKEN", "test-admin-password")
 spec = importlib.util.spec_from_file_location("toolbox_deployment_admin_app", APP_PATH)
@@ -67,6 +69,18 @@ class DeploymentAdminAccountTests(unittest.TestCase):
         self.assertIn('echo "管理员账号：${actual_admin_accounts:-$admin_username}"', script)
         self.assertNotIn('echo "管理员账号：admin"', script)
         self.assertIn("密码已加密，无法显示明文", script)
+
+    def test_install_and_update_copy_the_cloud_resolver_module(self):
+        installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        manager = MANAGER_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('cp -a "$src_dir/cloud_resolver.py" "$app_dir/"', installer)
+        self.assertIn('[ -f "$src/cloud_resolver.py" ]', manager)
+        self.assertIn('cmp -s "$src/cloud_resolver.py" "$dir/cloud_resolver.py"', manager)
+
+    def test_latest_deployment_package_contains_cloud_resolver_module(self):
+        with tarfile.open(LATEST_PACKAGE, "r:gz") as package:
+            self.assertIn("ToolboxAdminApi-oneclick/cloud_resolver.py", package.getnames())
 
     def test_password_manager_targets_real_super_admin_and_revokes_sessions(self):
         script = MANAGER_SCRIPT.read_text(encoding="utf-8")
