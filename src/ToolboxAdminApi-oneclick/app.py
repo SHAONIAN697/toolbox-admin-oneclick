@@ -547,6 +547,19 @@ def software_catalog_register(rows):
                 SOFTWARE_CATALOG_RESOLVE_CACHE[item["id"]] = dict(old, bizInfo=item["bizInfo"], expires=time.time() + 900)
 
 
+def software_catalog_attach_cached_urls(rows):
+    """Include cached installer URLs so clients can download without another API round trip."""
+    now = time.time()
+    with SOFTWARE_CATALOG_LOCK:
+        for item in rows or []:
+            if not isinstance(item, dict):
+                continue
+            record = SOFTWARE_CATALOG_RESOLVE_CACHE.get(str(item.get("id") or "")) or {}
+            if record.get("resolvedUrl") and record.get("resolvedExpires", 0) >= now:
+                item["downloadUrl"] = record["resolvedUrl"]
+    return rows
+
+
 def stored_password(password):
     salt = secrets.token_bytes(16)
     rounds = 310000
@@ -5895,10 +5908,10 @@ class Handler(BaseHTTPRequestHandler):
                 api_key = (self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", "")).strip()
                 if not find_user_by_api_key(api_key): return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
                 if path.endswith("/home") and method == "GET":
-                    rows, source = software_catalog_home(); software_catalog_register(rows)
+                    rows, source = software_catalog_home(); software_catalog_register(rows); software_catalog_attach_cached_urls(rows)
                     return self.send_json({"items": rows, "source": source, "offline": source != "online"})
                 if path.endswith("/search") and method == "GET":
-                    rows, source = software_catalog_search(self.query.get("q", [""])[0]); software_catalog_register(rows)
+                    rows, source = software_catalog_search(self.query.get("q", [""])[0]); software_catalog_register(rows); software_catalog_attach_cached_urls(rows)
                     return self.send_json({"items": rows, "source": source, "offline": source != "online"})
                 if path.endswith("/resolve") and method == "POST":
                     item_id = str(self.read_body().get("id") or "").strip()

@@ -38,6 +38,16 @@ class Vst76CatalogTests(unittest.TestCase):
             self.assertEqual("https://cdn.example/setup.exe", self.app.software_catalog_resolve("app-1"))
         request.assert_called_once()
 
+    def test_catalog_rows_include_valid_cached_installer_urls(self):
+        rows = [{"id": "ready", "downloadUrl": ""}, {"id": "expired", "downloadUrl": ""}]
+        self.app.SOFTWARE_CATALOG_RESOLVE_CACHE = {
+            "ready": {"resolvedUrl": "https://cdn.example/ready.exe", "resolvedExpires": 9999999999},
+            "expired": {"resolvedUrl": "https://cdn.example/expired.exe", "resolvedExpires": 1},
+        }
+        self.assertIs(rows, self.app.software_catalog_attach_cached_urls(rows))
+        self.assertEqual("https://cdn.example/ready.exe", rows[0]["downloadUrl"])
+        self.assertEqual("", rows[1]["downloadUrl"])
+
     def test_client_and_admin_use_flagship_shared_paths(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         js = (PROJECT / "wwwroot" / "admin.js").read_text(encoding="utf-8")
@@ -75,6 +85,10 @@ class Vst76CatalogTests(unittest.TestCase):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         self.assertIn("(vst76Variant || audioVariant) && remoteReady", cs)
         self.assertIn("QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);", cs)
+        self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
+        prefetch = cs[cs.index("private void QueueSoftwareCatalogResolvePrefetch"):cs.index("private Control CreateSoftwareNoResultCard")]
+        self.assertIn("Math.Min(8, pending.Count)", prefetch)
+        self.assertNotIn("rows.Take(24)", prefetch)
         self.assertNotIn("else QueueButtonIconLoad(entry.IconUrl, icon, 32);", cs)
         self.assertIn("return audioVariant ? Color.FromArgb(248, 249, 250) : Bg;", cs)
         self.assertIn("return audioVariant ? Color.FromArgb(229, 67, 67) : Accent;", cs)
