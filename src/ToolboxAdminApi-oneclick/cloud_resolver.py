@@ -1378,7 +1378,7 @@ def _effective_entitlement(store, user):
     now = _now()
     for row in rows:
         try:
-            expiry = datetime.fromisoformat(row["expiredAt"]) if row.get("expiredAt") else None
+            expiry = _parse_time(row["expiredAt"]) if row.get("expiredAt") else None
             if expiry and expiry <= now:
                 row["status"] = "expired"
                 changed = True
@@ -1415,7 +1415,23 @@ def _parse_time(value):
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        text = str(value).strip()
+        native_parser = getattr(datetime, "fromisoformat", None)
+        if native_parser:
+            parsed = native_parser(text.replace("Z", "+00:00"))
+        else:
+            normalized = text.replace("Z", "+0000")
+            if re.search(r"[+-]\d\d:\d\d$", normalized):
+                normalized = normalized[:-3] + normalized[-2:]
+            parsed = None
+            for pattern in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+                try:
+                    parsed = datetime.strptime(normalized, pattern)
+                    break
+                except ValueError:
+                    pass
+            if parsed is None:
+                raise ValueError("invalid datetime")
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         raise ValueError("到期时间格式不正确。")

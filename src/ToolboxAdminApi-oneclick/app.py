@@ -3427,12 +3427,12 @@ def public_order(order):
     is_expired = bool(order.get("isExpired", False) or order.get("status") == "expired")
     if order.get("status") == "pending" and not pending_expires_at:
         try:
-            created_at = datetime.fromisoformat(str(order.get("createdAt") or "").replace("Z", "+00:00"))
+            created_at = parse_iso_datetime(order.get("createdAt"))
             if not created_at.tzinfo:
                 created_at = created_at.replace(tzinfo=timezone.utc)
             cooldown = int(read_system_settings().get("orderCooldownMinutes", 30) or 30)
             pending_expires_at = (created_at + timedelta(minutes=max(1, min(10080, cooldown)))).isoformat(timespec="seconds")
-            remaining_seconds = max(0, int((datetime.fromisoformat(pending_expires_at) - datetime.now(timezone.utc)).total_seconds()))
+            remaining_seconds = max(0, int((parse_iso_datetime(pending_expires_at) - datetime.now(timezone.utc)).total_seconds()))
             is_expired = remaining_seconds <= 0
         except (TypeError, ValueError, OverflowError):
             pass

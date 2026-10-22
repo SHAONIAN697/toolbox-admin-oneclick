@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 import urllib.request
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
@@ -37,6 +38,27 @@ class FakeHandler:
 
 
 class CloudResolverTests(unittest.TestCase):
+    def test_order_dates_parse_without_native_fromisoformat(self):
+        class LegacyDateTime:
+            now = staticmethod(datetime.now)
+            strptime = staticmethod(datetime.strptime)
+
+        original_app_datetime = APP.datetime
+        original_resolver_datetime = RESOLVER.datetime
+        APP.datetime = LegacyDateTime
+        RESOLVER.datetime = LegacyDateTime
+        try:
+            order = APP.public_order({
+                "id": "order_legacy_time", "userId": "user_1", "status": "pending",
+                "createdAt": "2026-10-22T10:00:00+00:00",
+            })
+            expiry = RESOLVER._parse_time("2026-10-22T10:30:00+00:00")
+            self.assertTrue(order["pendingExpiresAt"].startswith("2026-10-22T10:30:00"))
+            self.assertEqual(expiry.tzinfo, timezone.utc)
+        finally:
+            APP.datetime = original_app_datetime
+            RESOLVER.datetime = original_resolver_datetime
+
     def test_backend_reports_missing_resolver_module_instead_of_unknown_route(self):
         source = APP_PATH.read_text(encoding="utf-8")
         self.assertIn('cloud_resolver_path and not cloud_resolver', source)
