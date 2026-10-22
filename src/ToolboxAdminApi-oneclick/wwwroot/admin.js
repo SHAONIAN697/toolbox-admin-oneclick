@@ -39,6 +39,10 @@
   cloudResolverPollTimer: null,
   cloudResolverPollBusy: false,
   cloudResolverPollRequested: false,
+  cloudResolverParseTimer: null,
+  cloudResolverParseCloseTimer: null,
+  cloudResolverParseStartedAt: 0,
+  cloudResolverParseActive: false,
   cloudOrderSelectedIds: new Set(),
   cloudUserEntitlements: {}
 };
@@ -476,6 +480,81 @@ function closeClientBuildDialog() {
   window.clearInterval(state.clientBuildTimer);
   const overlay = $('clientBuildOverlay');
   if (overlay) overlay.classList.remove('show', 'done', 'error');
+}
+
+function ensureCloudResolverParseDialog() {
+  let overlay = $('cloudResolverParseOverlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'cloudResolverParseOverlay';
+  overlay.className = 'client-build-overlay';
+  overlay.innerHTML = `
+    <div class="client-build-dialog" role="dialog" aria-modal="true" aria-labelledby="cloudResolverParseTitle">
+      <div class="client-build-ring"><span></span></div>
+      <h2 id="cloudResolverParseTitle">正在解析网盘资源</h2>
+      <p id="cloudResolverParseText">正在连接解析服务并读取分享内容...</p>
+      <div class="client-build-meter"><i id="cloudResolverParseMeter"></i></div>
+      <div class="client-build-meta">
+        <span id="cloudResolverParseElapsed">已用时 00:00</span>
+        <span id="cloudResolverParseHint">解析时间取决于上游响应和文件数量</span>
+      </div>
+      <button id="cloudResolverParseClose" type="button" hidden>关闭</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  $('cloudResolverParseClose').onclick = closeCloudResolverParseDialog;
+  return overlay;
+}
+
+function openCloudResolverParseDialog() {
+  const overlay = ensureCloudResolverParseDialog();
+  window.clearTimeout(state.cloudResolverParseCloseTimer);
+  window.clearInterval(state.cloudResolverParseTimer);
+  state.cloudResolverParseStartedAt = Date.now();
+  state.cloudResolverParseActive = true;
+  overlay.classList.remove('done', 'error');
+  overlay.classList.add('show');
+  $('cloudResolverParseTitle').textContent = '正在解析网盘资源';
+  $('cloudResolverParseText').textContent = '正在连接解析服务并读取分享内容...';
+  $('cloudResolverParseHint').textContent = '解析时间取决于上游响应和文件数量';
+  $('cloudResolverParseElapsed').textContent = '已用时 00:00';
+  $('cloudResolverParseMeter').style.width = '12%';
+  $('cloudResolverParseClose').hidden = true;
+  if ($('cloudResolverParseBtn')) $('cloudResolverParseBtn').disabled = true;
+  state.cloudResolverParseTimer = window.setInterval(() => {
+    const elapsed = Date.now() - state.cloudResolverParseStartedAt;
+    $('cloudResolverParseElapsed').textContent = `已用时 ${formatElapsed(elapsed)}`;
+    const pct = Math.min(88, 12 + Math.floor(elapsed / 900));
+    $('cloudResolverParseMeter').style.width = `${pct}%`;
+  }, 1000);
+}
+
+function updateCloudResolverParseDialog(type, message) {
+  const overlay = ensureCloudResolverParseDialog();
+  const done = type === 'done';
+  const failed = type === 'error';
+  window.clearInterval(state.cloudResolverParseTimer);
+  state.cloudResolverParseTimer = null;
+  state.cloudResolverParseActive = false;
+  overlay.classList.toggle('done', done);
+  overlay.classList.toggle('error', failed);
+  $('cloudResolverParseTitle').textContent = done ? '网盘资源解析完成' : '网盘资源解析失败';
+  $('cloudResolverParseText').textContent = message || (done ? '正在打开文件选择窗口...' : '请检查分享链接后重试。');
+  $('cloudResolverParseHint').textContent = done ? '即将打开文件选择窗口' : '任务已保留在解析失败列表中';
+  $('cloudResolverParseMeter').style.width = '100%';
+  $('cloudResolverParseClose').hidden = !failed;
+  if ($('cloudResolverParseBtn')) $('cloudResolverParseBtn').disabled = false;
+}
+
+function closeCloudResolverParseDialog() {
+  window.clearInterval(state.cloudResolverParseTimer);
+  window.clearTimeout(state.cloudResolverParseCloseTimer);
+  state.cloudResolverParseTimer = null;
+  state.cloudResolverParseCloseTimer = null;
+  state.cloudResolverParseActive = false;
+  const overlay = $('cloudResolverParseOverlay');
+  if (overlay) overlay.classList.remove('show', 'done', 'error');
+  if ($('cloudResolverParseBtn')) $('cloudResolverParseBtn').disabled = false;
 }
 
 function authHeaders() {
@@ -1134,13 +1213,18 @@ function finishCloudResolverPickerTasks() {
     if (!state.cloudResolverPendingPickerIds.has(task.id)) continue;
     if (task.status === 'parsed') {
       state.cloudResolverPendingPickerIds.delete(task.id);
-      openCloudFilePicker(task);
-      showToast('解析完成，请选择要添加的文件。', 'success');
+      const fileCount = (task.files || []).length;
+      updateCloudResolverParseDialog('done', `解析完成，共获取 ${fileCount} 个文件。`);
+      state.cloudResolverParseCloseTimer = window.setTimeout(() => {
+        closeCloudResolverParseDialog();
+        if (state.activeView === 'cloud-resolver') openCloudFilePicker(task);
+      }, 900);
     } else if (task.status === 'failed') {
       state.cloudResolverPendingPickerIds.delete(task.id);
-      showToast('解析失败：' + cloudErrorMessage({ message: task.errorCode || '解析失败' }), 'error');
+      updateCloudResolverParseDialog('error', cloudErrorMessage({ message: task.errorCode || '解析失败' }));
     } else if (task.status === 'cancelled' || task.status === 'archived') {
       state.cloudResolverPendingPickerIds.delete(task.id);
+      updateCloudResolverParseDialog('error', task.status === 'cancelled' ? '解析任务已取消。' : '解析任务已归档。');
     }
   }
 }
@@ -1155,8 +1239,9 @@ function finishCloudResolverPoll() {
 }
 function scheduleCloudResolverTaskPoll() {
   const feature = state.cloudResolver || {};
-  const processing = (feature.tasks || []).some((task) => task.status === 'processing');
-  if (!state.token || !feature.entitlement?.allowed || !processing) {
+  const processing = (feature.tasks || []).some((task) => ['pending', 'processing'].includes(task.status));
+  const awaitingPicker = state.cloudResolverPendingPickerIds.size > 0;
+  if (!state.token || (!processing && !awaitingPicker)) {
     if (state.cloudResolverPollTimer) clearTimeout(state.cloudResolverPollTimer);
     state.cloudResolverPollTimer = null;
     return;
@@ -1172,8 +1257,12 @@ function scheduleCloudResolverTaskPoll() {
       renderCloudResolver();
       renderCloudTaskTables(state.cloudResolver);
       finishCloudResolverPickerTasks();
-    } catch {} finally { finishCloudResolverPoll(); }
-  }, 2000);
+    } catch {
+      if (state.cloudResolverParseActive && $('cloudResolverParseText')) {
+        $('cloudResolverParseText').textContent = '连接暂时中断，正在自动重试查询解析状态...';
+      }
+    } finally { finishCloudResolverPoll(); }
+  }, 1000);
 }
 async function refreshCloudResolverTaskStatuses() {
   if (state.cloudResolverPollBusy) { state.cloudResolverPollRequested = true; return; }
@@ -1184,6 +1273,11 @@ async function refreshCloudResolverTaskStatuses() {
     renderCloudResolver();
     renderCloudTaskTables(state.cloudResolver);
     finishCloudResolverPickerTasks();
+  } catch (error) {
+    if (state.cloudResolverParseActive && $('cloudResolverParseText')) {
+      $('cloudResolverParseText').textContent = '连接暂时中断，正在自动重试查询解析状态...';
+    }
+    throw error;
   } finally { finishCloudResolverPoll(); }
 }
 async function loadAndRenderCloudResolver() {
@@ -1366,12 +1460,24 @@ async function parseCloudResolver() {
     .replace(/[（(]\s*$/, '').replace(/[）)\]}>，,；;。.!！?？]+$/, '').trim();
   const accessCode = accessInput || (embeddedCode ? embeddedCode[1].replace(/[）)\]}>，,；;。.!！?？]+$/, '').trim() : '');
   if (!url) throw new Error('请先填写网盘分享链接。');
-  const result = await api('/api/cloud-resolver/parse', { method: 'POST', body: JSON.stringify({ links: [{ url: url, provider: $('cloudResolverProvider').value, accessCode: accessCode, version: $('cloudResolverVersion').value, platform: $('cloudResolverPlatform').value, architecture: $('cloudResolverArchitecture').value, language: $('cloudResolverLanguage').value, remark: $('cloudResolverRemark').value }] }) });
-  $('cloudResolverAccessCode').value = '';
-  const tasks = result.tasks || [];
-  for (const task of tasks) state.cloudResolverPendingPickerIds.add(task.id);
-  if (tasks.some((task) => task.status === 'processing')) showToast('解析任务已提交，正在后台处理。', 'success');
-  await refreshCloudResolverTaskStatuses();
+  if (state.cloudResolverParseActive) return;
+  openCloudResolverParseDialog();
+  try {
+    const result = await api('/api/cloud-resolver/parse', { method: 'POST', body: JSON.stringify({ links: [{ url: url, provider: $('cloudResolverProvider').value, accessCode: accessCode, version: $('cloudResolverVersion').value, platform: $('cloudResolverPlatform').value, architecture: $('cloudResolverArchitecture').value, language: $('cloudResolverLanguage').value, remark: $('cloudResolverRemark').value }] }) });
+    $('cloudResolverAccessCode').value = '';
+    const tasks = result.tasks || [];
+    if (!tasks.length) throw new Error('服务器没有创建解析任务。');
+    for (const task of tasks) state.cloudResolverPendingPickerIds.add(task.id);
+    const taskIds = new Set(tasks.map((task) => task.id));
+    state.cloudResolver.tasks = [...tasks, ...(state.cloudResolver.tasks || []).filter((task) => !taskIds.has(task.id))];
+    renderCloudResolver();
+    renderCloudTaskTables(state.cloudResolver);
+    $('cloudResolverParseText').textContent = '任务已提交，正在后台获取文件信息...';
+    scheduleCloudResolverTaskPoll();
+    refreshCloudResolverTaskStatuses().catch(() => {});
+  } catch (error) {
+    updateCloudResolverParseDialog('error', cloudErrorMessage(error));
+  }
 }
 async function assignCloudTask(taskId) {
   const task = state.cloudResolver.tasks.find(function(item) { return item.id === taskId; }); if (!task) return;
