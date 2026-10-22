@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -154,7 +155,6 @@ namespace ToolboxClient
         private System.Windows.Forms.Timer tunerClockTimer;
         private System.Windows.Forms.Timer studioOverviewTimer;
         private Label tunerClockLabel;
-        private DateTime tunerStartedAt = DateTime.Now;
         private const string TunerHomePageId = "tuner_tools";
         private const string TunerDriversPageId = "tuner_drivers";
         private const string TunerLinksPageId = "tuner_links";
@@ -2029,8 +2029,6 @@ namespace ToolboxClient
         private void UpdateTunerClock()
         {
             if (tunerClockLabel == null || tunerClockLabel.IsDisposed) return;
-            TimeSpan runtime = DateTime.Now - tunerStartedAt;
-            string running = String.Format("已运行: {0:00}:{1:00}:{2:00}", (int)Math.Min(99, runtime.TotalHours), runtime.Minutes, runtime.Seconds);
             tunerClockLabel.Text = DateTime.Now.ToString("yyyy/M/d  HH:mm:ss");
         }
 
@@ -10204,7 +10202,7 @@ namespace ToolboxClient
             {
                 string url = GetText(file, "url", GetText(file, "download_url", ""));
                 string name = SafeDownloadFileName(GetText(file, "name", GetText(file, "filename", "download.bin")));
-                DownloadFile(url, name, GetText(file, "backup_url", ""), GetText(file, "backup_page_url", ""), directory, BoolValue(item, "download_delete_on_exit", false), packageId, name.Equals(primaryName, StringComparison.OrdinalIgnoreCase));
+                DownloadFile(url, name, GetText(file, "backup_url", ""), GetText(file, "backup_page_url", ""), directory, BoolValue(item, "download_delete_on_exit", false), "", packageId, name.Equals(primaryName, StringComparison.OrdinalIgnoreCase));
             }
             status.Text = "已加入多文件下载队列：" + displayName;
             return true;
@@ -12972,10 +12970,11 @@ namespace ToolboxClient
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
                 UpdateActiveDownloadTask(task);
+                string launchStatus = "已下载";
                 if (!String.IsNullOrWhiteSpace(task.PackageGroupId)) CompletePackageDownloadMember(task.PackageGroupId, task.Path, true);
                 else
                 {
-                    string launchStatus = AutoRunDownloadsValue(LoadClientSettings())
+                    launchStatus = AutoRunDownloadsValue(LoadClientSettings())
                         ? LaunchDownloadedFile(task.Path)
                         : "已下载";
                     status.Text = launchStatus + "：" + task.FileName;

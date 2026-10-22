@@ -82,6 +82,13 @@ class DeploymentAdminAccountTests(unittest.TestCase):
         with tarfile.open(LATEST_PACKAGE, "r:gz") as package:
             self.assertIn("ToolboxAdminApi-oneclick/cloud_resolver.py", package.getnames())
 
+    def test_latest_package_contains_fixed_client_template(self):
+        with tarfile.open(LATEST_PACKAGE, "r:gz") as package:
+            source = package.extractfile("ToolboxAdminApi-oneclick/client-template/ToolboxClient.cs").read().decode("utf-8-sig")
+        self.assertIn("using System.Globalization;", source)
+        self.assertIn('false), "", packageId, name.Equals(primaryName', source)
+        self.assertIn('string launchStatus = "已下载";', source)
+
     def test_password_manager_targets_real_super_admin_and_revokes_sessions(self):
         script = MANAGER_SCRIPT.read_text(encoding="utf-8")
 

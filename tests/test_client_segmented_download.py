@@ -110,9 +110,21 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         self.assertIn('GetText(item, "download_mode", ""), "multiple"', self.source)
         self.assertIn("StartPackageDownload(item, info.Name)", self.source)
         self.assertIn("foreach (Dictionary<string, object> file in files)", self.source)
+        self.assertIn('directory, BoolValue(item, "download_delete_on_exit", false), "", packageId, name.Equals(primaryName, StringComparison.OrdinalIgnoreCase))', self.source)
         self.assertIn("CompletePackageDownloadMember(task.PackageGroupId, task.Path, true)", self.source)
         self.assertIn("!group.Failed && !String.IsNullOrWhiteSpace(group.PrimaryPath)", self.source)
         self.assertIn("LaunchDownloadedFile(group.PrimaryPath)", self.source)
+
+    def test_download_template_imports_culture_info_for_backup_url_normalization(self):
+        self.assertIn("using System.Globalization;", self.source)
+        self.assertIn("Convert.ToString(value, CultureInfo.InvariantCulture)", self.source)
+
+    def test_completed_download_record_uses_launch_status_for_packages_and_single_files(self):
+        start = self.source.index("private void FinishControlledDownload(")
+        end = self.source.index("private void CleanupSegmentedPart(", start)
+        finish = self.source[start:end]
+        self.assertIn('string launchStatus = "已下载";', finish)
+        self.assertIn('AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "", task.DeleteOnExit);', finish)
 
 
 if __name__ == "__main__":
