@@ -125,6 +125,42 @@ class InvitePermissionTests(unittest.TestCase):
             self.assertEqual(["AGENT-1"], result["fulfilledInviteCodes"])
         self.assertEqual(403, self.call(self.other_agent, "GET", path="/api/super/orders/paid-test")[0])
 
+    def test_cloud_order_scope_and_bulk_deletes_preserve_other_order_types(self):
+        orders = [
+            {"id": "cloud-pending", "userId": "agent-a", "status": "pending",
+             "action": "cloud_resolver_plan_purchase", "createdAt": "2026-10-22T00:00:00+00:00",
+             "pendingExpiresAt": "2099-10-22T00:30:00+00:00"},
+            {"id": "cloud-expired", "userId": "agent-a", "status": "pending",
+             "action": "cloud_resolver_plan_purchase", "createdAt": "2000-01-01T00:00:00+00:00",
+             "pendingExpiresAt": "2000-01-01T00:30:00+00:00"},
+            {"id": "cloud-paid", "userId": "agent-a", "status": "paid",
+             "action": "cloud_resolver_plan_purchase"},
+            {"id": "invite-paid", "userId": "agent-a", "status": "paid", "action": "create_invites"},
+        ]
+        self.app.write_orders({"orders": orders})
+
+        handler = FakeHandler(self.app)
+        handler.query = {"scope": ["cloud_resolver"]}
+        status, result = self.app.Handler.handle_super(
+            handler, "/api/super/orders", "GET", {"user": self.admin})
+        self.assertEqual(200, status)
+        self.assertEqual({"cloud-pending", "cloud-expired", "cloud-paid"},
+                         {row["id"] for row in result["orders"]})
+        self.assertEqual("expired", next(row["status"] for row in result["orders"] if row["id"] == "cloud-expired"))
+
+        status, result = self.call(self.admin, "DELETE", {"cloudResolverFilter": "completed"}, path="/api/super/orders")
+        self.assertEqual(200, status)
+        self.assertEqual(1, result["deleted"])
+        status, result = self.call(self.admin, "DELETE", {"cloudResolverFilter": "expired"}, path="/api/super/orders")
+        self.assertEqual(200, status)
+        self.assertEqual(1, result["deleted"])
+        status, result = self.call(self.admin, "DELETE", {
+            "cloudResolverFilter": "selected", "ids": ["cloud-pending", "invite-paid"]
+        }, path="/api/super/orders")
+        self.assertEqual(200, status)
+        self.assertEqual(1, result["deleted"])
+        self.assertEqual(["invite-paid"], [row["id"] for row in self.app.read_orders()["orders"]])
+
     def test_super_can_delete_agent_invites(self):
         status, result = self.call(self.admin, "DELETE", {"codes": ["AGENT-1"]})
         self.assertEqual(200, status)

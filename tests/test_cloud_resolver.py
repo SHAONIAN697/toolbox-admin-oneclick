@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
@@ -50,6 +50,7 @@ class CloudResolverTests(unittest.TestCase):
         try:
             order = APP.public_order({
                 "id": "order_legacy_time", "userId": "user_1", "status": "pending",
+                "action": "cloud_resolver_plan_purchase",
                 "createdAt": "2026-10-22T10:00:00+00:00",
             })
             expiry = RESOLVER._parse_time("2026-10-22T10:30:00+00:00")
@@ -58,6 +59,24 @@ class CloudResolverTests(unittest.TestCase):
         finally:
             APP.datetime = original_app_datetime
             RESOLVER.datetime = original_resolver_datetime
+
+    def test_public_order_calculates_remaining_time_from_saved_deadline(self):
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=20)
+        order = APP.public_order({
+            "id": "order_active_time", "userId": "alice", "status": "pending",
+            "action": "cloud_resolver_plan_purchase", "createdAt": datetime.now(timezone.utc).isoformat(),
+            "pendingExpiresAt": expires_at.isoformat(),
+        })
+        self.assertGreater(order["remainingSeconds"], 1100)
+        self.assertLessEqual(order["remainingSeconds"], 1200)
+        self.assertFalse(order["isExpired"])
+        self.assertEqual(order["status"], "pending")
+
+    def test_cloud_order_expiry_uses_system_management_setting(self):
+        created_at = datetime.now(timezone.utc)
+        with patch.object(APP, "read_system_settings", return_value={"cloudResolverOrderExpiryMinutes": 45}):
+            expiry = RESOLVER._order_expiry(APP, {"createdAt": created_at.isoformat()})
+        self.assertEqual(int((expiry - created_at).total_seconds()), 45 * 60)
 
     def test_backend_reports_missing_resolver_module_instead_of_unknown_route(self):
         source = APP_PATH.read_text(encoding="utf-8")

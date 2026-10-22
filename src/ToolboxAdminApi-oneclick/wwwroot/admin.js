@@ -35,6 +35,7 @@
   auditRefreshBusy: false,
   auditItems: [],
   cloudResolver: { config: null, entitlement: null, tasks: [], resources: [], sources: [], adminPlans: [], agentCodes: [], agentSales: [] },
+  cloudOrderSelectedIds: new Set(),
   cloudUserEntitlements: {}
 };
 
@@ -1125,8 +1126,34 @@ async function loadAndRenderCloudResolver() { await loadCloudResolver(); renderC
 setInterval(() => {
   const orders = state.cloudResolver?.orders || [];
   if (!orders.length) return;
-  orders.forEach((order) => { if (order.status === 'pending' && Number(order.remainingSeconds || 0) > 0) order.remainingSeconds = Number(order.remainingSeconds) - 1; });
+  orders.forEach((order) => {
+    if (order.status !== 'pending') return;
+    if (Number(order.remainingSeconds || 0) > 0) order.remainingSeconds = Number(order.remainingSeconds) - 1;
+    if (Number(order.remainingSeconds || 0) <= 0 && order.pendingExpiresAt) {
+      order.status = 'expired';
+      order.isExpired = true;
+    }
+  });
   renderCloudOrders();
+}, 1000);
+setInterval(() => {
+  let changed = false;
+  (state.orders || []).forEach((order) => {
+    if (order.action !== 'cloud_resolver_plan_purchase' || order.status !== 'pending') return;
+    if (Number(order.remainingSeconds || 0) > 0) {
+      order.remainingSeconds = Number(order.remainingSeconds) - 1;
+      if (order.remainingSeconds <= 0) {
+        order.status = 'expired';
+        order.isExpired = true;
+      }
+      changed = true;
+    } else if (order.pendingExpiresAt) {
+      order.status = 'expired';
+      order.isExpired = true;
+      changed = true;
+    }
+  });
+  if (changed) renderOrders();
 }, 1000);
 async function buyCloudPlan(planId, renew = false) {
   const plan = (state.cloudResolver.plans || []).find((item) => item.id === planId);
@@ -1492,7 +1519,7 @@ async function loadMailSettings() {
 async function loadSystemSettings() {
   if (!isSuper()) return;
   state.system = await api('/api/super/system');
-  const result = await api('/api/super/orders');
+  const result = await api('/api/super/orders?scope=cloud_resolver');
   state.orders = result.orders || [];
 }
 
@@ -2812,6 +2839,7 @@ function renderSystemSettings() {
   if ($('agentCurrency')) $('agentCurrency').value = agent.currency || 'CNY';
   if ($('agentCloudCodePrice')) $('agentCloudCodePrice').value = Number(agent.cloudCodePrice || 0);
   if ($('agentOrderCooldown')) $('agentOrderCooldown').value = Number(agent.orderCooldownMinutes ?? 30);
+  if ($('cloudResolverOrderExpiryMinutes')) $('cloudResolverOrderExpiryMinutes').value = Number(state.system.cloudResolverOrderExpiryMinutes ?? 30);
   if ($('agentAllowNegative')) $('agentAllowNegative').checked = !!agent.allowNegativeBalance;
   renderAgentLevelRows();
   if ($('payWechatChannel')) $('payWechatChannel').value = pay.wechatChannel || 'disabled';
@@ -3493,20 +3521,34 @@ function renderClientVariants() {
 function renderOrders() {
   const tbody = $('orderRows');
   if (!tbody) return;
-  const orders = state.orders || [];
+  const orders = (state.orders || []).filter((order) => order.action === 'cloud_resolver_plan_purchase');
+  const visibleIds = new Set(orders.map((order) => String(order.id || '')).filter(Boolean));
+  state.cloudOrderSelectedIds = new Set([...state.cloudOrderSelectedIds].filter((id) => visibleIds.has(id)));
+  const updateSelectionControls = () => {
+    const selectedCount = state.cloudOrderSelectedIds.size;
+    const deleteSelected = $('deleteSelectedCloudOrdersBtn');
+    if (deleteSelected) deleteSelected.disabled = selectedCount === 0;
+    const selectAll = $('selectAllCloudOrders');
+    if (selectAll) {
+      selectAll.checked = orders.length > 0 && selectedCount === orders.length;
+      selectAll.indeterminate = selectedCount > 0 && selectedCount < orders.length;
+    }
+  };
   if (!orders.length) {
-    tbody.innerHTML = '<tr><td colspan="7">暂无订单</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">暂无网盘解析订单</td></tr>';
+    updateSelectionControls();
     return;
   }
   const paymentLabels = { balance: '余额支付', manual: '人工审核', interface: '接口支付' };
-  const orderStatusLabels = { pending: '待支付', paid: '已支付', done: '已处理', cancelled: '已取消', expired: '已过期' };
+  const orderStatusLabels = { pending: '待支付', paid: '已支付', done: '已完成', cancelled: '已取消', expired: '已失效' };
   tbody.innerHTML = orders.map((order) => `
     <tr data-order-id="${escapeAttr(order.id || '')}" data-order-agent-id="${escapeAttr(order.userId || order.agentId || '')}">
+      <td><input type="checkbox" data-cloud-order-select="${escapeAttr(order.id || '')}" aria-label="选择订单 ${escapeAttr(order.id || '')}"${state.cloudOrderSelectedIds.has(String(order.id || '')) ? ' checked' : ''}></td>
       <td>${escapeHtml(order.id || '')}<br><small>${escapeHtml(formatDateTime(order.createdAt))}</small></td>
       <td>${escapeHtml(order.displayName || order.agentDisplayName || userNameFromId(order.userId || order.agentId, order.username || order.agentUsername || ''))}</td>
       <td>${Number(order.amount || 0).toFixed(2)} ${escapeHtml(order.currency || 'CNY')}</td>
       <td>${escapeHtml(orderStatusLabels[order.status] || order.status || '待处理')}</td>
-      <td>${order.status === 'pending' && order.remainingSeconds ? cloudRemaining(order.remainingSeconds) : (order.status === 'pending' ? '已失效' : '-')}</td>
+      <td>${order.status === 'pending' && order.remainingSeconds ? cloudRemaining(order.remainingSeconds) : (order.status === 'pending' || order.status === 'expired' ? '已失效' : '-')}</td>
       <td>
         ${escapeHtml(order.detail || order.action || '')}
         ${order.paymentMethod ? `<br><small>${escapeHtml(paymentLabels[order.paymentMethod] || order.paymentMethod)}${order.paymentChannel ? ` / ${escapeHtml(order.paymentChannel)}` : ''}</small>` : ''}
@@ -3528,6 +3570,15 @@ function renderOrders() {
     button.onclick = () => deleteOrder(button.closest('tr')?.dataset.orderId)
       .catch((error) => setStatus(error.message, true));
   });
+  tbody.querySelectorAll('[data-cloud-order-select]').forEach((checkbox) => {
+    checkbox.onchange = () => {
+      const id = checkbox.dataset.cloudOrderSelect || '';
+      if (checkbox.checked) state.cloudOrderSelectedIds.add(id);
+      else state.cloudOrderSelectedIds.delete(id);
+      updateSelectionControls();
+    };
+  });
+  updateSelectionControls();
 }
 
 const PAY_GATEWAYS = [
@@ -6289,6 +6340,9 @@ async function saveSystemSettings(section) {
       levels
     };
   }
+  if (section === 'cloudResolverOrderExpiry') {
+    body.cloudResolverOrderExpiryMinutes = Number($('cloudResolverOrderExpiryMinutes')?.value || 30);
+  }
   if (section === 'pay') {
     syncPayRoutesFromCards();
     body.pay = {
@@ -6391,7 +6445,7 @@ async function resetTemplate() {
 }
 
 async function refreshOrders(showMessage = true) {
-  const result = await api('/api/super/orders');
+  const result = await api('/api/super/orders?scope=cloud_resolver');
   state.orders = result.orders || [];
   renderOrders();
   if (showMessage) setStatus('订单列表已刷新。');
@@ -6416,6 +6470,24 @@ async function deleteOrder(id) {
   });
   await refreshOrders();
   setStatus('订单已删除。');
+}
+
+async function deleteCloudOrderGroup(filter) {
+  const labels = { all: '全部网盘解析订单', completed: '已完成网盘解析订单', expired: '已失效网盘解析订单', selected: '选中的网盘解析订单' };
+  const label = labels[filter];
+  const ids = filter === 'selected' ? [...state.cloudOrderSelectedIds] : [];
+  if (filter === 'selected' && !ids.length) {
+    setStatus('请先勾选要删除的网盘订单。', true);
+    return;
+  }
+  if (!confirm(`确定删除${label}吗？删除后无法恢复。`)) return;
+  const result = await api('/api/super/orders', {
+    method: 'DELETE',
+    body: JSON.stringify({ cloudResolverFilter: filter, ids })
+  });
+  state.cloudOrderSelectedIds.clear();
+  await refreshOrders(false);
+  setStatus(`已删除 ${Number(result.deleted || 0)} 笔${label}。`);
 }
 
 async function jumpToOrder(orderId) {
@@ -7347,6 +7419,7 @@ if ($('cloudResolverAuthorizedRedeemBtn')) $('cloudResolverAuthorizedRedeemBtn')
 if ($('cloudResolverRenewToggleBtn')) $('cloudResolverRenewToggleBtn').onclick = () => { $('cloudResolverRenewBody').hidden = !$('cloudResolverRenewBody').hidden; };
 if ($('cloudResolverRedeemToggleBtn')) $('cloudResolverRedeemToggleBtn').onclick = () => { $('cloudResolverAuthorizedRedeemBody').hidden = !$('cloudResolverAuthorizedRedeemBody').hidden; };
 if ($('cloudResolverSystemCreatePlanBtn')) $('cloudResolverSystemCreatePlanBtn').onclick = () => createCloudPlan().catch((error) => setStatus(cloudErrorMessage(error), true));
+if ($('saveCloudResolverOrderExpiryBtn')) $('saveCloudResolverOrderExpiryBtn').onclick = () => saveSystemSettings('cloudResolverOrderExpiry').catch((error) => setStatus(error.message, true));
 if ($('cloudResolverGenerateCodesBtn')) $('cloudResolverGenerateCodesBtn').onclick = () => generateCloudCodes().catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverCopyCodesBtn')) $('cloudResolverCopyCodesBtn').onclick = () => copyCloudCodes(state.cloudResolver.codes || []).catch((error) => setStatus(error.message, true));
 if ($('cloudResolverExportCodesBtn')) $('cloudResolverExportCodesBtn').onclick = () => { try { exportSelectedCloudCodes(); } catch (error) { setStatus(error.message, true); } };
@@ -7423,6 +7496,15 @@ if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMod
 if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () => copyCurrentToTemplate().catch((error) => setStatus(error.message, true));
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
 if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
+if ($('selectAllCloudOrders')) $('selectAllCloudOrders').onchange = (event) => {
+  const ids = (state.orders || []).filter((order) => order.action === 'cloud_resolver_plan_purchase').map((order) => String(order.id || '')).filter(Boolean);
+  state.cloudOrderSelectedIds = event.target.checked ? new Set(ids) : new Set();
+  renderOrders();
+};
+if ($('deleteAllCloudOrdersBtn')) $('deleteAllCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('all').catch((error) => setStatus(error.message, true));
+if ($('deleteCompletedCloudOrdersBtn')) $('deleteCompletedCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('completed').catch((error) => setStatus(error.message, true));
+if ($('deleteExpiredCloudOrdersBtn')) $('deleteExpiredCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('expired').catch((error) => setStatus(error.message, true));
+if ($('deleteSelectedCloudOrdersBtn')) $('deleteSelectedCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('selected').catch((error) => setStatus(error.message, true));
 document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
   input.addEventListener('change', () => {
     if (input.checked) saveButtonContentLayout(input.value);

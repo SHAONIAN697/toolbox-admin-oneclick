@@ -2675,6 +2675,7 @@ def handle_desktop_login(handler):
 
 def default_system_settings():
     return {
+        "cloudResolverOrderExpiryMinutes": 30,
         "builtinFunctions": [],
         "menuIconFolders": [{"id": "default", "name": "默认", "sort": 0}],
         "menuIcons": [],
@@ -3182,6 +3183,11 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
 
 def write_system_settings(body):
     current = read_system_settings()
+    if "cloudResolverOrderExpiryMinutes" in body:
+        try:
+            current["cloudResolverOrderExpiryMinutes"] = max(1, min(10080, int(body.get("cloudResolverOrderExpiryMinutes") or 1)))
+        except (TypeError, ValueError):
+            raise ValueError("网盘订单有效时间必须是 1 到 10080 分钟之间的整数。")
     if isinstance(body.get("menuIconFolders"), list):
         folders = []
         used = set()
@@ -3425,20 +3431,29 @@ def public_order(order):
     pending_expires_at = order.get("pendingExpiresAt", "")
     remaining_seconds = int(order.get("remainingSeconds", 0) or 0)
     is_expired = bool(order.get("isExpired", False) or order.get("status") == "expired")
-    if order.get("status") == "pending" and not pending_expires_at:
+    public_status = order.get("status", "pending")
+    if order.get("status") == "pending" and order.get("action") == "cloud_resolver_plan_purchase":
         try:
-            created_at = parse_iso_datetime(order.get("createdAt"))
-            if not created_at.tzinfo:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            cooldown = int(read_system_settings().get("orderCooldownMinutes", 30) or 30)
-            pending_expires_at = (created_at + timedelta(minutes=max(1, min(10080, cooldown)))).isoformat(timespec="seconds")
-            remaining_seconds = max(0, int((parse_iso_datetime(pending_expires_at) - datetime.now(timezone.utc)).total_seconds()))
+            if pending_expires_at:
+                expires_at = parse_iso_datetime(pending_expires_at)
+            else:
+                created_at = parse_iso_datetime(order.get("createdAt"))
+                if not created_at.tzinfo:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                minutes = int(read_system_settings().get("cloudResolverOrderExpiryMinutes", 30) or 30)
+                expires_at = created_at + timedelta(minutes=max(1, min(10080, minutes)))
+                pending_expires_at = expires_at.isoformat(timespec="seconds")
+            if not expires_at.tzinfo:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            remaining_seconds = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
             is_expired = remaining_seconds <= 0
+            if is_expired:
+                public_status = "expired"
         except (TypeError, ValueError, OverflowError):
             pass
     return {
         "id": order.get("id"),
-        "status": order.get("status", "pending"),
+        "status": public_status,
         "action": order.get("action", ""),
         "amount": order.get("amount", 0),
         "currency": order.get("currency", "CNY"),
@@ -6370,7 +6385,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "只有总管理员可以操作。"}, 403)
             data = read_orders()
             if method == "GET":
-                return self.send_json({"orders": [public_order(order) for order in data.get("orders", [])[:200]]})
+                rows = data.get("orders", [])
+                if (getattr(self, "query", {}) or {}).get("scope", [""])[-1] == "cloud_resolver":
+                    rows = [order for order in rows if order.get("action") == "cloud_resolver_plan_purchase"]
+                return self.send_json({"orders": [public_order(order) for order in rows[:200]]})
             if method == "PATCH":
                 body = self.read_body()
                 order = next((x for x in data.get("orders", []) if x.get("id") == body.get("id")), None)
@@ -6387,6 +6405,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_order(order))
             if method == "DELETE":
                 body = self.read_body()
+                cloud_filter = str(body.get("cloudResolverFilter") or "").strip()
+                if cloud_filter:
+                    allowed_filters = {"all", "completed", "expired", "selected"}
+                    if cloud_filter not in allowed_filters:
+                        raise ValueError("不支持的网盘订单删除范围。")
+                    selected_ids = {str(x).strip() for x in (body.get("ids") or []) if str(x).strip()}
+                    removed = []
+                    kept = []
+                    for order in data.get("orders", []):
+                        if order.get("action") != "cloud_resolver_plan_purchase":
+                            kept.append(order)
+                            continue
+                        public = public_order(order)
+                        matches = (
+                            cloud_filter == "all"
+                            or (cloud_filter == "completed" and order.get("status") in ("paid", "done"))
+                            or (cloud_filter == "expired" and public.get("status") == "expired")
+                            or (cloud_filter == "selected" and order.get("id") in selected_ids)
+                        )
+                        (removed if matches else kept).append(order)
+                    data["orders"] = kept
+                    if removed:
+                        write_orders(data)
+                    return self.send_json({"ok": True, "deleted": len(removed)})
                 ids = {str(x).strip() for x in (body.get("ids") or []) if str(x).strip()}
                 order_id = str(body.get("id") or "").strip()
                 if order_id:

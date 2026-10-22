@@ -1309,7 +1309,7 @@ def _order_expiry(app, order, now=None):
     except ValueError:
         created = now
     settings = app.read_system_settings()
-    minutes = settings.get("orderCooldownMinutes", 30)
+    minutes = settings.get("cloudResolverOrderExpiryMinutes", 30)
     try:
         minutes = max(1, min(10080, int(minutes)))
     except (TypeError, ValueError):

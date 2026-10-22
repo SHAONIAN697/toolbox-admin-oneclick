@@ -539,6 +539,7 @@
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1" id="cloudResolverSystemPlansPanel">
         <div class="panel-head"><h2>网盘授权套餐</h2><button id="cloudResolverSystemCreatePlanBtn" type="button">新建套餐</button></div>
+        <div class="form-grid compact"><label>未支付订单有效时间（分钟）<input id="cloudResolverOrderExpiryMinutes" type="number" min="1" max="10080" step="1" value="30"><small>仅新建订单使用；已创建订单保留原截止时间</small></label><button id="saveCloudResolverOrderExpiryBtn" type="button">保存订单时间</button></div>
         <div class="form-grid compact"><label>套餐名称<input id="cloudResolverSystemPlanName" placeholder="例如：一个月"></label><label>普通成员售价<input id="cloudResolverSystemPlanPrice" type="number" min="0" step="0.01" value="0"></label><label>代理拿货价<input id="cloudResolverSystemPlanAgentPrice" type="number" min="0" step="0.01" value="0"></label><label>有效期（天）<input id="cloudResolverSystemPlanDays" type="number" min="1" value="30"></label><label>解析次数（-1不限）<input id="cloudResolverSystemPlanQuota" type="number" min="-1" value="20"></label><label>每日解析次数<input id="cloudResolverSystemPlanDaily" type="number" min="-1" placeholder="留空使用全局默认；-1不限"><small>留空使用上方全局默认额度</small></label><label>下载流量（兆字节，-1不限）<input id="cloudResolverSystemPlanTraffic" type="number" min="-1" value="-1"></label></div>
         <div class="table-wrap"><table><thead><tr><th>套餐</th><th>售价</th><th>有效期</th><th>解析次数</th><th>状态</th><th></th></tr></thead><tbody id="cloudResolverSystemPlanRows"></tbody></table></div>
       </div>
@@ -569,12 +570,12 @@
       </div>
       <div class="panel collapsible-panel" data-collapsible-panel>
         <div class="panel-head">
-          <h2>订单状态</h2>
-          <button id="refreshOrdersBtn" type="button">刷新</button>
+          <h2>用户订单状态</h2>
+          <div class="button-pair"><button id="deleteAllCloudOrdersBtn" class="danger" type="button">删除全部订单</button><button id="deleteCompletedCloudOrdersBtn" class="danger" type="button">删除已完成</button><button id="deleteExpiredCloudOrdersBtn" class="danger" type="button">删除已失效</button><button id="deleteSelectedCloudOrdersBtn" class="danger" type="button" disabled>删除选中</button><button id="refreshOrdersBtn" type="button">刷新</button></div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>订单号</th><th>用户</th><th>金额</th><th>状态</th><th>剩余有效时间</th><th>内容</th><th></th></tr></thead>
+            <thead><tr><th><input id="selectAllCloudOrders" type="checkbox" aria-label="全选网盘订单"></th><th>订单号</th><th>用户</th><th>金额</th><th>状态</th><th>剩余有效时间</th><th>内容</th><th></th></tr></thead>
             <tbody id="orderRows"></tbody>
           </table>
         </div>
