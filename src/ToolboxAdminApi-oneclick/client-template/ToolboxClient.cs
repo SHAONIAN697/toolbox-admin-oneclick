@@ -280,6 +280,13 @@ namespace ToolboxClient
         private readonly HashSet<string> softwareCatalogIconRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<PictureBox>> softwareCatalogIconTargets = new Dictionary<string, List<PictureBox>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> softwareCatalogResolvedUrls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object softwareCatalogResolveLock = new object();
+        private readonly HashSet<string> softwareCatalogInteractiveResolveRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object softwareCatalogPrefetchLock = new object();
+        private readonly Queue<KeyValuePair<string, SoftwareCatalogEntry>> softwareCatalogPrefetchQueue = new Queue<KeyValuePair<string, SoftwareCatalogEntry>>();
+        private readonly HashSet<string> softwareCatalogPrefetchInFlight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private int softwareCatalogPrefetchWorkersRunning = 0;
+        private const int SoftwareCatalogMaxResolvePrefetchWorkers = 3;
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly object iconCacheLock = new object();
         private Icon runtimeIcon;
@@ -7974,7 +7981,7 @@ namespace ToolboxClient
                             Tags = new string[] { "联想应用商店", name }
                         });
                         SoftwareCatalogEntry addedEntry = rows[rows.Count - 1];
-                        if (!String.IsNullOrWhiteSpace(addedEntry.DownloadUrl)) softwareCatalogResolvedUrls[addedEntry.Id] = addedEntry.DownloadUrl;
+                        if (!String.IsNullOrWhiteSpace(addedEntry.DownloadUrl)) CacheSoftwareCatalogResolvedUrl(addedEntry, addedEntry.DownloadUrl);
                     }
                 }
                 catch
@@ -8055,54 +8062,146 @@ namespace ToolboxClient
             }
         }
 
+        private string SoftwareCatalogResolveCacheKey(SoftwareCatalogEntry entry)
+        {
+            if (entry == null) return "";
+            string source = (entry.Source ?? "").Trim().ToLowerInvariant();
+            if (source.Equals("lenovo", StringComparison.OrdinalIgnoreCase) && !String.IsNullOrWhiteSpace(entry.Id))
+                return "lenovo:id:" + entry.Id.Trim();
+            if (!String.IsNullOrWhiteSpace(entry.PackageId)) return "package:" + entry.PackageId.Trim();
+            if (!String.IsNullOrWhiteSpace(entry.Id)) return "id:" + source + ":" + entry.Id.Trim();
+            if (!String.IsNullOrWhiteSpace(entry.Website)) return "website:" + entry.Website.Trim().TrimEnd('/');
+            return "";
+        }
+
+        private bool TryGetSoftwareCatalogResolvedUrl(SoftwareCatalogEntry entry, out string url)
+        {
+            string key = SoftwareCatalogResolveCacheKey(entry);
+            url = "";
+            if (String.IsNullOrWhiteSpace(key)) return false;
+            lock (softwareCatalogResolveLock)
+            {
+                return softwareCatalogResolvedUrls.TryGetValue(key, out url) && !String.IsNullOrWhiteSpace(url);
+            }
+        }
+
+        private void CacheSoftwareCatalogResolvedUrl(SoftwareCatalogEntry entry, string url)
+        {
+            string key = SoftwareCatalogResolveCacheKey(entry);
+            Uri parsed;
+            if (String.IsNullOrWhiteSpace(key) || !Uri.TryCreate(url, UriKind.Absolute, out parsed) || parsed.Scheme != Uri.UriSchemeHttps) return;
+            lock (softwareCatalogResolveLock) softwareCatalogResolvedUrls[key] = url;
+        }
+
+        private string ResolveSoftwareCatalogInstallerUrl(SoftwareCatalogEntry entry)
+        {
+            if (entry == null) return "";
+            string url = "";
+            if (String.Equals(entry.Source, "lenovo", StringComparison.OrdinalIgnoreCase) && !String.IsNullOrWhiteSpace(entry.Id))
+            {
+                string json = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "id", entry.Id } });
+                Dictionary<string, object> result = AsDict(new JavaScriptSerializer().DeserializeObject(PostJson(SoftwareCatalogApiUrl("resolve"), json)));
+                url = GetText(result, "downloadUrl", "");
+            }
+            else if (!String.IsNullOrWhiteSpace(entry.PackageId))
+            {
+                url = ResolveWingetInstallerUrl(entry.PackageId);
+            }
+            if (String.IsNullOrWhiteSpace(url) && !String.IsNullOrWhiteSpace(entry.Website))
+                url = ResolveInstallerUrlFromOfficialPage(entry.Website);
+            Uri parsed;
+            return Uri.TryCreate(url, UriKind.Absolute, out parsed) && parsed.Scheme == Uri.UriSchemeHttps ? url : "";
+        }
+
         private void QueueSoftwareCatalogResolvePrefetch(List<SoftwareCatalogEntry> rows)
         {
-            if (rows == null || rows.Count == 0) return;
-            List<SoftwareCatalogEntry> pending = rows.Where(entry => entry != null && !entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) &&
-                ((!String.IsNullOrWhiteSpace(entry.Id) && entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase)) ||
-                 !String.IsNullOrWhiteSpace(entry.PackageId) || !String.IsNullOrWhiteSpace(entry.Website)) &&
-                (String.IsNullOrWhiteSpace(entry.Id) || !softwareCatalogResolvedUrls.ContainsKey(entry.Id))).ToList();
-            if (pending.Count == 0) return;
-            int nextIndex = -1;
-            object indexLock = new object();
-            int workerCount = Math.Min(8, pending.Count);
-            for (int worker = 0; worker < workerCount; worker++)
+            List<KeyValuePair<string, SoftwareCatalogEntry>> pending = new List<KeyValuePair<string, SoftwareCatalogEntry>>();
+            if (rows != null)
             {
-                ThreadPool.QueueUserWorkItem(delegate
+                HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (SoftwareCatalogEntry entry in rows)
                 {
-                    while (true)
+                    if (entry == null || entry.SearchOnly || !String.IsNullOrWhiteSpace(entry.DownloadUrl)) continue;
+                    if (!((!String.IsNullOrWhiteSpace(entry.Id) && String.Equals(entry.Source, "lenovo", StringComparison.OrdinalIgnoreCase)) ||
+                          !String.IsNullOrWhiteSpace(entry.PackageId) || !String.IsNullOrWhiteSpace(entry.Website))) continue;
+                    string key = SoftwareCatalogResolveCacheKey(entry);
+                    if (String.IsNullOrWhiteSpace(key) || !seen.Add(key)) continue;
+                    string cachedUrl;
+                    if (TryGetSoftwareCatalogResolvedUrl(entry, out cachedUrl))
                     {
-                        SoftwareCatalogEntry entry;
-                        lock (indexLock)
-                        {
-                            nextIndex++;
-                            if (nextIndex >= pending.Count) return;
-                            entry = pending[nextIndex];
-                        }
-                        try
-                        {
-                            string url = "";
-                            if (entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase) && !String.IsNullOrWhiteSpace(entry.Id))
-                            {
-                                string json = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "id", entry.Id } });
-                                Dictionary<string, object> result = AsDict(new JavaScriptSerializer().DeserializeObject(PostJson(SoftwareCatalogApiUrl("resolve"), json)));
-                                url = GetText(result, "downloadUrl", "");
-                            }
-                            else if (!String.IsNullOrWhiteSpace(entry.PackageId)) url = ResolveWingetInstallerUrl(entry.PackageId);
-                            if (String.IsNullOrWhiteSpace(url) && !String.IsNullOrWhiteSpace(entry.Website)) url = ResolveInstallerUrlFromOfficialPage(entry.Website);
-                            Uri parsed;
-                            if (Uri.TryCreate(url, UriKind.Absolute, out parsed) && parsed.Scheme == Uri.UriSchemeHttps)
-                            {
-                                BeginInvokeIfReady(delegate
-                                {
-                                    entry.DownloadUrl = url;
-                                    if (!String.IsNullOrWhiteSpace(entry.Id)) softwareCatalogResolvedUrls[entry.Id] = url;
-                                });
-                            }
-                        }
-                        catch { }
+                        entry.DownloadUrl = cachedUrl;
+                        continue;
                     }
-                });
+                    pending.Add(new KeyValuePair<string, SoftwareCatalogEntry>(key, entry));
+                }
+            }
+
+            int workersToStart = 0;
+            lock (softwareCatalogPrefetchLock)
+            {
+                // Replace queued work on every search/refresh so obsolete results
+                // do not keep the resolver busy behind the latest visible cards.
+                softwareCatalogPrefetchQueue.Clear();
+                foreach (KeyValuePair<string, SoftwareCatalogEntry> item in pending)
+                {
+                    if (!softwareCatalogPrefetchInFlight.Contains(item.Key)) softwareCatalogPrefetchQueue.Enqueue(item);
+                }
+                int desiredWorkers = Math.Min(SoftwareCatalogMaxResolvePrefetchWorkers, softwareCatalogPrefetchQueue.Count);
+                workersToStart = Math.Max(0, desiredWorkers - softwareCatalogPrefetchWorkersRunning);
+                softwareCatalogPrefetchWorkersRunning += workersToStart;
+            }
+
+            for (int i = 0; i < workersToStart; i++)
+            {
+                try
+                {
+                    if (!ThreadPool.QueueUserWorkItem(delegate { SoftwareCatalogResolvePrefetchWorker(); }))
+                    {
+                        lock (softwareCatalogPrefetchLock) softwareCatalogPrefetchWorkersRunning = Math.Max(0, softwareCatalogPrefetchWorkersRunning - 1);
+                    }
+                }
+                catch
+                {
+                    lock (softwareCatalogPrefetchLock) softwareCatalogPrefetchWorkersRunning = Math.Max(0, softwareCatalogPrefetchWorkersRunning - 1);
+                }
+            }
+        }
+
+        private void SoftwareCatalogResolvePrefetchWorker()
+        {
+            while (true)
+            {
+                KeyValuePair<string, SoftwareCatalogEntry> item;
+                lock (softwareCatalogPrefetchLock)
+                {
+                    if (softwareCatalogPrefetchQueue.Count == 0 || IsDisposed)
+                    {
+                        softwareCatalogPrefetchWorkersRunning = Math.Max(0, softwareCatalogPrefetchWorkersRunning - 1);
+                        return;
+                    }
+                    item = softwareCatalogPrefetchQueue.Dequeue();
+                    if (!softwareCatalogPrefetchInFlight.Add(item.Key)) continue;
+                }
+
+                try
+                {
+                    string url;
+                    if (!TryGetSoftwareCatalogResolvedUrl(item.Value, out url))
+                    {
+                        url = ResolveSoftwareCatalogInstallerUrl(item.Value);
+                        if (!String.IsNullOrWhiteSpace(url)) CacheSoftwareCatalogResolvedUrl(item.Value, url);
+                    }
+                    if (!String.IsNullOrWhiteSpace(url))
+                    {
+                        string resolvedUrl = url;
+                        BeginInvokeIfReady(delegate { item.Value.DownloadUrl = resolvedUrl; });
+                    }
+                }
+                catch { }
+                finally
+                {
+                    lock (softwareCatalogPrefetchLock) softwareCatalogPrefetchInFlight.Remove(item.Key);
+                }
             }
         }
 
@@ -8844,11 +8943,11 @@ namespace ToolboxClient
             ShowVst76InlineDownloadPreparing(entry.Name, BuildSoftwareCatalogDownloadKey(entry));
             if (!String.IsNullOrWhiteSpace(entry.DownloadUrl))
             {
-                status.Text = "正在加入下载：" + entry.Name;
-                DownloadFile(entry.DownloadUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
+                CacheSoftwareCatalogResolvedUrl(entry, entry.DownloadUrl);
+                DownloadSoftwareCatalogEntryUrl(entry, entry.DownloadUrl);
                 return;
             }
-            if (!String.IsNullOrWhiteSpace(entry.Id) && entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase))
+            if (!String.IsNullOrWhiteSpace(entry.Id) && String.Equals(entry.Source, "lenovo", StringComparison.OrdinalIgnoreCase))
             {
                 ResolveRemoteSoftwareCatalogEntry(entry);
                 return;
@@ -8869,77 +8968,87 @@ namespace ToolboxClient
 
         private void ResolveRemoteSoftwareCatalogEntry(SoftwareCatalogEntry entry)
         {
-            string cachedUrl;
-            if (softwareCatalogResolvedUrls.TryGetValue(entry.Id ?? "", out cachedUrl) && !String.IsNullOrWhiteSpace(cachedUrl))
-            {
-                status.Text = "正在加入下载：" + entry.Name;
-                // Legacy equivalent: DownloadFile(url, entry.Name);
-                DownloadFile(cachedUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
-                return;
-            }
-            status.Text = "正在解析下载地址：" + entry.Name;
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                string url = "";
-                try
-                {
-                    string json = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "id", entry.Id } });
-                    Dictionary<string, object> result = AsDict(new JavaScriptSerializer().DeserializeObject(PostJson(SoftwareCatalogApiUrl("resolve"), json)));
-                    url = GetText(result, "downloadUrl", "");
-                    Uri parsed;
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out parsed) || parsed.Scheme != Uri.UriSchemeHttps) url = "";
-                }
-                catch { }
-                if (IsDisposed || !IsHandleCreated) return;
-                BeginInvoke(new Action(delegate
-                {
-                    if (String.IsNullOrWhiteSpace(url))
-                    {
-                        ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
-                        status.Text = "下载地址暂不可用：" + entry.Name;
-                        return;
-                    }
-                    softwareCatalogResolvedUrls[entry.Id ?? ""] = url;
-                    status.Text = "正在加入下载：" + entry.Name;
-                    DownloadFile(url, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
-                }));
-            });
+            ResolveAndDownloadSoftwareCatalogEntry(entry);
         }
 
         private void ResolveAndDownloadSoftwareCatalogEntry(SoftwareCatalogEntry entry)
         {
             if (entry == null) return;
+            string cachedUrl;
+            if (TryGetSoftwareCatalogResolvedUrl(entry, out cachedUrl))
+            {
+                entry.DownloadUrl = cachedUrl;
+                DownloadSoftwareCatalogEntryUrl(entry, cachedUrl);
+                return;
+            }
+
+            string cacheKey = SoftwareCatalogResolveCacheKey(entry);
+            if (String.IsNullOrWhiteSpace(cacheKey))
+            {
+                status.Text = "未能确定软件安装包来源：" + entry.Name;
+                return;
+            }
+            lock (softwareCatalogResolveLock)
+            {
+                if (softwareCatalogResolvedUrls.TryGetValue(cacheKey, out cachedUrl) && !String.IsNullOrWhiteSpace(cachedUrl))
+                {
+                    entry.DownloadUrl = cachedUrl;
+                    DownloadSoftwareCatalogEntryUrl(entry, cachedUrl);
+                    return;
+                }
+                if (!softwareCatalogInteractiveResolveRequests.Add(cacheKey))
+                {
+                    status.Text = "正在解析安装包地址：" + entry.Name;
+                    return;
+                }
+            }
+
             status.Text = "正在解析安装包地址：" + entry.Name;
-            ThreadPool.QueueUserWorkItem(delegate
+            Thread resolver = new Thread(delegate()
             {
                 string installerUrl = "";
                 string error = "";
                 try
                 {
-                    if (!String.IsNullOrWhiteSpace(entry.PackageId)) installerUrl = ResolveWingetInstallerUrl(entry.PackageId);
-                    if (String.IsNullOrWhiteSpace(installerUrl) && !String.IsNullOrWhiteSpace(entry.Website))
-                    {
-                        installerUrl = ResolveInstallerUrlFromOfficialPage(entry.Website);
-                    }
+                    installerUrl = ResolveSoftwareCatalogInstallerUrl(entry);
                 }
                 catch (Exception ex)
                 {
                     error = ex.Message;
                 }
-                BeginInvoke(new Action(delegate
+                if (!String.IsNullOrWhiteSpace(installerUrl)) CacheSoftwareCatalogResolvedUrl(entry, installerUrl);
+                lock (softwareCatalogResolveLock) softwareCatalogInteractiveResolveRequests.Remove(cacheKey);
+                BeginInvokeIfReady(delegate
                 {
                     if (!String.IsNullOrWhiteSpace(installerUrl))
                     {
-                        status.Text = "正在加入下载：" + entry.Name;
-                        DownloadFile(installerUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
+                        entry.DownloadUrl = installerUrl;
+                        DownloadSoftwareCatalogEntryUrl(entry, installerUrl);
                         return;
                     }
                     status.Text = String.IsNullOrWhiteSpace(error)
                         ? "未解析到安装包地址：" + entry.Name
                         : "解析安装包失败：" + entry.Name;
                     ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
-                }));
+                });
             });
+            resolver.IsBackground = true;
+            resolver.Name = "Software catalog resolver";
+            try { resolver.Start(); }
+            catch
+            {
+                lock (softwareCatalogResolveLock) softwareCatalogInteractiveResolveRequests.Remove(cacheKey);
+                status.Text = "无法启动软件解析任务：" + entry.Name;
+                ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
+            }
+        }
+
+        private void DownloadSoftwareCatalogEntryUrl(SoftwareCatalogEntry entry, string url)
+        {
+            if (entry == null || String.IsNullOrWhiteSpace(url)) return;
+            status.Text = "正在加入下载：" + entry.Name;
+            // Legacy equivalent: DownloadFile(url, entry.Name);
+            DownloadFile(url, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry), "", false, true);
         }
 
         private string ResolveWingetInstallerUrl(string packageId)
@@ -8954,16 +9063,30 @@ namespace ToolboxClient
             psi.RedirectStandardError = true;
             psi.StandardOutputEncoding = Encoding.UTF8;
             psi.StandardErrorEncoding = Encoding.UTF8;
+            StringBuilder output = new StringBuilder();
+            StringBuilder error = new StringBuilder();
+            object outputLock = new object();
             using (Process process = Process.Start(psi))
             {
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                if (!process.WaitForExit(30000))
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) return;
+                    lock (outputLock) output.AppendLine(e.Data);
+                };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) return;
+                    lock (outputLock) error.AppendLine(e.Data);
+                };
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                if (!process.WaitForExit(15000))
                 {
                     try { process.Kill(); } catch { }
                     return "";
                 }
-                return PickInstallerUrlFromWingetOutput(output + Environment.NewLine + error);
+                process.WaitForExit();
+                lock (outputLock) return PickInstallerUrlFromWingetOutput(output.ToString() + Environment.NewLine + error.ToString());
             }
         }
 
@@ -8994,15 +9117,15 @@ namespace ToolboxClient
             if (LooksLikeInstallerDownloadUrl(normalizedWebsite) && !RemoteUrlLooksLikeWebPage(normalizedWebsite)) return normalizedWebsite;
             Uri baseUri;
             if (!Uri.TryCreate(normalizedWebsite, UriKind.Absolute, out baseUri)) return "";
-            string html = DownloadPlainText(normalizedWebsite, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            string html = DownloadPlainText(normalizedWebsite, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", 5000);
             string direct = PickInstallerUrlFromPageText(html, baseUri);
             if (!String.IsNullOrWhiteSpace(direct)) return direct;
 
-            foreach (string scriptUrl in ExtractLinkedScriptUrls(html, baseUri))
+            foreach (string scriptUrl in ExtractLinkedScriptUrls(html, baseUri).Take(3))
             {
                 try
                 {
-                    string script = DownloadPlainText(scriptUrl, "application/javascript,text/javascript,*/*;q=0.8");
+                    string script = DownloadPlainText(scriptUrl, "application/javascript,text/javascript,*/*;q=0.8", 5000);
                     direct = PickInstallerUrlFromPageText(script, new Uri(scriptUrl));
                     if (!String.IsNullOrWhiteSpace(direct)) return direct;
                 }
@@ -11207,18 +11330,34 @@ namespace ToolboxClient
             DownloadFile(url, displayName, backupUrl, backupPageUrl, customDirectory, deleteOnExit, downloadKey, "", false);
         }
 
-        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary)
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary, bool useDedicatedPreparation = false)
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             if (String.IsNullOrWhiteSpace(downloadKey)) downloadKey = BuildDownloadKey("", originalUrl, backupUrl, backupPageUrl, displayName);
             ShowVst76InlineDownloadPreparing(displayName, downloadKey);
-            status.Text = LooksLikeDirectDownloadFile(originalUrl)
-                ? PortalText("正在加入下载队列...", "Adding to download queue...")
-                : PortalText("正在解析下载地址...", "Preparing download...");
+            status.Text = useDedicatedPreparation
+                ? "正在准备安装包下载：" + (displayName ?? "")
+                : (LooksLikeDirectDownloadFile(originalUrl)
+                    ? PortalText("正在加入下载队列...", "Adding to download queue...")
+                    : PortalText("正在解析下载地址...", "Preparing download..."));
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); });
+            if (useDedicatedPreparation)
+            {
+                Thread preparationWorker = new Thread(delegate()
+                {
+                    PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary);
+                });
+                preparationWorker.IsBackground = true;
+                preparationWorker.Name = "Software download preparation";
+                try { preparationWorker.Start(); }
+                catch { ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); }); }
+            }
+            else
+            {
+                ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); });
+            }
         }
 
         private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey, string packageGroupId, bool packagePrimary)
@@ -11612,9 +11751,14 @@ namespace ToolboxClient
 
         private string DownloadPlainText(string url, string accept)
         {
+            return DownloadPlainText(url, accept, 8000);
+        }
+
+        private string DownloadPlainText(string url, string accept, int timeoutMs)
+        {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Timeout = 8000;
-            request.ReadWriteTimeout = 8000;
+            request.Timeout = Math.Max(1000, timeoutMs);
+            request.ReadWriteTimeout = Math.Max(1000, timeoutMs);
             request.UserAgent = "Mozilla/5.0 ToolboxClient";
             request.Accept = String.IsNullOrWhiteSpace(accept) ? "*/*" : accept;
             request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
@@ -12061,7 +12205,10 @@ namespace ToolboxClient
             if (Interlocked.CompareExchange(ref task.WorkerRunning, 1, 0) != 0) return false;
             try
             {
-                ThreadPool.QueueUserWorkItem(delegate { DownloadFileWorker(task); });
+                Thread worker = new Thread(delegate() { DownloadFileWorker(task); });
+                worker.IsBackground = true;
+                worker.Name = "Toolbox download worker";
+                worker.Start();
                 return true;
             }
             catch
