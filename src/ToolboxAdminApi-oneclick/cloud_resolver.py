@@ -1290,6 +1290,42 @@ def _iso(value):
     return value.isoformat(timespec="seconds")
 
 
+def _order_expiry(app, order, now=None):
+    """Return the expiry of a pending payment order.
+
+    Older orders do not have pendingExpiresAt, so derive it from createdAt and
+    the system setting. This keeps old data recoverable without migration.
+    """
+    now = now or _now()
+    value = order.get("pendingExpiresAt")
+    if value:
+        try:
+            parsed = _parse_time(value)
+            return parsed
+        except ValueError:
+            pass
+    try:
+        created = _parse_time(order.get("createdAt"))
+    except ValueError:
+        created = now
+    settings = app.read_system_settings()
+    minutes = settings.get("orderCooldownMinutes", 30)
+    try:
+        minutes = max(1, min(10080, int(minutes)))
+    except (TypeError, ValueError):
+        minutes = 30
+    return created + timedelta(minutes=minutes)
+
+
+def _order_public_with_expiry(app, order):
+    if order.get("status") == "pending":
+        expiry = _order_expiry(app, order)
+        order["pendingExpiresAt"] = _iso(expiry)
+        order["remainingSeconds"] = max(0, int((expiry - _now()).total_seconds()))
+        order["isExpired"] = expiry <= _now()
+    return app.public_order(order)
+
+
 def _load(app):
     store = app.read_json(app.CLOUD_RESOLVER_PATH, defaults())
     base = defaults()
@@ -1599,6 +1635,24 @@ def route(handler, app, path, method, auth):
             return handler.send_json({"channels": app.public_payment_channels(app.read_system_settings())})
         if path == "/api/cloud-resolver/renewal-history" and method == "GET":
             return handler.send_json({"items": [row for row in store["renewalHistory"] if row.get("userId") == user_id][:100]})
+        if path == "/api/cloud-resolver/orders" and method == "GET":
+            orders = []
+            changed = False
+            order_data = app.read_orders()
+            for row in order_data.get("orders", []):
+                if row.get("userId") != user_id or row.get("action") != "cloud_resolver_plan_purchase":
+                    continue
+                if row.get("status") == "pending":
+                    expiry = _order_expiry(app, row)
+                    if expiry <= _now():
+                        row["status"] = "expired"
+                        row["expiredAt"] = _iso(_now())
+                        row["updatedAt"] = row["expiredAt"]
+                        changed = True
+                orders.append(_order_public_with_expiry(app, row))
+            if changed:
+                app.write_orders(order_data)
+            return handler.send_json({"orders": orders[:100]})
         if path == "/api/cloud-resolver/orders" and method == "POST":
             body = handler.read_body()
             plan = next((x for x in store["plans"] if x.get("id") == body.get("planId") and x.get("enabled", True)), None)
@@ -1606,11 +1660,6 @@ def route(handler, app, path, method, auth):
                 return handler.send_json({"error": "套餐不存在或已停用。"}, 400)
             amount = float(plan.get("memberPrice") or 0)
             action = "cloud_resolver_plan_purchase"
-            existing = next((x for x in app.read_orders().get("orders", [])
-                             if x.get("userId") == user_id and x.get("action") == action
-                             and x.get("status") == "pending" and (x.get("request") or {}).get("planId") == plan["id"]), None)
-            if existing:
-                return handler.send_json({"order": app.public_order(existing), "duplicate": True})
             settings = app.read_system_settings()
             payment_channel = str(body.get("paymentChannel") or "").strip()
             payment_type = str(body.get("paymentType") or "").strip().lower()
@@ -1627,14 +1676,42 @@ def route(handler, app, path, method, auth):
                         payment_type = selected.get("paymentType") or "alipay"
                 if not selected:
                     return handler.send_json({"error": "支付通道未配置或未启用。"}, 400)
+            orders = app.read_orders()
+            existing = next((x for x in orders.get("orders", [])
+                             if x.get("userId") == user_id and x.get("action") == action
+                             and x.get("status") == "pending" and (x.get("request") or {}).get("planId") == plan["id"]), None)
+            if existing:
+                expiry = _order_expiry(app, existing)
+                if expiry > _now():
+                    # Reuse the still-valid order. Rebuild its payment URL when
+                    # an older record did not persist one or the user selected
+                    # another configured payment channel.
+                    selected_channel = payment_channel or existing.get("paymentProvider") or existing.get("paymentChannel")
+                    selected_type = payment_type or existing.get("paymentType") or "alipay"
+                    if amount > 0 and selected_channel:
+                        existing["paymentProvider"] = selected_channel
+                        existing["paymentChannel"] = selected_channel
+                        existing["paymentType"] = selected_type
+                        existing["paymentUrl"] = app.build_payment_url(existing, settings, handler.base_url() if hasattr(handler, "base_url") else "")
+                    existing["pendingExpiresAt"] = _iso(expiry)
+                    existing["updatedAt"] = _iso(_now())
+                    app.write_orders(orders)
+                    return handler.send_json({"order": _order_public_with_expiry(app, existing),
+                                              "paymentUrl": existing.get("paymentUrl", ""), "reused": True,
+                                              "message": "未支付订单仍在有效期内，已恢复原订单支付。"})
+                existing["status"] = "expired"
+                existing["expiredAt"] = _iso(_now())
+                existing["updatedAt"] = existing["expiredAt"]
+                app.write_orders(orders)
             order, _ = app.create_admin_order(user, action, amount, "CNY", "网盘套餐：" + plan["name"],
                                               request={"planId": plan["id"], "featureCode": FEATURE},
                                               payment_method="interface" if amount > 0 else "manual",
-                                              payment_channel=payment_channel)
+                                              payment_channel=payment_channel, reuse_existing=False)
             order["cloudPlanId"] = plan["id"]
             order["paymentType"] = payment_type
             order["paymentProvider"] = payment_channel
             order["updatedAt"] = _iso(_now())
+            order["pendingExpiresAt"] = _iso(_order_expiry(app, order))
             if amount > 0:
                 base_url = handler.base_url() if hasattr(handler, "base_url") else ""
                 order["paymentUrl"] = app.build_payment_url(order, settings, base_url)
@@ -1646,6 +1723,7 @@ def route(handler, app, path, method, auth):
                                           "paymentType": order.get("paymentType", ""),
                                           "paymentProvider": order.get("paymentProvider", ""),
                                           "paymentUrl": order.get("paymentUrl", ""),
+                                          "pendingExpiresAt": order.get("pendingExpiresAt", ""),
                                           "updatedAt": order["updatedAt"]})
             if amount <= 0:
                 # Free/test plans use the same fulfillment path as paid plans;
@@ -1656,7 +1734,7 @@ def route(handler, app, path, method, auth):
                         current_order.update({"status": order.get("status"), "fulfilledAt": order.get("fulfilledAt"),
                                               "paidAt": order.get("paidAt"), "fulfilledBy": order.get("fulfilledBy")})
             app.write_orders(orders)
-            return handler.send_json({"order": app.public_order(order), "paymentUrl": order.get("paymentUrl", ""),
+            return handler.send_json({"order": _order_public_with_expiry(app, order), "paymentUrl": order.get("paymentUrl", ""),
                                       "message": "套餐已开通。" if amount <= 0 else "订单已创建，正在跳转支付。"}, 201)
         if path == "/api/cloud-resolver/activate" and method == "POST":
             body = handler.read_body()
@@ -2333,6 +2411,13 @@ def fulfill_order(app, order, external_trade_no=""):
         return False
     if order.get("fulfilledAt"):
         return True
+    if order.get("status") == "expired":
+        raise ValueError("订单已过期，请重新创建支付订单。")
+    if order.get("status") == "pending" and _order_expiry(app, order) <= _now():
+        order["status"] = "expired"
+        order["expiredAt"] = _iso(_now())
+        order["updatedAt"] = order["expiredAt"]
+        raise ValueError("订单已过期，请重新创建支付订单。")
     store = _load(app)
     user = app.find_user_by_id(order.get("userId"))
     plan_id = (order.get("request") or {}).get("planId") or order.get("cloudPlanId")

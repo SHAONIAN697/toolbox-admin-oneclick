@@ -911,6 +911,7 @@ async function loadCloudResolver() {
   try { feature.entitlement = await api('/api/cloud-resolver/entitlement'); } catch (error) { feature.error = cloudErrorMessage(error); }
   try { feature.plans = (await api('/api/cloud-resolver/plans')).plans || []; } catch (error) { feature.plans = []; feature.error = feature.error || cloudErrorMessage(error); }
   try { feature.paymentChannels = (await api('/api/cloud-resolver/payment-channels')).channels || []; } catch { feature.paymentChannels = []; }
+  try { feature.orders = (await api('/api/cloud-resolver/orders')).orders || []; } catch { feature.orders = []; }
   if (feature.entitlement?.allowed) {
     try {
       const resources = await api('/api/cloud-resolver/resources');
@@ -932,6 +933,26 @@ async function loadCloudResolver() {
     try { feature.agentCodes = (await api('/api/agent/cloud-resolver/code-inventory')).codes || []; } catch { feature.agentCodes = []; }
     try { feature.agentSales = (await api('/api/agent/cloud-resolver/sales')).sales || []; } catch { feature.agentSales = []; }
   }
+}
+
+function cloudOrderStatus(status) {
+  return ({pending: '待支付', paid: '已支付', done: '已完成', cancelled: '已取消', expired: '已过期'})[status] || '未知状态';
+}
+function cloudRemaining(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  if (!value) return '已失效';
+  const days = Math.floor(value / 86400); const hours = Math.floor((value % 86400) / 3600);
+  const minutes = Math.floor((value % 3600) / 60); const secs = value % 60;
+  return `${days ? days + '天 ' : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+function renderCloudOrders() {
+  const rows = $('cloudResolverOrderRows'); if (!rows) return;
+  const orders = state.cloudResolver.orders || [];
+  rows.innerHTML = orders.length ? orders.map((order) => {
+    const planName = order.request?.planId ? ((state.cloudResolver.plans || []).find((p) => p.id === order.request.planId)?.name || order.request.planId) : order.detail || '网盘套餐';
+    const canPay = order.status === 'pending' && !order.isExpired && Number(order.remainingSeconds || 0) > 0 && order.paymentUrl;
+    return `<tr><td>${escapeHtml(planName)}</td><td>¥${Number(order.amount || 0).toFixed(2)}</td><td>${escapeHtml(cloudOrderStatus(order.status))}</td><td>${order.status === 'pending' ? cloudRemaining(order.remainingSeconds) : '-'}</td><td>${escapeHtml(cloudDateTime(order.createdAt))}</td><td>${canPay ? `<button type="button" data-cloud-continue-order="${escapeAttr(order.id)}">继续支付</button>` : order.status === 'expired' ? '请重新购买' : '-'}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty-cell">暂无订单</td></tr>';
 }
 
 async function loadUserCloudEntitlements() {
@@ -1004,6 +1025,7 @@ function renderCloudResolver() {
   const status = $('cloudResolverStatus');
   if (!status) return;
   const allowed = !!(feature.entitlement && feature.entitlement.allowed);
+  renderCloudOrders();
   status.textContent = feature.error ? feature.error : (allowed ? '已启用' : '需要授权');
   status.className = 'status-chip ' + (allowed ? 'is-ok' : 'is-warning');
   $('cloudResolverEntitlement').innerHTML = entitlement ? '<span>解析额度 <b>' + (entitlement.parseQuota < 0 ? '不限' : (entitlement.parseUsed || 0) + ' / ' + entitlement.parseQuota) + '</b></span><span>每日额度 <b>' + (entitlement.dailyParseLimit < 0 ? '不限' : (entitlement.dailyParseUsed || 0) + ' / ' + entitlement.dailyParseLimit) + '</b></span><span>流量额度 <b>' + (entitlement.trafficQuota < 0 ? '不限' : (entitlement.trafficUsed || 0) + ' / ' + entitlement.trafficQuota) + '</b></span><span>有效期 <b>' + escapeHtml(entitlement.expiresAt || entitlement.expiredAt ? cloudDateTime(entitlement.expiresAt || entitlement.expiredAt) : '长期') + '</b></span>' : '<span>当前账号没有网盘解析授权，可购买套餐或兑换激活码。</span>';
@@ -1100,6 +1122,12 @@ async function cloudTaskBatch(action, ids) {
   showToast(`操作完成：成功 ${Number(result.succeeded || 0)} 项，失败 ${Number(result.failed || 0)} 项。`, result.failed ? 'error' : 'success');
 }
 async function loadAndRenderCloudResolver() { await loadCloudResolver(); renderCloudResolver(); renderCloudTaskTables(state.cloudResolver || {}); }
+setInterval(() => {
+  const orders = state.cloudResolver?.orders || [];
+  if (!orders.length) return;
+  orders.forEach((order) => { if (order.status === 'pending' && Number(order.remainingSeconds || 0) > 0) order.remainingSeconds = Number(order.remainingSeconds) - 1; });
+  renderCloudOrders();
+}, 1000);
 async function buyCloudPlan(planId, renew = false) {
   const plan = (state.cloudResolver.plans || []).find((item) => item.id === planId);
   if (!plan) throw new Error('套餐不存在。');
@@ -1111,6 +1139,13 @@ async function buyCloudPlan(planId, renew = false) {
   await loadAndRenderCloudResolver();
   showToast(result.message || (renew ? '续费已完成。' : '套餐已开通。'), 'success');
 }
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-cloud-continue-order]');
+  if (!button) return;
+  const order = (state.cloudResolver.orders || []).find((item) => item.id === button.dataset.cloudContinueOrder);
+  if (order?.paymentUrl) window.location.href = order.paymentUrl;
+  else showToast('该订单暂时没有可用支付地址，请重新购买。', 'error');
+});
 async function redeemCloudCode(inputId) {
   const input = $(inputId);
   const code = input?.value.trim();
@@ -3460,17 +3495,18 @@ function renderOrders() {
   if (!tbody) return;
   const orders = state.orders || [];
   if (!orders.length) {
-    tbody.innerHTML = '<tr><td colspan="6">暂无订单</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7">暂无订单</td></tr>';
     return;
   }
   const paymentLabels = { balance: '余额支付', manual: '人工审核', interface: '接口支付' };
-  const orderStatusLabels = { pending: '待处理', paid: '已支付', done: '已处理', cancelled: '已取消' };
+  const orderStatusLabels = { pending: '待支付', paid: '已支付', done: '已处理', cancelled: '已取消', expired: '已过期' };
   tbody.innerHTML = orders.map((order) => `
     <tr data-order-id="${escapeAttr(order.id || '')}" data-order-agent-id="${escapeAttr(order.userId || order.agentId || '')}">
       <td>${escapeHtml(order.id || '')}<br><small>${escapeHtml(formatDateTime(order.createdAt))}</small></td>
       <td>${escapeHtml(order.displayName || order.agentDisplayName || userNameFromId(order.userId || order.agentId, order.username || order.agentUsername || ''))}</td>
       <td>${Number(order.amount || 0).toFixed(2)} ${escapeHtml(order.currency || 'CNY')}</td>
       <td>${escapeHtml(orderStatusLabels[order.status] || order.status || '待处理')}</td>
+      <td>${order.status === 'pending' && order.remainingSeconds ? cloudRemaining(order.remainingSeconds) : (order.status === 'pending' ? '已失效' : '-')}</td>
       <td>
         ${escapeHtml(order.detail || order.action || '')}
         ${order.paymentMethod ? `<br><small>${escapeHtml(paymentLabels[order.paymentMethod] || order.paymentMethod)}${order.paymentChannel ? ` / ${escapeHtml(order.paymentChannel)}` : ''}</small>` : ''}
@@ -7305,6 +7341,7 @@ if ($('cloudFailedBatchDeleteBtn')) $('cloudFailedBatchDeleteBtn').onclick = () 
 if ($('cloudFailedRetryAllBtn')) $('cloudFailedRetryAllBtn').onclick = () => cloudTaskBatch('retry', (state.cloudResolver.tasks || []).filter((task) => task.status === 'failed').map((task) => task.id)).catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudFailedClearBtn')) $('cloudFailedClearBtn').onclick = () => { const ids = (state.cloudResolver.tasks || []).filter((task) => task.status === 'failed').map((task) => task.id); if (ids.length && window.confirm('确认清空全部失败任务吗？清空后无法恢复。')) cloudTaskBatch('delete', ids).catch((error) => setStatus(cloudErrorMessage(error), true)); };
 if ($('cloudResolverPlansRefreshBtn')) $('cloudResolverPlansRefreshBtn').onclick = () => loadAndRenderCloudResolver().catch((error) => setStatus(cloudErrorMessage(error), true));
+if ($('cloudResolverOrdersRefreshBtn')) $('cloudResolverOrdersRefreshBtn').onclick = () => loadAndRenderCloudResolver().catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverRedeemBtn')) $('cloudResolverRedeemBtn').onclick = () => redeemCloudCode('cloudResolverRedeemCode').catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverAuthorizedRedeemBtn')) $('cloudResolverAuthorizedRedeemBtn').onclick = () => redeemCloudCode('cloudResolverAuthorizedRedeemCode').catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverRenewToggleBtn')) $('cloudResolverRenewToggleBtn').onclick = () => { $('cloudResolverRenewBody').hidden = !$('cloudResolverRenewBody').hidden; };

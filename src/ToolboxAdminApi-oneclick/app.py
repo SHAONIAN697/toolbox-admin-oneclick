@@ -20,7 +20,7 @@ import time
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -3422,6 +3422,20 @@ def public_order(order):
     user_id = order.get("userId") or order.get("agentId", "")
     username = order.get("username") or order.get("agentUsername", "")
     display_name = order.get("displayName") or order.get("agentDisplayName") or find_user_display_name(user_id, username)
+    pending_expires_at = order.get("pendingExpiresAt", "")
+    remaining_seconds = int(order.get("remainingSeconds", 0) or 0)
+    is_expired = bool(order.get("isExpired", False) or order.get("status") == "expired")
+    if order.get("status") == "pending" and not pending_expires_at:
+        try:
+            created_at = datetime.fromisoformat(str(order.get("createdAt") or "").replace("Z", "+00:00"))
+            if not created_at.tzinfo:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            cooldown = int(read_system_settings().get("orderCooldownMinutes", 30) or 30)
+            pending_expires_at = (created_at + timedelta(minutes=max(1, min(10080, cooldown)))).isoformat(timespec="seconds")
+            remaining_seconds = max(0, int((datetime.fromisoformat(pending_expires_at) - datetime.now(timezone.utc)).total_seconds()))
+            is_expired = remaining_seconds <= 0
+        except (TypeError, ValueError, OverflowError):
+            pass
     return {
         "id": order.get("id"),
         "status": order.get("status", "pending"),
@@ -3447,6 +3461,11 @@ def public_order(order):
         "fulfilledInviteCodes": order.get("fulfilledInviteCodes") or [],
         "createdAt": order.get("createdAt", ""),
         "updatedAt": order.get("updatedAt", ""),
+        "orderType": order.get("orderType") or order.get("action", ""),
+        "pendingExpiresAt": pending_expires_at,
+        "expiredAt": order.get("expiredAt", ""),
+        "remainingSeconds": max(0, remaining_seconds),
+        "isExpired": is_expired,
     }
 
 
@@ -4218,9 +4237,9 @@ def recent_pending_order(user_id, action, cooldown_minutes, data=None):
     return None
 
 
-def create_admin_order(user, action, amount, currency, detail, request=None, payment_method="", payment_channel=""):
+def create_admin_order(user, action, amount, currency, detail, request=None, payment_method="", payment_channel="", reuse_existing=True):
     data = read_orders()
-    existing = recent_pending_order(user.get("id"), action, 0, data)
+    existing = recent_pending_order(user.get("id"), action, 0, data) if reuse_existing else None
     if existing:
         existing["amount"] = round(float(amount or 0), 2)
         existing["currency"] = currency or "CNY"
