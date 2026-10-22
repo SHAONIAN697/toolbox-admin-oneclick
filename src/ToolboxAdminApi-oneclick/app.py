@@ -1316,6 +1316,7 @@ def default_config():
             "theme_count": 19,
             "allow_client_theme": True,
             "default_view_mode": "grid",
+            "button_linkage_enabled": False,
             "button_content_layout": "icon_left",
             "button_content_layout_rules": {
                 "icon_left": {"enabled": False, "pages": []},
@@ -1664,6 +1665,10 @@ def ensure_config_defaults(config):
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
+        changed = True
+    linkage_enabled = app.get("button_linkage_enabled") is True
+    if app.get("button_linkage_enabled") != linkage_enabled:
+        app["button_linkage_enabled"] = linkage_enabled
         changed = True
     button_content_layout = normalize_button_content_layout(app.get("button_content_layout"))
     if app.get("button_content_layout") != button_content_layout:

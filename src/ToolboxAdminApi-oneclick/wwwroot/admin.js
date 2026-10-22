@@ -3967,8 +3967,91 @@ function renderManageControls() {
     scope.value = previous;
   }
 
-  scope.onchange = renderManagedSections;
+  scope.onchange = () => { renderManagedSections(); syncLinkedButtonSelectors('manageScope'); };
   renderManagedSections();
+  bindButtonLinkageToggle();
+}
+
+let syncingButtonSelectors = false;
+
+function buttonLinkageEnabled() {
+  return $('buttonLinkageEnabled')?.checked === true;
+}
+
+function bindButtonLinkageToggle() {
+  const toggle = $('buttonLinkageEnabled');
+  if (!toggle) return;
+  toggle.checked = state.config?.app?.button_linkage_enabled === true;
+  if (toggle.dataset.bound === '1') return;
+  toggle.dataset.bound = '1';
+  toggle.onchange = async () => {
+    const previous = !toggle.checked;
+    state.config.app = state.config.app || {};
+    state.config.app.button_linkage_enabled = toggle.checked;
+    try {
+      await saveWholeConfig(toggle.checked ? '联动按钮选择已启用。' : '联动按钮选择已关闭。');
+      if (toggle.checked) syncLinkedButtonSelectors('manageScope');
+    } catch (error) {
+      toggle.checked = previous;
+      state.config.app.button_linkage_enabled = previous;
+      setStatus(error.message || '联动按钮设置保存失败。', true);
+    }
+  };
+}
+
+function syncLinkedButtonSelectors(source) {
+  if (!buttonLinkageEnabled() || syncingButtonSelectors) return;
+  syncingButtonSelectors = true;
+  try {
+    if (source === 'buttonAreaFilter') {
+      const match = getPositions().find((item) => item.name === $('buttonAreaFilter')?.value);
+      if (match && $('manageScope') && $('addScope')) {
+        $('manageScope').value = match.value;
+        $('addScope').value = match.value;
+        renderManagedSections();
+        renderSectionSelector($('manageSection')?.value || '');
+      }
+    } else if (source === 'buttonSectionFilter') {
+      const position = parsePositionValue($('manageScope')?.value || '');
+      const wanted = $('buttonSectionFilter')?.value || '';
+      const sectionIndex = position ? ensureSections(position.container).findIndex((item) => (item.title || '') === wanted) : -1;
+      if (sectionIndex >= 0) {
+        $('manageSection').value = String(sectionIndex);
+        $('addSection').value = String(sectionIndex);
+        renderManagedSectionName();
+      }
+    } else if (source === 'manageScope' && $('addScope') && $('manageScope')) {
+      $('addScope').value = $('manageScope').value;
+      renderSectionSelector($('manageSection')?.value || '');
+    } else if (source === 'addScope' && $('addScope') && $('manageScope')) {
+      $('manageScope').value = $('addScope').value;
+      renderManagedSections();
+      $('manageSection').value = $('addSection').value;
+      renderManagedSectionName();
+    }
+    if (source === 'manageSection' && $('addSection') && $('manageSection')) {
+      $('addSection').value = $('manageSection').value;
+    } else if (source === 'addSection' && $('addSection') && $('manageSection')) {
+      $('manageSection').value = $('addSection').value;
+      renderManagedSectionName();
+    }
+    const position = parsePositionValue($('manageScope')?.value || $('addScope')?.value || '');
+    const areaFilter = $('buttonAreaFilter');
+    if (position?.name && areaFilter && [...areaFilter.options].some((option) => option.value === position.name)) {
+      areaFilter.value = position.name;
+      renderButtonFilterOptions();
+      areaFilter.value = position.name;
+    }
+    if ($('buttonSectionFilter') && $('manageSection') && position) {
+      const section = ensureSections(position.container)[$('manageSection').value];
+      const sectionFilter = $('buttonSectionFilter');
+      const sectionName = section?.title || '';
+      if (sectionName && [...sectionFilter.options].some((option) => option.value === sectionName)) sectionFilter.value = sectionName;
+    }
+    renderButtons();
+  } finally {
+    syncingButtonSelectors = false;
+  }
 }
 
 function renderScopeIconPicker(iconUrl, enabled) {
@@ -4059,7 +4142,7 @@ function renderManagedSections() {
     sectionSelect.value = previous;
   }
 
-  sectionSelect.onchange = renderManagedSectionName;
+  sectionSelect.onchange = () => { renderManagedSectionName(); syncLinkedButtonSelectors('manageSection'); };
   renderManagedSectionName();
 }
 
@@ -4089,8 +4172,10 @@ function renderSelectors() {
   if (positions.some((item) => item.value === previousScope)) {
     scope.value = previousScope;
   }
-  scope.onchange = () => renderSectionSelector();
+  scope.onchange = () => { renderSectionSelector(); syncLinkedButtonSelectors('addScope'); };
   renderSectionSelector(previousSection);
+  bindButtonLinkageToggle();
+  if (buttonLinkageEnabled()) syncLinkedButtonSelectors('manageScope');
 }
 
 function renderSectionSelector(preferredSection = '') {
@@ -4116,6 +4201,7 @@ function renderSectionSelector(preferredSection = '') {
   if ([...section.options].some((option) => option.value === preferredSection)) {
     section.value = preferredSection;
   }
+  section.onchange = () => syncLinkedButtonSelectors('addSection');
 }
 
 function currentAddTarget() {
@@ -4364,9 +4450,9 @@ function ensureButtonFilters() {
   bar.appendChild(action);
   search.parentElement.insertBefore(bar, search);
   bar.appendChild(search);
-  [area, section, action].forEach((select) => {
-    select.onchange = renderButtons;
-  });
+  area.onchange = () => { renderButtons(); syncLinkedButtonSelectors('buttonAreaFilter'); };
+  section.onchange = () => { renderButtons(); syncLinkedButtonSelectors('buttonSectionFilter'); };
+  action.onchange = renderButtons;
 }
 
 function renderButtonFilterOptions() {
