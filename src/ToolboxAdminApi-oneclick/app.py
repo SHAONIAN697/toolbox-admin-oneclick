@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import smtplib
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlencode
 ROOT = Path(__file__).resolve().parent
 WWW = ROOT / "wwwroot"
 DATA = ROOT / "data"
+CLOUD_RESOLVER_PATH = DATA / "cloud-resolver.json"
 USERS_PATH = DATA / "users.json"
 MAIL_PATH = DATA / "mail.json"
 SYSTEM_PATH = DATA / "system.json"
@@ -62,6 +64,30 @@ DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
 STUDIO_OVERVIEW_PAGE_ID = "system_overview"
+
+try:
+    import cloud_resolver
+except ImportError:
+    try:
+        import importlib.util as _importlib_util
+        _resolver_spec = _importlib_util.spec_from_file_location("cloud_resolver", ROOT / "cloud_resolver.py")
+        cloud_resolver = _importlib_util.module_from_spec(_resolver_spec)
+        _resolver_spec.loader.exec_module(cloud_resolver)
+    except Exception:
+        cloud_resolver = None
+
+
+class _AppContext:
+    """Attribute view used when this module was loaded without sys.modules registration."""
+    def __getattr__(self, name):
+        return globals()[name]
+
+
+_APP_CONTEXT = _AppContext()
+
+
+def _app_context():
+    return sys.modules.get(__name__) or _APP_CONTEXT
 
 
 def default_studio_overview_page():
@@ -124,6 +150,9 @@ CLIENT_BUILD_LOCK = threading.Lock()
 ADMIN_ANNOUNCEMENT_LOCK = threading.RLock()
 PUBLIC_CONFIG_CACHE_LOCK = threading.RLock()
 PUBLIC_CONFIG_CACHE = {}
+CLOUD_DOWNLOAD_REFRESH_LOCK = threading.RLock()
+CLOUD_DOWNLOAD_REFRESH_CACHE = {}
+CLOUD_DOWNLOAD_REFRESH_TTL = 20
 API_KEY_CACHE_LOCK = threading.RLock()
 API_KEY_CACHE = {"signature": None, "users": {}}
 JSON_WRITE_LOCK = threading.RLock()
@@ -317,6 +346,44 @@ def aes128_cbc_encrypt(plain, key=SOFTWARE_CATALOG_AES_KEY, iv=SOFTWARE_CATALOG_
     return bytes(output)
 
 
+def aes128_cbc_decrypt(cipher, key=SOFTWARE_CATALOG_AES_KEY, iv=SOFTWARE_CATALOG_AES_KEY):
+    if len(key) != 16 or len(iv) != 16: raise ValueError("AES-128 requires 16-byte key and IV")
+    sbox = _aes_sbox(); inverse_sbox = [0] * 256
+    for index, value in enumerate(sbox): inverse_sbox[value] = index
+    words = [list(key[i:i + 4]) for i in range(0, 16, 4)]; rcon = 1
+    for index in range(4, 44):
+        temp = words[index - 1][:]
+        if index % 4 == 0:
+            temp = [sbox[temp[1]], sbox[temp[2]], sbox[temp[3]], sbox[temp[0]]]; temp[0] ^= rcon; rcon = _aes_gf_mul(rcon, 2)
+        words.append([words[index - 4][j] ^ temp[j] for j in range(4)])
+    round_keys = [sum(words[4 * i:4 * i + 4], []) for i in range(11)]
+    if not cipher or len(cipher) % 16: raise ValueError("AES ciphertext length is invalid")
+    previous = bytearray(iv); output = bytearray()
+    for offset in range(0, len(cipher), 16):
+        state = [cipher[offset + i] ^ round_keys[10][i] for i in range(16)]
+        for round_no in range(9, 0, -1):
+            state = [state[0], state[13], state[10], state[7], state[4], state[1], state[14], state[11],
+                     state[8], state[5], state[2], state[15], state[12], state[9], state[6], state[3]]
+            state = [inverse_sbox[x] for x in state]
+            state = [state[i] ^ round_keys[round_no][i] for i in range(16)]
+            mixed = []
+            for col in range(4):
+                a = state[col * 4:col * 4 + 4]
+                mixed.extend([_aes_gf_mul(a[0], 14) ^ _aes_gf_mul(a[1], 11) ^ _aes_gf_mul(a[2], 13) ^ _aes_gf_mul(a[3], 9),
+                              _aes_gf_mul(a[0], 9) ^ _aes_gf_mul(a[1], 14) ^ _aes_gf_mul(a[2], 11) ^ _aes_gf_mul(a[3], 13),
+                              _aes_gf_mul(a[0], 13) ^ _aes_gf_mul(a[1], 9) ^ _aes_gf_mul(a[2], 14) ^ _aes_gf_mul(a[3], 11),
+                              _aes_gf_mul(a[0], 11) ^ _aes_gf_mul(a[1], 13) ^ _aes_gf_mul(a[2], 9) ^ _aes_gf_mul(a[3], 14)])
+            state = mixed
+        state = [state[0], state[13], state[10], state[7], state[4], state[1], state[14], state[11],
+                 state[8], state[5], state[2], state[15], state[12], state[9], state[6], state[3]]
+        state = [inverse_sbox[x] for x in state]
+        state = [state[i] ^ round_keys[0][i] for i in range(16)]
+        output.extend(bytes(state[i] ^ previous[i] for i in range(16))); previous = bytearray(cipher[offset:offset + 16])
+    pad = output[-1] if output else 0
+    if not 1 <= pad <= 16 or output[-pad:] != bytes([pad]) * pad: raise ValueError("AES padding is invalid")
+    return bytes(output[:-pad])
+
+
 def _catalog_post_payload(payload):
     compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return json.dumps({"data": base64.b64encode(aes128_cbc_encrypt(compact)).decode("ascii")}, separators=(",", ":")).encode("utf-8")
@@ -456,13 +523,18 @@ def _safe_download_url(value):
 def software_catalog_resolve(item_id):
     item_id = str(item_id or "").strip()
     with SOFTWARE_CATALOG_LOCK: record = SOFTWARE_CATALOG_RESOLVE_CACHE.get(item_id)
+    if record and record.get("resolvedUrl") and record.get("resolvedExpires", 0) >= time.time(): return record.get("resolvedUrl")
     if not record or record.get("expires", 0) < time.time(): return None
     payload = {"bizInfo": record.get("bizInfo", ""), "bizType": "1", "product": "3", "softId": item_id, "type": "0"}
     try:
         result = _catalog_http(SOFTWARE_CATALOG_RESOLVE_URL, "POST", payload)
         for row in ((result.get("data") or {}).get("downloadUrls") or []) if isinstance(result, dict) else []:
             candidate = _safe_download_url(row.get("downLoadUrl") if isinstance(row, dict) else row)
-            if candidate: return candidate
+            if candidate:
+                with SOFTWARE_CATALOG_LOCK:
+                    cached = SOFTWARE_CATALOG_RESOLVE_CACHE.setdefault(item_id, {})
+                    cached.update({"resolvedUrl": candidate, "resolvedExpires": time.time() + 900})
+                return candidate
     except Exception: return None
     return None
 
@@ -470,7 +542,9 @@ def software_catalog_resolve(item_id):
 def software_catalog_register(rows):
     with SOFTWARE_CATALOG_LOCK:
         for item in rows:
-            if item.get("id") and item.get("bizInfo"): SOFTWARE_CATALOG_RESOLVE_CACHE[item["id"]] = {"bizInfo": item["bizInfo"], "expires": time.time() + 900}
+            if item.get("id") and item.get("bizInfo"):
+                old = SOFTWARE_CATALOG_RESOLVE_CACHE.get(item["id"], {})
+                SOFTWARE_CATALOG_RESOLVE_CACHE[item["id"]] = dict(old, bizInfo=item["bizInfo"], expires=time.time() + 900)
 
 
 def stored_password(password):
@@ -1856,7 +1930,85 @@ def fetch_remote_config_payload(url):
         raise ValueError(f"云端链接没有返回有效 JSON：{exc}")
 
 
-def public_toolbox_config(user_id):
+def _cloud_proxy_download_url(base_url, source_id, api_key):
+    path = "/api/cloud-resolver/download-file?sourceId=" + quote(str(source_id)) + "&key=" + quote(str(api_key))
+    return (normalize_public_base_url(base_url).rstrip("/") + path) if base_url else path
+
+
+def _rewrite_cloud_download_sources(cfg, user_id, base_url=""):
+    """Expose cloud resources through the server proxy so provider hotlink guards stay server-side."""
+    if not cloud_resolver:
+        return
+    user = find_user_by_id(user_id) or {}
+    api_key = str(user.get("apiKey") or "").strip()
+    if not api_key:
+        return
+    store = cloud_resolver._load(_app_context())
+    sources = [row for row in store.get("sources", [])
+               if row.get("ownerUserId") == user_id and row.get("enabled", True) is not False]
+    by_id = {str(row.get("id")): row for row in sources if row.get("id")}
+    by_button = {}
+    for row in sources:
+        by_button.setdefault(str(row.get("buttonId") or ""), []).append(row)
+    for rows in by_button.values():
+        rows.sort(key=lambda row: (0 if row.get("isPrimary") else 1, int(row.get("priority") or 0), str(row.get("createdAt") or "")))
+
+    def rewrite_button(button):
+        if not isinstance(button, dict):
+            return
+        source_ids = [str(item.get("id")) for item in (button.get("cloudSources") or [])
+                      if isinstance(item, dict) and item.get("id")]
+        source_rows = [by_id[item_id] for item_id in source_ids if item_id in by_id]
+        if not source_rows and button.get("id"):
+            source_rows = list(by_button.get(str(button.get("id")), []))
+        if not source_rows:
+            return
+        source_rows.sort(key=lambda row: (0 if row.get("isPrimary") else 1, int(row.get("priority") or 0), str(row.get("createdAt") or "")))
+        urls = []
+        original_target = str(button.get("download_url") or button.get("url") or button.get("target") or "").strip()
+        primary_source_ids = {str(row.get("id")) for row in source_rows if row.get("isPrimary")}
+        weiyun_browser_only = all(row.get("provider") == "weiyun" and not (row.get("downloadUrl") or "").strip() for row in source_rows)
+        for row in source_rows:
+            # Tianyi's public share API cannot provide an anonymous file URL.
+            # Xiaofeiji can issue a short-lived direct URL at download time, so
+            # keep it behind the local proxy even when the stored URL is empty.
+            if row.get("provider") in ("tianyi", "weiyun") and not (row.get("downloadUrl") or "").strip():
+                share_url = str(row.get("shareUrl") or "").strip()
+                if share_url:
+                    urls.append(share_url)
+                    continue
+            urls.append(_cloud_proxy_download_url(base_url, row["id"], api_key))
+        if original_target and original_target not in urls and not primary_source_ids:
+            urls.insert(0, original_target)
+        manual_backups = button.get("backup_urls") if isinstance(button.get("backup_urls"), list) else []
+        if not manual_backups and button.get("backup_url"):
+            manual_backups = [button.get("backup_url")]
+        for backup in manual_backups:
+            backup = str(backup or "").strip()
+            if backup and backup not in urls:
+                urls.append(backup)
+        button["download_url"] = urls[0]
+        if weiyun_browser_only:
+            button["action"] = "link"
+        button["url"] = urls[0]
+        button["target"] = urls[0]
+        button["backup_urls"] = urls[1:]
+        if len(urls) > 1:
+            button["backup_url"] = urls[1]
+        else:
+            button.pop("backup_url", None)
+
+    for page in (cfg.get("pages") or {}).values():
+        for section in (page or {}).get("sections") or []:
+            for button in (section or {}).get("buttons") or []:
+                rewrite_button(button)
+    for tab in cfg.get("toolbox_tabs") or []:
+        for section in (tab or {}).get("sections") or []:
+            for button in (section or {}).get("buttons") or []:
+                rewrite_button(button)
+
+
+def public_toolbox_config(user_id, base_url=""):
     cfg = read_config(user_id)
     app = cfg.setdefault("app", {})
     app.pop("password_plain", None)
@@ -1877,6 +2029,14 @@ def public_toolbox_config(user_id):
     if app.get("password_enabled") is False:
         app["password"] = ""
     normalize_client_config(cfg, user_id=user_id)
+    _rewrite_cloud_download_sources(cfg, user_id, base_url)
+    resolver_app = _app_context()
+    if cloud_resolver and resolver_app:
+        resolver_store = cloud_resolver._load(resolver_app)
+        cfg["cloudResolver"] = {
+            "enabled": bool(resolver_store.get("enabled", True)),
+            "apiBase": "/api/cloud-resolver",
+        }
     path = user_config_path(user_id)
     meta = dict(cfg.get("_sync") or {})
     meta["userId"] = user_id
@@ -1893,19 +2053,20 @@ def file_signature(path):
         return None
 
 
-def public_toolbox_config_payload(user_id):
+def public_toolbox_config_payload(user_id, base_url=""):
     path = user_config_path(user_id)
     signature = (
         file_signature(path),
         file_signature(USERS_PATH),
         file_signature(SYSTEM_PATH),
+        file_signature(CLOUD_RESOLVER_PATH),
     )
     with PUBLIC_CONFIG_CACHE_LOCK:
         cached = PUBLIC_CONFIG_CACHE.get(user_id)
         if cached and cached["signature"] == signature:
             return cached["data"], cached["gzip"], cached["etag"]
 
-    payload = public_toolbox_config(user_id)
+    payload = public_toolbox_config(user_id, base_url)
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     compressed = gzip.compress(data, compresslevel=5)
     etag = '"' + hashlib.sha256(data).hexdigest() + '"'
@@ -1913,6 +2074,7 @@ def public_toolbox_config_payload(user_id):
         file_signature(path),
         file_signature(USERS_PATH),
         file_signature(SYSTEM_PATH),
+        file_signature(CLOUD_RESOLVER_PATH),
     )
     with PUBLIC_CONFIG_CACHE_LOCK:
         PUBLIC_CONFIG_CACHE[user_id] = {
@@ -1990,6 +2152,7 @@ def proxy_builtin_download(handler):
     if backup_url and backup_url not in urls:
         urls.append(backup_url)
     upstream = None
+    active_candidate = None
     for target_url in urls:
         request = urllib.request.Request(target_url, headers=headers)
         try:
@@ -2022,6 +2185,184 @@ def proxy_builtin_download(handler):
     if handler.command.upper() != "HEAD":
         shutil.copyfileobj(upstream, handler.wfile, length=1024 * 256)
     upstream.close()
+
+
+def _refresh_cloud_download_source(source, store, resolver, force=False):
+    """Refresh one provider hotlink once for a burst of segmented requests."""
+    provider = source.get("provider")
+    aggregate = source.get("resolverType") == "qaiu" or provider not in ("lanzou", "mock")
+    if not source.get("shareUrl") or (provider != "lanzou" and not aggregate):
+        return source
+    if aggregate and not force and source.get("downloadUrl"):
+        return source
+    cache_key = str(source.get("id") or source.get("shareUrl"))
+    now = time.monotonic()
+    with CLOUD_DOWNLOAD_REFRESH_LOCK:
+        cached = CLOUD_DOWNLOAD_REFRESH_CACHE.get(cache_key)
+        if cached and now - cached.get("createdAt", 0) < CLOUD_DOWNLOAD_REFRESH_TTL:
+            source.update({key: value for key, value in cached.items() if key in ("downloadUrl", "backupUrl", "downloadHeaders")})
+            return source
+        try:
+            access_code = resolver._unprotect(_app_context(), source.get("accessCodeEncrypted"))
+            if provider == "lanzou":
+                files = resolver._lanzou_parse(source.get("shareUrl"), access_code)
+            else:
+                api_key = resolver._qaiu_api_key(_app_context(), store)
+                files = resolver._provider_parse(provider, source.get("shareUrl"), access_code, api_key)
+            match = next((row for row in files if str(row.get("id")) == str(source.get("fileId"))), None)
+            if not match or not match.get("downloadUrl"):
+                CLOUD_DOWNLOAD_REFRESH_CACHE[cache_key] = {"createdAt": now}
+                return source
+            source.update({"downloadUrl": match.get("downloadUrl") or "",
+                           "backupUrl": match.get("backupUrl") or "",
+                           "downloadHeaders": match.get("downloadHeaders") or source.get("downloadHeaders") or {},
+                           "resolverType": match.get("resolverType") or ("official" if provider == "lanzou" else "qaiu"),
+                           "updatedAt": now_iso(), "status": "draft"})
+            CLOUD_DOWNLOAD_REFRESH_CACHE[cache_key] = {
+                "createdAt": now,
+                "downloadUrl": source.get("downloadUrl") or "",
+                "backupUrl": source.get("backupUrl") or "",
+                "downloadHeaders": source.get("downloadHeaders") or {},
+            }
+            resolver._save(_app_context(), store)
+        except Exception:
+            # Keep the stored URL available as a fallback. The upstream opener
+            # still validates the provider response before streaming it.
+            CLOUD_DOWNLOAD_REFRESH_CACHE[cache_key] = {"createdAt": now}
+            return source
+    return source
+
+
+def _invalidate_cloud_download_cache(source):
+    cache_key = str(source.get("id") or source.get("shareUrl") or "")
+    if cache_key:
+        with CLOUD_DOWNLOAD_REFRESH_LOCK:
+            CLOUD_DOWNLOAD_REFRESH_CACHE.pop(cache_key, None)
+    source["downloadUrl"] = ""
+    source["backupUrl"] = ""
+
+
+def proxy_cloud_download(handler):
+    """Stream a cloud-resolver source through the server after solving provider guards."""
+    api_key = (handler.query.get("key", [""])[0] or handler.headers.get("X-Client-Api-Key", "")).strip()
+    user = find_user_by_api_key(api_key)
+    if not user:
+        return handler.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
+    source_id = (handler.query.get("sourceId", [""])[0] or "").strip()
+    resolver = cloud_resolver
+    if not resolver or not source_id:
+        return handler.send_json({"error": "下载源不存在。"}, 404)
+    store = resolver._load(_app_context())
+    source = next((row for row in store.get("sources", []) if str(row.get("id")) == source_id and row.get("ownerUserId") == user.get("id")), None)
+    if not source or source.get("enabled") is False:
+        return handler.send_json({"error": "下载源不存在或已停用。"}, 404)
+    owner_id = user.get("id")
+    source_rows = [row for row in store.get("sources", [])
+                   if row.get("ownerUserId") == owner_id
+                   and row.get("buttonId") == source.get("buttonId")
+                   and row.get("enabled", True) is not False]
+    source_rows.sort(key=lambda row: (
+        0 if row.get("isPrimary") else 1,
+        int(row.get("priority") or 0),
+        str(row.get("createdAt") or ""),
+    ))
+    # Keep the requested source first so a client-selected backup line is honored.
+    source_rows = [source] + [row for row in source_rows if row.get("id") != source.get("id")]
+    # Lanzou's CDN rejects the client marker used by the desktop app
+    # (``ToolboxClient/1.0``) with an HTML anti-hotlink page.  The proxy is
+    # the provider-facing hop, so use the same browser-compatible identity
+    # as the successful share-page flow while retaining the client's Range.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    if handler.headers.get("Range"):
+        headers["Range"] = handler.headers.get("Range")
+    if source.get("provider") == "lanzou" and source.get("shareUrl"):
+        headers["Referer"] = source.get("shareUrl")
+    request_method = handler.command.upper()
+    upstream = None
+    # A provider hotlink can expire between the client's probe and its first
+    # Range request. Retry each source once with a forced fresh official URL,
+    # otherwise segmented clients repeatedly hit the same dead URL.
+    for refresh_round in range(2):
+        for candidate in source_rows:
+            if refresh_round:
+                _invalidate_cloud_download_cache(candidate)
+            candidate = _refresh_cloud_download_source(candidate, store, resolver, force=bool(refresh_round))
+            urls = [candidate.get("downloadUrl") or "", candidate.get("backupUrl") or ""]
+            for target_url in urls:
+                if not target_url:
+                    continue
+                try:
+                    request_headers = dict(headers)
+                    for key, value in (candidate.get("downloadHeaders") or {}).items():
+                        if key in resolver.QAIU_DOWNLOAD_HEADER_NAMES.values() and isinstance(value, str):
+                            request_headers[key] = value
+                    if handler.headers.get("Range"):
+                        request_headers["Range"] = handler.headers.get("Range")
+                    if candidate.get("provider") == "lanzou":
+                        upstream = resolver.lanzou_download_response(target_url, headers=request_headers, timeout=60, method=request_method)
+                    elif candidate.get("resolverType") == "qaiu":
+                        upstream = resolver.qaiu_download_response(target_url, headers=request_headers, timeout=60, method=request_method)
+                    else:
+                        upstream = urllib.request.urlopen(urllib.request.Request(target_url, headers=request_headers, method=request_method), timeout=60)
+                    # A proxy must never turn a full 200 response into a
+                    # partial client response. Treat that as a stale or
+                    # range-incompatible hotlink and refresh it immediately.
+                    if handler.headers.get("Range") and request_method != "HEAD":
+                        upstream_status = getattr(upstream, "status", None) or upstream.getcode()
+                        if upstream_status != 206:
+                            try: upstream.close()
+                            except Exception: pass
+                            upstream = None
+                            _invalidate_cloud_download_cache(candidate)
+                            continue
+                    if upstream is not None:
+                        upstream_status = getattr(upstream, "status", None) or upstream.getcode()
+                        if upstream_status < 400:
+                            active_candidate = candidate
+                            break
+                        try: upstream.close()
+                        except Exception: pass
+                        upstream = None
+                except Exception:
+                    if upstream is not None:
+                        try: upstream.close()
+                        except Exception: pass
+                    upstream = None
+            if upstream is not None:
+                break
+        if upstream is not None:
+            break
+    if upstream is None:
+        unavailable_provider = any(row.get("provider") == "xiaofeiji" for row in source_rows)
+        if unavailable_provider:
+            return handler.send_json({"error": "小飞机官方接口未提供可用下载地址，请更换分享链接。", "errorCode": "DOWNLOAD_URL_UNAVAILABLE"}, 410)
+        return handler.send_json({"error": "下载源暂时不可用。"}, 502)
+    status = getattr(upstream, "status", None) or upstream.getcode()
+    handler.send_response(status)
+    for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition", "ETag", "Last-Modified"):
+        value = upstream.headers.get(header)
+        if value:
+            handler.send_header(header, value)
+    if not upstream.headers.get("Content-Type"):
+        handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Cache-Control", "private, no-store")
+    handler.end_headers()
+    try:
+        if handler.command.upper() != "HEAD":
+            shutil.copyfileobj(upstream, handler.wfile, length=1024 * 256)
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+        # The provider stream may have expired after headers were sent. The
+        # next client retry must obtain a new signed URL instead of reusing the
+        # cached one.
+        if active_candidate is not None:
+            _invalidate_cloud_download_cache(active_candidate)
+    finally:
+        upstream.close()
 
 
 def normalize_client_config(cfg, user_id=""):
@@ -2325,6 +2666,7 @@ def default_system_settings():
         },
         "agent": {
             "invitePrice": 0,
+            "cloudCodePrice": 0,
             "currency": "CNY",
             "allowNegativeBalance": False,
             "orderCooldownMinutes": 30,
@@ -2922,6 +3264,11 @@ def write_system_settings(body):
                     raise ValueError("每个邀请码扣费必须是数字。")
             if "currency" in patch:
                 current_agent["currency"] = str(patch.get("currency") or "CNY").strip()[:12] or "CNY"
+            if "cloudCodePrice" in patch:
+                try:
+                    current_agent["cloudCodePrice"] = max(0, round(float(patch.get("cloudCodePrice") or 0), 2))
+                except (TypeError, ValueError):
+                    raise ValueError("网盘激活码扣费必须是数字。")
             if "orderCooldownMinutes" in patch:
                 try:
                     current_agent["orderCooldownMinutes"] = max(0, min(10080, int(patch.get("orderCooldownMinutes") or 0)))
@@ -4408,6 +4755,11 @@ def new_button(body):
     if action == "download":
         item["download_url"] = target
         if get_backup_url(body): item["backup_url"] = get_backup_url(body)
+        backup_urls = body.get("backup_urls") if isinstance(body.get("backup_urls"), list) else []
+        normalized_backups = list(dict.fromkeys(str(value or "").strip() for value in backup_urls if str(value or "").strip()))
+        if normalized_backups:
+            item["backup_urls"] = normalized_backups
+            item["backup_url"] = normalized_backups[0]
         if get_backup_url(body, True): item["backup_page_url"] = get_backup_url(body, True)
         download_directory = str(body.get("download_directory") or body.get("download_path") or "").strip()[:1000]
         if download_directory:
@@ -5094,7 +5446,7 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     if cached:
         return cached
     source = source.replace('"__CONFIG_URL__"', csharp_literal(config_url))
-    embedded_config_json = json.dumps(public_toolbox_config(user.get("id")), ensure_ascii=False, separators=(",", ":"))
+    embedded_config_json = json.dumps(public_toolbox_config(user.get("id"), base_url), ensure_ascii=False, separators=(",", ":"))
     source = source.replace('"__EMBEDDED_CONFIG_JSON__"', csharp_literal(embedded_config_json))
     source = source.replace('"__CLIENT_VARIANT__"', csharp_literal(variant))
     source = source.replace('"__CLIENT_VARIANT_LABEL__"', csharp_literal(variant_label))
@@ -5310,6 +5662,8 @@ class Handler(BaseHTTPRequestHandler):
             external_trade_no = str(data.get("trade_no") or data.get("transaction_id") or "")
             if order.get("action") == "recharge_balance":
                 fulfill_balance_recharge_order(order, paid=True, external_trade_no=external_trade_no)
+            elif order.get("action") == "cloud_resolver_plan_purchase" and cloud_resolver:
+                cloud_resolver.fulfill_order(_app_context(), order, external_trade_no=external_trade_no)
             else:
                 fulfill_invite_order(order, paid=True, external_trade_no=external_trade_no)
             order["status"] = "paid"
@@ -5457,6 +5811,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_popup_config(user["id"], self.base_url()))
             if path == "/api/toolbox/builtin-download" and method in ("GET", "HEAD"):
                 return proxy_builtin_download(self)
+            if path == "/api/cloud-resolver/download-file" and method in ("GET", "HEAD"):
+                return proxy_cloud_download(self)
             if is_login_api_path(path) and method == "POST":
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
@@ -5533,7 +5889,7 @@ class Handler(BaseHTTPRequestHandler):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
                 if not user:
                     return self.send_json({"error": "工具箱对接密钥无效或账号已停用。"}, 403)
-                data, compressed, etag = public_toolbox_config_payload(user["id"])
+                data, compressed, etag = public_toolbox_config_payload(user["id"], self.base_url())
                 return self.send_cached_json(data, compressed, etag)
             if path in ("/api/client/software-catalog/home", "/api/client/software-catalog/search", "/api/client/software-catalog/resolve"):
                 api_key = (self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", "")).strip()
@@ -5555,6 +5911,16 @@ class Handler(BaseHTTPRequestHandler):
                 auth = get_auth(self)
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                if cloud_resolver and (path.startswith("/api/cloud-resolver/") or
+                                       path.startswith("/api/admin/users/") and "/cloud-entitlement" in path or
+                                       path.startswith("/api/admin/cloud-resolver/") or
+                                       path.startswith("/api/agent/cloud-resolver/")):
+                    try:
+                        return cloud_resolver.route(self, _app_context(), path, method, auth)
+                    except PermissionError as exc:
+                        return self.send_json({"error": str(exc)}, 403)
+                    except ValueError as exc:
+                        return self.send_json({"error": str(exc)}, 400)
                 if should_write_generic_audit(path, method):
                     audit_event("backend_" + method.lower(), auth["user"], path, self,
                                 {"title": "后台操作", "method": method, "path": path})

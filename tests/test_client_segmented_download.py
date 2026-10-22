@@ -38,6 +38,31 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
 
         self.assertIn("int timeout = task.FastStartDirectDownload ? 1500 : 12000;", probe)
 
+    def test_cloud_proxy_is_not_marked_as_fast_start(self):
+        self.assertIn('uri.AbsolutePath.Equals("/api/cloud-resolver/download-file"', self.source)
+        policy_start = self.source.index("private static bool ShouldFastStartDownload(")
+        policy_end = self.source.index("private DownloadRequest ResolveCloud189ClientDownloadRequest(", policy_start)
+        policy = self.source[policy_start:policy_end]
+        self.assertIn("if (IsCloudDownloadEndpoint(request.Url)) return false;", policy)
+
+    def test_probe_preserves_permanent_provider_failures(self):
+        probe_start = self.source.index("private RemoteDownloadInfo ProbeRemoteDownloadInfo(")
+        probe_end = self.source.index("private HttpWebResponse OpenProbeDownloadResponse(", probe_start)
+        probe = self.source[probe_start:probe_end]
+        self.assertIn("catch (Exception ex)", probe)
+        self.assertIn("if (IsPermanentDownloadFailure(ex)) throw;", probe)
+
+    def test_permanent_failure_handles_wrapped_410_and_has_clear_record(self):
+        failure_start = self.source.index("private static bool IsPermanentDownloadFailure(")
+        failure_end = self.source.index("private static string ResolveRedirectUrl(", failure_start)
+        failure = self.source[failure_start:failure_end]
+        self.assertIn('message.IndexOf("(410)"', failure)
+        finish_start = self.source.index("private void FinishControlledDownload(")
+        finish_end = self.source.index("private void CleanupSegmentedPart(", finish_start)
+        finish = self.source[finish_start:finish_end]
+        self.assertIn("bool permanentFailure = IsPermanentDownloadFailure(failure);", finish)
+        self.assertIn('"下载源不可用"', finish)
+
     def test_backup_download_retries_before_opening_backup_page(self):
         worker_start = self.source.index("private void DownloadFileWorker(")
         worker_end = self.source.index("private bool TrySwitchToBackupDownload(", worker_start)
@@ -80,6 +105,14 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         restore = self.source[restore_start:restore_end]
         self.assertIn("if (activeDownloadsList != null && !activeDownloadsList.IsDisposed)", restore)
         self.assertIn("RenderActiveDownloads();", restore)
+
+    def test_multi_file_packages_queue_all_members_and_run_primary_after_success(self):
+        self.assertIn('GetText(item, "download_mode", ""), "multiple"', self.source)
+        self.assertIn("StartPackageDownload(item, info.Name)", self.source)
+        self.assertIn("foreach (Dictionary<string, object> file in files)", self.source)
+        self.assertIn("CompletePackageDownloadMember(task.PackageGroupId, task.Path, true)", self.source)
+        self.assertIn("!group.Failed && !String.IsNullOrWhiteSpace(group.PrimaryPath)", self.source)
+        self.assertIn("LaunchDownloadedFile(group.PrimaryPath)", self.source)
 
 
 if __name__ == "__main__":

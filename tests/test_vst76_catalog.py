@@ -30,6 +30,14 @@ class Vst76CatalogTests(unittest.TestCase):
         with patch.object(self.app, "_catalog_http", return_value={"data": {"downloadUrls": [{"downLoadUrl": "file:///x"}, {"downLoadUrl": "https://127.0.0.1/x"}]}}):
             self.assertIsNone(self.app.software_catalog_resolve("1"))
 
+    def test_resolved_download_url_is_cached_for_fast_repeat_requests(self):
+        self.app.SOFTWARE_CATALOG_RESOLVE_CACHE["app-1"] = {"bizInfo": "b", "expires": 9999999999}
+        response = {"data": {"downloadUrls": [{"downLoadUrl": "https://cdn.example/setup.exe"}]}}
+        with patch.object(self.app, "_catalog_http", return_value=response) as request:
+            self.assertEqual("https://cdn.example/setup.exe", self.app.software_catalog_resolve("app-1"))
+            self.assertEqual("https://cdn.example/setup.exe", self.app.software_catalog_resolve("app-1"))
+        request.assert_called_once()
+
     def test_client_and_admin_use_flagship_shared_paths(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         js = (PROJECT / "wwwroot" / "admin.js").read_text(encoding="utf-8")

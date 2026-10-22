@@ -85,6 +85,16 @@ body {
 
 [hidden] { display: none !important; }
 
+.resolver-metrics, .resolver-providers { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.resolver-metrics > span, .provider-pill, .status-chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--muted); font-size: 12px; }
+.resolver-metrics b, .provider-pill b { color: var(--text); }
+.provider-pill.is-ok, .status-chip.is-ok { border-color: rgba(79,183,168,.55); color: var(--accent); }
+.provider-pill.is-off, .status-chip.is-warning { border-color: rgba(242,193,78,.55); color: var(--accent-2); }
+.mono-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
+.cloud-code-input { width: min(260px, 32vw); min-width: 150px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); color: var(--text); font-family: ui-monospace, Consolas, monospace; letter-spacing: .04em; }
+.table-wrap td small { display: block; margin-top: 3px; color: var(--danger); }
+.empty-cell { padding: 24px !important; text-align: center; color: var(--muted); }
+
 .login-screen {
   position: fixed;
   inset: 0;
@@ -484,6 +494,23 @@ p { color: var(--muted); margin-top: 6px; }
   padding: 18px;
   background: rgba(0,0,0,.58);
 }
+
+.cloud-task-toolbar,.cloud-file-tools,.cloud-file-target { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+.cloud-url-cell { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cloud-file-picker-overlay { z-index:80; }
+.cloud-file-picker { width:min(820px, calc(100vw - 24px)); max-height:calc(100vh - 32px); overflow:auto; }
+.cloud-file-picker-rows { max-height:42vh; overflow:auto; border:1px solid var(--line); }
+.cloud-file-row { display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:8px; align-items:center; padding:9px 10px; border-bottom:1px solid var(--line); }
+.cloud-file-row span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cloud-file-row small { color:var(--muted); }
+.cloud-file-row > span { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.cloud-resolved-url { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--accent); }
+.cloud-file-target { align-items:end; }
+.cloud-file-target label { min-width:180px; flex:1; }
+.download-backup-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+.download-backup-row { display:flex; gap:6px; align-items:center; }
+.download-backup-row input { flex:1; min-width:0; }
+body.modal-open { overflow:hidden; }
 
 .modal-card {
   width: min(620px, 100%);
@@ -1822,6 +1849,21 @@ body.is-super-admin #appLoginPanel {
   border-top: 1px solid var(--line);
   padding: 14px;
   background: var(--panel);
+}
+
+.cloud-user-entitlement {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.cloud-user-entitlement > span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .card-actions {

@@ -52,6 +52,7 @@
       <button class="nav active" data-view="overview" type="button">总览</button>
       <button class="nav" data-view="account" type="button">账号</button>
       <button class="nav" data-view="buttons" type="button">按钮</button>
+      <button class="nav" data-view="cloud-resolver" type="button">网盘资源</button>
       <button class="nav manager-only" data-view="users" type="button">用户</button>
       <button class="nav announcement-nav" data-view="announcements" type="button">更新公告<span id="announcementUnreadBadge" class="nav-badge" hidden>0</span></button>
       <button class="nav super-only" data-view="system" type="button">系统管理</button>
@@ -260,6 +261,62 @@
       </div>
     </section>
 
+    <section class="view" id="view-cloud-resolver">
+      <div class="panel cloud-resolver-summary">
+        <div class="panel-head"><h2>网盘资源解析与管理</h2><span id="cloudResolverStatus" class="status-chip">读取中</span></div>
+        <div id="cloudResolverEntitlement" class="resolver-metrics"></div>
+        <div id="cloudResolverProviders" class="resolver-providers"></div>
+      </div>
+      <div class="panel cloudResolver-unauthed" id="cloudResolverPlansPanel">
+        <div class="panel-head"><h2>开通网盘解析</h2><button id="cloudResolverPlansRefreshBtn" type="button">刷新套餐</button></div>
+        <div id="cloudResolverPlanCards" class="resolver-plan-grid"></div>
+      </div>
+      <div class="panel cloudResolver-unauthed" id="cloudResolverRedeemPanel">
+        <div class="panel-head"><h2>兑换激活码</h2></div>
+        <div class="inline-form"><input id="cloudResolverRedeemCode" placeholder="请输入激活码" autocomplete="off"><button id="cloudResolverRedeemBtn" type="button">立即兑换</button></div>
+        <p class="note">激活码只能由当前登录账号本人兑换，代理销售后也需要成员自行登录兑换。</p>
+      </div>
+      <div class="panel cloudResolver-authorized" id="cloudResolverRenewPanel" hidden>
+        <div class="panel-head"><h2>续费与兑换</h2><div><button id="cloudResolverRenewToggleBtn" type="button">续费套餐</button><button id="cloudResolverRedeemToggleBtn" type="button">兑换激活码</button></div></div>
+        <div id="cloudResolverRenewBody" hidden><div id="cloudResolverRenewCards" class="resolver-plan-grid"></div></div>
+        <div id="cloudResolverAuthorizedRedeemBody" hidden><div class="inline-form"><input id="cloudResolverAuthorizedRedeemCode" placeholder="请输入激活码"><button id="cloudResolverAuthorizedRedeemBtn" type="button">立即兑换</button></div></div>
+      </div>
+      <div class="panel cloudResolver-authorized" id="cloudResolverParsePanel" hidden>
+        <div class="panel-head"><h2>提交解析任务</h2><button id="cloudResolverParseBtn" type="button">开始解析</button></div>
+        <div class="form-grid compact">
+          <label class="wide">网盘分享链接<input id="cloudResolverUrl" placeholder="每次提交一个链接，例如 https://cloud.189.cn/t/... 或 mock://sample"></label>
+          <label>网盘类型<select id="cloudResolverProvider"><option value="">自动识别</option><option value="tianyi">天翼云盘</option><option value="lanzou">蓝奏云</option><option value="123pan">123 云盘</option><option value="xiaofeiji">小飞机网盘</option><option value="weiyun">腾讯微云</option><option value="qaiu">其他网盘（聚合解析）</option><option value="mock">测试平台（模拟）</option></select></label>
+          <label>访问码<input id="cloudResolverAccessCode" type="password" autocomplete="off"></label>
+          <label>版本<input id="cloudResolverVersion"></label><label>平台<input id="cloudResolverPlatform"></label><label>架构<input id="cloudResolverArchitecture"></label>
+          <label>语言<input id="cloudResolverLanguage"></label><label class="wide">备注<input id="cloudResolverRemark"></label>
+        </div>
+        <p class="note">蓝奏云继续使用原解析；其他已支持网盘通过聚合解析服务识别文件和下载线路。解析服务按接口规则计费，链接详情与目录列表不计次数。</p>
+      </div>
+      <div class="panel cloudResolver-authorized collapsible-panel is-collapsed" id="cloudResolverTasksPanel" data-collapsible-panel data-default-collapsed="1" hidden>
+        <div class="panel-head"><h2 id="cloudResolverTasksTitle">解析任务</h2><button id="cloudResolverRefreshBtn" type="button">刷新</button></div>
+        <div class="cloud-task-toolbar"><button id="cloudTaskSelectAllBtn" type="button">全选</button><button id="cloudTaskSelectNoneBtn" type="button">取消全选</button><button id="cloudTaskInvertBtn" type="button">反选</button><button id="cloudTaskBatchArchiveBtn" type="button">标记已处理</button><button id="cloudTaskBatchRetryBtn" type="button">重试失败任务</button><button id="cloudTaskBatchDeleteBtn" type="button" class="danger">删除选中任务</button></div>
+        <div class="table-wrap"><table><thead><tr><th>选择</th><th>网盘平台</th><th>分享链接</th><th>解析状态</th><th>文件数量</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="cloudResolverTaskRows"></tbody></table></div>
+      </div>
+      <div class="panel cloudResolver-authorized collapsible-panel is-collapsed" id="cloudResolverFailedPanel" data-collapsible-panel data-default-collapsed="1" hidden>
+        <div class="panel-head"><h2 id="cloudResolverFailedTitle">解析失败</h2><div class="button-pair"><button id="cloudFailedRetryAllBtn" type="button">重试全部</button><button id="cloudFailedClearBtn" type="button" class="danger">清空失败任务</button></div></div>
+        <div class="cloud-task-toolbar"><button id="cloudFailedSelectAllBtn" type="button">全选</button><button id="cloudFailedSelectNoneBtn" type="button">取消全选</button><button id="cloudFailedBatchRetryBtn" type="button">重试选中</button><button id="cloudFailedBatchDeleteBtn" type="button" class="danger">删除选中</button></div>
+        <div class="table-wrap"><table><thead><tr><th>选择</th><th>网盘平台</th><th>分享链接</th><th>失败原因</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="cloudResolverFailedRows"></tbody></table></div>
+      </div>
+      <div class="panel cloudResolver-authorized" id="cloudResolverButtonManagerPanel" hidden><div class="panel-head"><h2>按钮管理</h2><button id="cloudResolverButtonManagerBtn" type="button">管理按钮与下载线路</button></div></div>
+      <div class="panel agent-only" id="cloudResolverAgentPanel" hidden>
+        <div class="panel-head"><h2>网盘激活码库存与销售</h2><button id="cloudResolverAgentRefreshBtn" type="button">刷新库存</button></div>
+        <p class="note">选中自己的库存卡密和下级成员后销售。销售仅交付卡密，必须由成员本人登录兑换；销售价格按系统管理设置从代理余额扣除。</p>
+        <div class="form-grid compact"><label>可售库存<select id="cloudResolverAgentCodeSelect"></select></label><label>销售给下级成员<select id="cloudResolverAgentUserSelect"></select></label><button id="cloudResolverAgentSellBtn" type="button">销售卡密</button></div>
+        <div class="table-wrap"><table><thead><tr><th>库存编号</th><th>套餐</th><th>状态</th><th>使用次数</th><th></th></tr></thead><tbody id="cloudResolverAgentCodeRows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>销售套餐</th><th>成员</th><th>销售时间</th><th>状态</th></tr></thead><tbody id="cloudResolverAgentSalesRows"></tbody></table></div>
+      </div>
+      <div class="panel super-only" id="cloudResolverCodesAdminPanel" hidden>
+        <div class="panel-head"><h2>激活码管理</h2><div class="button-pair"><button id="cloudResolverExportCodesBtn" type="button">导出选中</button><button id="cloudResolverDeleteCodesBtn" class="danger" type="button">删除选中</button><button id="cloudResolverCopyCodesBtn" type="button">复制全部卡密</button><button id="cloudResolverGenerateCodesBtn" type="button">生成激活码</button></div></div>
+        <div class="form-grid compact"><label>生成数量<input id="cloudResolverCodeCount" type="number" min="1" max="500" value="1"></label><label>每码使用次数<input id="cloudResolverCodeUses" type="number" min="1" max="100" value="1"></label><label>选择套餐<select id="cloudResolverCodePlan"></select></label><label>分配代理（可选）<select id="cloudResolverCodeAgent"><option value="">暂不分配</option></select></label></div>
+        <div class="table-wrap"><table><thead><tr><th><input id="cloudResolverSelectAllCodes" type="checkbox" aria-label="全选卡密"></th><th>卡密</th><th>套餐</th><th>状态</th><th>已用次数</th><th>代理</th><th>操作</th></tr></thead><tbody id="cloudResolverCodeRows"></tbody></table></div>
+      </div>
+    </section>
+
     <section class="view" id="view-json">
       <div class="panel">
         <div class="panel-head">
@@ -329,6 +386,11 @@
     </section>
 
     <section class="view" id="view-system">
+      <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1" id="cloudResolverAdminPanel" hidden>
+        <div class="panel-head"><h2>解析模块全局设置</h2><button id="cloudResolverSaveSettingsBtn" type="button">保存设置</button></div>
+        <div class="form-grid compact"><label class="toggle-line">启用模块<span><input id="cloudResolverEnabled" type="checkbox"> 启用</span></label><label>每日默认额度<input id="cloudResolverDailyLimit" type="number" min="-1"><small>-1 表示不限</small></label><label>最大重试次数<input id="cloudResolverRetries" type="number" min="0"></label><label class="wide">聚合解析 API Key<input id="cloudResolverQaiuApiKey" type="password" autocomplete="new-password" placeholder="填写服务 API Key；已配置时留空可保留"></label><label class="toggle-line">密钥管理<span><input id="cloudResolverClearQaiuApiKey" type="checkbox"> 清除已保存密钥</span></label></div>
+        <p class="note">解析服务地址：https://pan.vst76.cn（接口说明见 nfd189.qaiu.cn）。密钥仅由服务端加密保存，不会返回给普通账号或桌面客户端；也可在服务器设置环境变量 NFD189_API_KEY。每日默认额度填写 -1 即不限。</p>
+      </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head"><h2>全局默认菜单图标</h2><button id="saveMenuIconsBtn" type="button">保存图标库</button></div>
         <div class="form-grid compact">
@@ -442,12 +504,13 @@
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
-          <h2>代理与邀请码扣费</h2>
+          <h2>代理、邀请码与网盘激活码扣费</h2>
           <button id="saveAgentSettingsBtn" type="button">保存</button>
         </div>
         <div class="form-grid compact">
           <label>币种<input id="agentCurrency" value="CNY"></label>
           <label>订单冷却分钟<input id="agentOrderCooldown" type="number" min="0" step="1"></label>
+          <label>代理销售网盘激活码扣费<input id="agentCloudCodePrice" type="number" min="0" step="0.01" value="0"><small>每销售一张卡密从代理余额扣除，0 表示不扣费</small></label>
           <label class="toggle-line">允许负余额<span><input id="agentAllowNegative" type="checkbox"> 允许</span></label>
         </div>
         <div class="agent-level-toolbar">
@@ -463,6 +526,11 @@
         </div>
         <p class="agent-level-note">每个代理级别单独设置邀请码单价；显示顺序只控制列表排列，停用的级别不能分配给代理。</p>
         <div id="agentLevelRows" class="agent-level-list"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1" id="cloudResolverSystemPlansPanel">
+        <div class="panel-head"><h2>网盘授权套餐</h2><button id="cloudResolverSystemCreatePlanBtn" type="button">新建套餐</button></div>
+        <div class="form-grid compact"><label>套餐名称<input id="cloudResolverSystemPlanName" placeholder="例如：一个月"></label><label>普通成员售价<input id="cloudResolverSystemPlanPrice" type="number" min="0" step="0.01" value="0"></label><label>代理拿货价<input id="cloudResolverSystemPlanAgentPrice" type="number" min="0" step="0.01" value="0"></label><label>有效期（天）<input id="cloudResolverSystemPlanDays" type="number" min="1" value="30"></label><label>解析次数（-1不限）<input id="cloudResolverSystemPlanQuota" type="number" min="-1" value="20"></label><label>每日解析次数<input id="cloudResolverSystemPlanDaily" type="number" min="-1" placeholder="留空使用全局默认；-1不限"><small>留空使用上方全局默认额度</small></label><label>下载流量（兆字节，-1不限）<input id="cloudResolverSystemPlanTraffic" type="number" min="-1" value="-1"></label></div>
+        <div class="table-wrap"><table><thead><tr><th>套餐</th><th>售价</th><th>有效期</th><th>解析次数</th><th>状态</th><th></th></tr></thead><tbody id="cloudResolverSystemPlanRows"></tbody></table></div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
@@ -535,7 +603,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026092001"></script>
+  <script src="/admin.js?v=2026102201"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

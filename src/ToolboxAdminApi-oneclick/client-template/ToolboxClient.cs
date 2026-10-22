@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -247,6 +248,8 @@ namespace ToolboxClient
         private readonly object pausedDownloadsFileLock = new object();
         private readonly object launchDownloadedFileLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
+        private readonly Dictionary<string, PackageDownloadGroup> packageDownloadGroups = new Dictionary<string, PackageDownloadGroup>(StringComparer.OrdinalIgnoreCase);
+        private readonly object packageDownloadGroupsLock = new object();
         private readonly List<Vst76InlineDownloadProgress> vst76InlineDownloadProgress = new List<Vst76InlineDownloadProgress>();
         private bool pausedDownloadsRestored = false;
         private const int DefaultMaxParallelDownloads = 5;
@@ -276,6 +279,7 @@ namespace ToolboxClient
         private readonly Dictionary<string, byte[]> softwareCatalogIconBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> softwareCatalogIconRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<PictureBox>> softwareCatalogIconTargets = new Dictionary<string, List<PictureBox>>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> softwareCatalogResolvedUrls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> failedIcons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly object iconCacheLock = new object();
         private Icon runtimeIcon;
@@ -7987,6 +7991,7 @@ namespace ToolboxClient
                         remoteSoftwareCatalogPendingQuery = "";
                         remoteSoftwareCatalogSource = source;
                         remoteSoftwareCatalogLoading = false;
+                        QueueSoftwareCatalogResolvePrefetch(rows);
                         if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) RefreshSoftwareCatalogResults();
                     }));
                 }
@@ -8048,6 +8053,31 @@ namespace ToolboxClient
             {
                 softwareResultsPanel.ResumeLayout();
             }
+        }
+
+        private void QueueSoftwareCatalogResolvePrefetch(List<SoftwareCatalogEntry> rows)
+        {
+            if (rows == null || rows.Count == 0) return;
+            List<SoftwareCatalogEntry> pending = rows.Take(24).Where(entry => entry != null && !String.IsNullOrWhiteSpace(entry.Id) && entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase) && !softwareCatalogResolvedUrls.ContainsKey(entry.Id)).ToList();
+            if (pending.Count == 0) return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                foreach (SoftwareCatalogEntry entry in pending)
+                {
+                    try
+                    {
+                        string json = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "id", entry.Id } });
+                        Dictionary<string, object> result = AsDict(new JavaScriptSerializer().DeserializeObject(PostJson(SoftwareCatalogApiUrl("resolve"), json)));
+                        string url = GetText(result, "downloadUrl", "");
+                        Uri parsed;
+                        if (Uri.TryCreate(url, UriKind.Absolute, out parsed) && parsed.Scheme == Uri.UriSchemeHttps)
+                        {
+                            BeginInvokeIfReady(delegate { softwareCatalogResolvedUrls[entry.Id] = url; });
+                        }
+                    }
+                    catch { }
+                }
+            });
         }
 
         private Control CreateSoftwareNoResultCard(int width, int height, string query)
@@ -8813,6 +8843,14 @@ namespace ToolboxClient
 
         private void ResolveRemoteSoftwareCatalogEntry(SoftwareCatalogEntry entry)
         {
+            string cachedUrl;
+            if (softwareCatalogResolvedUrls.TryGetValue(entry.Id ?? "", out cachedUrl) && !String.IsNullOrWhiteSpace(cachedUrl))
+            {
+                status.Text = "正在加入下载：" + entry.Name;
+                // Legacy equivalent: DownloadFile(url, entry.Name);
+                DownloadFile(cachedUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
+                return;
+            }
             status.Text = "正在解析下载地址：" + entry.Name;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -8835,6 +8873,7 @@ namespace ToolboxClient
                         status.Text = "下载地址暂不可用：" + entry.Name;
                         return;
                     }
+                    softwareCatalogResolvedUrls[entry.Id ?? ""] = url;
                     status.Text = "正在加入下载：" + entry.Name;
                     DownloadFile(url, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
                 }));
@@ -10077,6 +10116,7 @@ namespace ToolboxClient
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
             if (!ConfirmButtonGuard(AsDict(Get(entry.Item, "guard")), entry.Name)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
+            if (action == "download" && String.Equals(GetText(entry.Item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase) && StartPackageDownload(entry.Item, entry.Name)) return;
             RunAction(
                 action,
                 GetTarget(entry.Item, action),
@@ -10094,6 +10134,10 @@ namespace ToolboxClient
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
             if (!ConfirmButtonGuard(AsDict(Get(item, "guard")), info.Name)) return;
+            if (info.Action == "download" && String.Equals(GetText(item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase))
+            {
+                if (StartPackageDownload(item, info.Name)) return;
+            }
             RunAction(
                 info.Action,
                 info.Target,
@@ -10104,6 +10148,38 @@ namespace ToolboxClient
                 GetText(item, "download_directory", GetText(item, "download_path", "")),
                 BoolValue(item, "download_delete_on_exit", false),
                 info.DownloadKey);
+        }
+
+        private bool StartPackageDownload(Dictionary<string, object> item, string displayName)
+        {
+            IList<object> rawFiles = AsList(Get(item, "files"));
+            List<Dictionary<string, object>> files = new List<Dictionary<string, object>>();
+            foreach (object value in rawFiles)
+            {
+                Dictionary<string, object> file = AsDict(value);
+                if (file.Count == 0 || String.IsNullOrWhiteSpace(GetText(file, "url", GetText(file, "download_url", "")))) continue;
+                files.Add(file);
+            }
+            if (files.Count < 2) return false;
+            string packageId = Guid.NewGuid().ToString("N");
+            string directory = GetText(item, "download_directory", GetText(item, "download_path", ""));
+            if (String.IsNullOrWhiteSpace(directory)) directory = Path.Combine(GetDownloadDirectory(), SafeFolderName(GetText(item, "package_name", displayName)));
+            string primaryName = "";
+            foreach (Dictionary<string, object> file in files)
+            {
+                string name = SafeDownloadFileName(GetText(file, "name", GetText(file, "filename", "download.bin")));
+                if (BoolValue(file, "primary", false)) primaryName = name;
+            }
+            if (String.IsNullOrWhiteSpace(primaryName)) primaryName = SafeDownloadFileName(GetText(files[0], "name", GetText(files[0], "filename", "download.bin")));
+            lock (packageDownloadGroupsLock) packageDownloadGroups[packageId] = new PackageDownloadGroup { Remaining = files.Count, PrimaryName = primaryName, DisplayName = displayName, Directory = directory };
+            foreach (Dictionary<string, object> file in files)
+            {
+                string url = GetText(file, "url", GetText(file, "download_url", ""));
+                string name = SafeDownloadFileName(GetText(file, "name", GetText(file, "filename", "download.bin")));
+                DownloadFile(url, name, GetText(file, "backup_url", ""), GetText(file, "backup_page_url", ""), directory, BoolValue(item, "download_delete_on_exit", false), packageId, name.Equals(primaryName, StringComparison.OrdinalIgnoreCase));
+            }
+            status.Text = "已加入多文件下载队列：" + displayName;
+            return true;
         }
 
         private bool ConfirmButtonGuard(Dictionary<string, object> guard, string name)
@@ -11102,6 +11178,11 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey = "")
         {
+            DownloadFile(url, displayName, backupUrl, backupPageUrl, customDirectory, deleteOnExit, downloadKey, "", false);
+        }
+
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary)
+        {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             if (String.IsNullOrWhiteSpace(downloadKey)) downloadKey = BuildDownloadKey("", originalUrl, backupUrl, backupPageUrl, displayName);
@@ -11111,15 +11192,17 @@ namespace ToolboxClient
                 : PortalText("正在解析下载地址...", "Preparing download...");
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey, string packageGroupId, bool packagePrimary)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
             result.DownloadKey = downloadKey ?? "";
+            result.PackageGroupId = packageGroupId ?? "";
+            result.PackagePrimary = packagePrimary;
             result.CustomDirectory = customDirectory;
             result.DeleteOnExit = deleteOnExit;
             result.BackupUrl = (backupUrl ?? "").Trim();
@@ -11178,6 +11261,7 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask existingErrorTask = FindActiveDownloadByKey(result.DownloadKey);
                 if (existingErrorTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingErrorTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(existingErrorTask)) return;
@@ -11193,6 +11277,7 @@ namespace ToolboxClient
             DownloadRequest download = result.Download;
             if (download == null)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask existingNullTask = FindActiveDownloadByKey(result.DownloadKey);
                 if (existingNullTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingNullTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(existingNullTask)) return;
@@ -11202,6 +11287,7 @@ namespace ToolboxClient
             }
             if (download.BrowserOnly)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByKey(result.DownloadKey);
@@ -11225,8 +11311,12 @@ namespace ToolboxClient
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
                 ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
-                string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
-                status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
+                if (!String.IsNullOrWhiteSpace(result.PackageGroupId)) CompletePackageDownloadMember(result.PackageGroupId, existingRecord.SavedPath, true);
+                else
+                {
+                    string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
+                    status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
+                }
                 FillDownloadRecords();
                 return;
             }
@@ -11243,6 +11333,8 @@ namespace ToolboxClient
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
             task.DisplayName = result.DisplayName;
             task.DownloadKey = result.DownloadKey;
+            task.PackageGroupId = result.PackageGroupId;
+            task.PackagePrimary = result.PackagePrimary;
             task.CustomDownloadDirectory = result.CustomDirectory;
             task.DeleteOnExit = result.DeleteOnExit;
             task.BrowserUrl = download.BrowserUrl;
@@ -11277,6 +11369,10 @@ namespace ToolboxClient
                     FastStartDirectDownload = true
                 };
             }
+            DownloadRequest tianyi = ResolveTianyiShareDownloadRequest(url);
+            if (tianyi != null) return tianyi;
+            DownloadRequest feiji = ResolveFeijiShareDownloadRequest(url);
+            if (feiji != null) return feiji;
             DownloadRequest request = Resolve8UidDownloadRequest(url);
             if (request == null) request = ResolveCloud189ClientDownloadRequest(url);
             if (request == null)
@@ -11311,16 +11407,54 @@ namespace ToolboxClient
             return request;
         }
 
+        private DownloadRequest ResolveTianyiShareDownloadRequest(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return null;
+            string host = (uri.Host ?? "").ToLowerInvariant();
+            bool tianyiHost = host.Equals("cloud.189.cn", StringComparison.OrdinalIgnoreCase) ||
+                              host.EndsWith(".189.cn", StringComparison.OrdinalIgnoreCase);
+            string path = uri.AbsolutePath ?? "";
+            if (!tianyiHost || !(path.StartsWith("/t/", StringComparison.OrdinalIgnoreCase) ||
+                                  path.StartsWith("/web/share", StringComparison.OrdinalIgnoreCase))) return null;
+            return BrowserDownloadRequest(url, "天翼云文件已识别，但下载需要登录天翼云；已打开分享页面，请转存后下载。 ");
+        }
+
+        private DownloadRequest ResolveFeijiShareDownloadRequest(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return null;
+            string host = (uri.Host ?? "").ToLowerInvariant();
+            if (!(host.Equals("feijipan.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".feijipan.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.Equals("xiaofeiji.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".xiaofeiji.com", StringComparison.OrdinalIgnoreCase))) return null;
+            if (!(uri.AbsolutePath ?? "").StartsWith("/s/", StringComparison.OrdinalIgnoreCase)) return null;
+            return BrowserDownloadRequest(url, "小飞机网盘分享页已打开，请在官方页面下载文件。 ");
+        }
+
         private static bool IsServerDownloadEndpoint(string url)
         {
             Uri uri;
             if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return false;
-            return uri.AbsolutePath.Equals("/api/toolbox/builtin-download", StringComparison.OrdinalIgnoreCase);
+            return uri.AbsolutePath.Equals("/api/toolbox/builtin-download", StringComparison.OrdinalIgnoreCase) ||
+                   IsCloudDownloadEndpoint(url);
+        }
+
+        private static bool IsCloudDownloadEndpoint(string url)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri)) return false;
+            return uri.AbsolutePath.Equals("/api/cloud-resolver/download-file", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool ShouldFastStartDownload(DownloadRequest request)
         {
             if (request == null || request.BrowserOnly) return false;
+            // Cloud downloads need one provider-side refresh/challenge round
+            // before the proxy can return the first byte.  Treating them as a
+            // fast direct URL makes the 1.5s probe expire and reports 0B.
+            if (IsCloudDownloadEndpoint(request.Url)) return false;
             if (IsServerDownloadEndpoint(request.Url)) return true;
 
             string directName = DirectDownloadFileNameFromText(request.Url);
@@ -11930,6 +12064,12 @@ namespace ToolboxClient
                     {
                         failure = ex;
                         task.AbortActiveRequests();
+                        if (!(ex is OperationCanceledException) && !task.CancelRequested && IsPermanentDownloadFailure(ex))
+                        {
+                            task.StateText = "下载源不可用，请更换分享链接";
+                            QueueDownloadTaskRowUpdate(task);
+                            break;
+                        }
                         if (!(ex is OperationCanceledException) && !task.CancelRequested && TrySwitchToBackupDownload(task))
                         {
                             failure = null;
@@ -11984,8 +12124,11 @@ namespace ToolboxClient
 
         private bool TrySwitchToBackupDownload(DownloadTask task)
         {
-            if (task == null || task.UsingBackup || String.IsNullOrWhiteSpace(task.BackupUrl)) return false;
-            if (String.Equals(task.BackupUrl, task.Url, StringComparison.OrdinalIgnoreCase)) return false;
+            if (task == null || String.IsNullOrWhiteSpace(task.BackupUrl)) return false;
+            string[] candidates = task.BackupUrl.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => (value ?? "").Trim()).Where(value => !String.IsNullOrWhiteSpace(value)).ToArray();
+            string nextBackup = candidates.FirstOrDefault(value => !String.Equals(value, task.Url, StringComparison.OrdinalIgnoreCase));
+            if (String.IsNullOrWhiteSpace(nextBackup)) return false;
             task.AbortActiveRequests();
             CleanupSegmentedPart(task);
             try
@@ -11996,9 +12139,10 @@ namespace ToolboxClient
             {
             }
             DownloadRequest backup = null;
-            try { backup = ResolveDownloadRequest(task.BackupUrl); } catch { }
-            if (backup == null || backup.BrowserOnly) backup = CreateRawDownloadRequest(task.BackupUrl, task.DisplayName);
+            try { backup = ResolveDownloadRequest(nextBackup); } catch { }
+            if (backup == null || backup.BrowserOnly) backup = CreateRawDownloadRequest(nextBackup, task.DisplayName);
             if (backup == null || String.IsNullOrWhiteSpace(backup.Url)) return false;
+            task.BackupUrl = String.Join(Environment.NewLine, candidates.Where(value => !String.Equals(value, nextBackup, StringComparison.OrdinalIgnoreCase)));
             task.Url = backup.Url;
             task.BrowserUrl = backup.BrowserUrl;
             task.FastStartDirectDownload = backup.FastStartDirectDownload;
@@ -12115,6 +12259,7 @@ namespace ToolboxClient
         private void DownloadFileAttempt(DownloadTask task, int attempt)
         {
             if (task == null) return;
+            if (IsCloudDownloadEndpoint(task.Url)) task.FastStartDirectDownload = false;
             if (task.Segmented && task.RestoredSegments.Count > 0)
             {
                 DownloadFileSegmented(task, null, attempt, task.RestoredSegments);
@@ -12470,8 +12615,11 @@ namespace ToolboxClient
                     if (info.TotalLength <= 0 && response.StatusCode != HttpStatusCode.PartialContent) info.TotalLength = response.ContentLength;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                // Preserve provider-level permanent failures so the download worker
+                // can stop immediately instead of reporting a misleading Range error.
+                if (IsPermanentDownloadFailure(ex)) throw;
             }
             return info;
         }
@@ -12510,6 +12658,12 @@ namespace ToolboxClient
                     throw;
                 }
                 CaptureDownloadSession(task, current, response);
+                if (TrySolveLanzouChallenge(task, current, response))
+                {
+                    response.Close();
+                    redirect--;
+                    continue;
+                }
                 if (!IsRedirectStatus(response.StatusCode)) return response;
                 string location = response.Headers["Location"];
                 response.Close();
@@ -12533,6 +12687,13 @@ namespace ToolboxClient
                 {
                     HttpWebResponse response = (HttpWebResponse)request.GetResponse();
                     CaptureDownloadSession(task, current, response);
+                    if (TrySolveLanzouChallenge(task, current, response))
+                    {
+                        response.Close();
+                        task.UntrackRequest(request);
+                        redirect--;
+                        continue;
+                    }
                     if (!IsRedirectStatus(response.StatusCode))
                     {
                         activeRequest = request;
@@ -12563,6 +12724,58 @@ namespace ToolboxClient
                 }
             }
             throw new InvalidOperationException("下载地址重定向次数过多。");
+        }
+
+        private static bool TrySolveLanzouChallenge(DownloadTask task, string requestUrl, HttpWebResponse response)
+        {
+            if (response == null || task == null || String.IsNullOrWhiteSpace(requestUrl)) return false;
+            Uri uri;
+            if (!Uri.TryCreate(requestUrl, UriKind.Absolute, out uri)) return false;
+            string host = (uri.Host ?? "").ToLowerInvariant();
+            if (!(host.EndsWith(".lanrar.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".lanzou.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".lanzouw.com", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".lanzouc.com", StringComparison.OrdinalIgnoreCase))) return false;
+            if ((response.ContentType ?? "").IndexOf("html", StringComparison.OrdinalIgnoreCase) < 0) return false;
+            string source;
+            try
+            {
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+                {
+                    char[] buffer = new char[32768];
+                    int count = reader.Read(buffer, 0, buffer.Length);
+                    source = new String(buffer, 0, count);
+                }
+            }
+            catch { return false; }
+            Match match = Regex.Match(source, "var\\s+arg1\\s*=\\s*['\\\"]([0-9A-Fa-f]+)['\\\"]", RegexOptions.IgnoreCase);
+            if (!match.Success) return false;
+            string arg = match.Groups[1].Value.ToUpperInvariant();
+            int[] order = new int[] { 0xf, 0x23, 0x1d, 0x18, 0x21, 0x10, 0x1, 0x26, 0xa, 0x9, 0x13, 0x1f, 0x28, 0x1b, 0x16, 0x17, 0x19, 0xd, 0x6, 0xb, 0x27, 0x12, 0x14, 0x8, 0xe, 0x15, 0x20, 0x1a, 0x2, 0x1e, 0x7, 0x4, 0x11, 0x5, 0x3, 0x1c, 0x22, 0x25, 0xc, 0x24 };
+            const string key = "3000176000856006061501533003690027800375";
+            if (arg.Length != order.Length || key.Length != arg.Length) return false;
+            char[] shuffled = new char[arg.Length];
+            for (int index = 0; index < arg.Length; index++)
+            {
+                int position = Array.IndexOf(order, index + 1);
+                if (position < 0) return false;
+                shuffled[position] = arg[index];
+            }
+            StringBuilder cookieValue = new StringBuilder(arg.Length);
+            for (int index = 0; index < shuffled.Length; index += 2)
+            {
+                int left = Convert.ToInt32(new String(shuffled, index, 2), 16);
+                int right = Convert.ToInt32(key.Substring(index, 2), 16);
+                cookieValue.Append((left ^ right).ToString("x2"));
+            }
+            try
+            {
+                task.Cookies.Add(uri, new Cookie("acw_sc__v2", cookieValue.ToString(), "/", uri.Host));
+                task.Referer = requestUrl;
+                return true;
+            }
+            catch { return false; }
         }
 
         private static HttpWebRequest CreateDownloadHttpRequest(string url, int timeout, int readWriteTimeout)
@@ -12676,6 +12889,28 @@ namespace ToolboxClient
             return false;
         }
 
+        private static bool IsPermanentDownloadFailure(Exception ex)
+        {
+            for (Exception current = ex; current != null; current = current.InnerException)
+            {
+                WebException web = current as WebException;
+                if (web != null)
+                {
+                    HttpWebResponse response = web.Response as HttpWebResponse;
+                    if (response != null && response.StatusCode == HttpStatusCode.Gone) return true;
+                }
+                string message = current.Message ?? "";
+                if (message.IndexOf("(410)", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("410 Gone", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("不再存在", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("DOWNLOAD_URL_UNAVAILABLE", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static string ResolveRedirectUrl(string currentUrl, string location)
         {
             Uri current = new Uri(currentUrl);
@@ -12692,6 +12927,7 @@ namespace ToolboxClient
 
             if (cancelled)
             {
+                CompletePackageDownloadMember(task.PackageGroupId, task.Path, false);
                 ResetVst76InlineDownloadProgress(task);
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
@@ -12708,10 +12944,14 @@ namespace ToolboxClient
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
                 UpdateActiveDownloadTask(task);
-                string launchStatus = AutoRunDownloadsValue(LoadClientSettings())
-                    ? LaunchDownloadedFile(task.Path)
-                    : "已下载";
-                status.Text = launchStatus + "：" + task.FileName;
+                if (!String.IsNullOrWhiteSpace(task.PackageGroupId)) CompletePackageDownloadMember(task.PackageGroupId, task.Path, true);
+                else
+                {
+                    string launchStatus = AutoRunDownloadsValue(LoadClientSettings())
+                        ? LaunchDownloadedFile(task.Path)
+                        : "已下载";
+                    status.Text = launchStatus + "：" + task.FileName;
+                }
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "", task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
@@ -12720,7 +12960,19 @@ namespace ToolboxClient
             }
 
             CleanupSegmentedPart(task);
+            CompletePackageDownloadMember(task.PackageGroupId, task.Path, false);
             ResetVst76InlineDownloadProgress(task);
+            bool permanentFailure = IsPermanentDownloadFailure(failure);
+            if (permanentFailure)
+            {
+                task.StateText = "下载源不可用，请更换分享链接";
+                status.Text = task.StateText;
+                AddDownloadRecord(task.FileName, task.OriginalUrl, "", "下载源不可用", "官方未提供可用下载地址，请更换分享链接。", task.DeleteOnExit);
+                RemoveActiveDownload(task);
+                FillDownloadRecords();
+                StartQueuedDownloads();
+                return;
+            }
             // Keep interrupted partial downloads in the queue so they survive restart and can resume.
             if (!task.UsingBackup && !task.CancelRequested && task.Received > 0 && File.Exists(task.Path))
             {
@@ -12747,6 +12999,30 @@ namespace ToolboxClient
             RemoveActiveDownload(task);
             FillDownloadRecords();
             StartQueuedDownloads();
+        }
+
+        private void CompletePackageDownloadMember(string packageId, string path, bool success)
+        {
+            if (String.IsNullOrWhiteSpace(packageId)) return;
+            PackageDownloadGroup group = null;
+            bool launch = false;
+            lock (packageDownloadGroupsLock)
+            {
+                if (!packageDownloadGroups.TryGetValue(packageId, out group)) return;
+                if (success && String.IsNullOrWhiteSpace(group.PrimaryPath) && String.Equals(Path.GetFileName(path), group.PrimaryName, StringComparison.OrdinalIgnoreCase)) group.PrimaryPath = path;
+                if (!success) group.Failed = true;
+                group.Completed++;
+                if (group.Completed >= group.Remaining)
+                {
+                    packageDownloadGroups.Remove(packageId);
+                    launch = !group.Failed && !String.IsNullOrWhiteSpace(group.PrimaryPath) && AutoRunDownloadsValue(LoadClientSettings());
+                }
+            }
+            if (launch && File.Exists(group.PrimaryPath))
+            {
+                string launchStatus = LaunchDownloadedFile(group.PrimaryPath);
+                status.Text = launchStatus + "：" + group.DisplayName;
+            }
         }
 
         private void CleanupSegmentedPart(DownloadTask task)
@@ -12861,7 +13137,10 @@ namespace ToolboxClient
                     task.Total = state.Total;
                     task.Segmented = state.Segmented;
                     task.DisableSegmentedDownload = state.DisableSegmentedDownload;
-                    task.FastStartDirectDownload = state.FastStartDirectDownload;
+                    // Older builds persisted cloud proxy tasks as fast-start
+                    // downloads.  Normalize that flag when restoring them so
+                    // the first provider challenge gets the normal timeout.
+                    task.FastStartDirectDownload = state.FastStartDirectDownload && !IsCloudDownloadEndpoint(url);
                     task.CustomDownloadDirectory = state.CustomDownloadDirectory ?? "";
                     task.DeleteOnExit = state.DeleteOnExit;
                     task.BackupUrl = state.BackupUrl ?? "";
@@ -17344,7 +17623,16 @@ namespace ToolboxClient
 
         private static string GetBackupUrl(Dictionary<string, object> item)
         {
-            return FirstText(item, new string[] { "backup_url", "backup_download_url", "fallback_url", "backupUrl" });
+            IList<object> backupUrls = AsList(Get(item, "backup_urls"));
+            List<string> values = new List<string>();
+            foreach (object value in backupUrls)
+            {
+                string candidate = Convert.ToString(value, CultureInfo.InvariantCulture).Trim();
+                if (!String.IsNullOrWhiteSpace(candidate) && !values.Contains(candidate, StringComparer.OrdinalIgnoreCase)) values.Add(candidate);
+            }
+            string legacy = FirstText(item, new string[] { "backup_url", "backup_download_url", "fallback_url", "backupUrl" });
+            if (!String.IsNullOrWhiteSpace(legacy) && !values.Contains(legacy, StringComparer.OrdinalIgnoreCase)) values.Add(legacy);
+            return String.Join(Environment.NewLine, values);
         }
 
         private static string GetBackupPageUrl(Dictionary<string, object> item)
@@ -19378,6 +19666,19 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public string DownloadKey = "";
+            public string PackageGroupId = "";
+            public bool PackagePrimary;
+        }
+
+        private sealed class PackageDownloadGroup
+        {
+            public int Remaining;
+            public int Completed;
+            public bool Failed;
+            public string Directory = "";
+            public string PrimaryName = "";
+            public string PrimaryPath = "";
+            public string DisplayName = "";
         }
 
         private sealed class CommandRunResult
@@ -19441,6 +19742,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public string DownloadKey = "";
+            public string PackageGroupId = "";
+            public bool PackagePrimary;
             public bool UsingBackup;
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
