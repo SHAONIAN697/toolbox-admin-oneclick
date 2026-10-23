@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import sys
 import smtplib
 import subprocess
@@ -1797,7 +1798,54 @@ def csharp_compile_command(compiler, args):
 
 
 def is_windows_exe(data):
-    return isinstance(data, (bytes, bytearray)) and len(data) >= 2 and data[:2] == b"MZ"
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 0x40 or data[:2] != b"MZ":
+        return False
+    try:
+        pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+        if pe_offset < 0x40 or pe_offset + 24 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0":
+            return False
+
+        file_header = pe_offset + 4
+        section_count = struct.unpack_from("<H", data, file_header + 2)[0]
+        optional_size = struct.unpack_from("<H", data, file_header + 16)[0]
+        optional_header = file_header + 20
+        if section_count == 0 or optional_size < 2 or optional_header + optional_size > len(data):
+            return False
+
+        magic = struct.unpack_from("<H", data, optional_header)[0]
+        if magic == 0x10B:
+            number_of_directories_offset, directories_offset = 92, 96
+        elif magic == 0x20B:
+            number_of_directories_offset, directories_offset = 108, 112
+        else:
+            return False
+        if optional_size < directories_offset + 15 * 8:
+            return False
+        directory_count = struct.unpack_from("<I", data, optional_header + number_of_directories_offset)[0]
+        if directory_count <= 14:
+            return False
+
+        clr_offset = optional_header + directories_offset + 14 * 8
+        clr_rva, clr_size = struct.unpack_from("<II", data, clr_offset)
+        if clr_rva == 0 or clr_size < 0x48:
+            return False
+
+        section_table = optional_header + optional_size
+        if section_table + section_count * 40 > len(data):
+            return False
+        for index in range(section_count):
+            section = section_table + index * 40
+            virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from("<IIII", data, section + 8)
+            span = max(virtual_size, raw_size)
+            if virtual_address <= clr_rva and clr_rva + 0x48 <= virtual_address + span:
+                clr_header = raw_pointer + clr_rva - virtual_address
+                if clr_rva - virtual_address + 0x48 > raw_size or clr_header + 0x48 > len(data):
+                    return False
+                header_size = struct.unpack_from("<I", data, clr_header)[0]
+                return 0x48 <= header_size <= clr_size and clr_header + header_size <= len(data)
+        return False
+    except (struct.error, OverflowError):
+        return False
 
 
 def binary_header_preview(data, limit=16):

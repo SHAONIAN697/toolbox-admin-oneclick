@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -35,6 +36,34 @@ class DeploymentAdminAccountTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_windows_exe_validation_requires_complete_managed_pe(self):
+        def managed_pe(optional_magic=0x10B, include_clr=True):
+            optional_size = 0xE0 if optional_magic == 0x10B else 0xF0
+            optional_header = 0x98
+            section_table = optional_header + optional_size
+            data = bytearray(section_table + 40 + 0x200)
+            data[:2] = b"MZ"
+            struct.pack_into("<I", data, 0x3C, 0x80)
+            data[0x80:0x84] = b"PE\0\0"
+            file_header = 0x84
+            struct.pack_into("<H", data, file_header + 2, 1)
+            struct.pack_into("<H", data, file_header + 16, optional_size)
+            struct.pack_into("<H", data, optional_header, optional_magic)
+            number_of_directories_offset = 92 if optional_magic == 0x10B else 108
+            directories_offset = 96 if optional_magic == 0x10B else 112
+            struct.pack_into("<I", data, optional_header + number_of_directories_offset, 16)
+            if include_clr:
+                struct.pack_into("<II", data, optional_header + directories_offset + 14 * 8, 0x2000, 0x48)
+            struct.pack_into("<IIII", data, section_table + 8, 0x200, 0x2000, 0x200, 0x200)
+            struct.pack_into("<I", data, 0x200, 0x48)
+            return data
+
+        self.assertTrue(app.is_windows_exe(managed_pe()))
+        self.assertTrue(app.is_windows_exe(managed_pe(0x20B)))
+        self.assertFalse(app.is_windows_exe(b"MZ" + bytes(128)))
+        self.assertFalse(app.is_windows_exe(managed_pe(include_clr=False)))
+        self.assertFalse(app.is_windows_exe(managed_pe()[:0x90]))
 
     def test_first_install_uses_configured_admin_username_and_password(self):
         store = app.read_users()

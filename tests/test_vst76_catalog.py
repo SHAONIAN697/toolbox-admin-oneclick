@@ -88,7 +88,10 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
         prefetch = cs[cs.index("private void QueueSoftwareCatalogResolvePrefetch"):cs.index("private Control CreateSoftwareNoResultCard")]
         self.assertIn("softwareCatalogPrefetchQueue.Clear()", prefetch)
+        self.assertIn("softwareCatalogPrefetchQueue.Add(item)", prefetch)
+        self.assertIn("softwareCatalogPrefetchQueue.RemoveAt(0)", prefetch)
         self.assertIn("ThreadPool.QueueUserWorkItem(delegate { SoftwareCatalogResolvePrefetchWorker(); })", prefetch)
+        self.assertNotIn("Queue<", cs)
         self.assertIn("SoftwareCatalogMaxResolvePrefetchWorkers = 3", cs)
         self.assertIn('return "package:" + entry.PackageId.Trim();', cs)
         self.assertIn("Thread resolver = new Thread(delegate()", cs)

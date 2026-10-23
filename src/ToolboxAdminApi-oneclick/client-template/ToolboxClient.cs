@@ -283,7 +283,7 @@ namespace ToolboxClient
         private readonly object softwareCatalogResolveLock = new object();
         private readonly HashSet<string> softwareCatalogInteractiveResolveRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly object softwareCatalogPrefetchLock = new object();
-        private readonly Queue<KeyValuePair<string, SoftwareCatalogEntry>> softwareCatalogPrefetchQueue = new Queue<KeyValuePair<string, SoftwareCatalogEntry>>();
+        private readonly List<KeyValuePair<string, SoftwareCatalogEntry>> softwareCatalogPrefetchQueue = new List<KeyValuePair<string, SoftwareCatalogEntry>>();
         private readonly HashSet<string> softwareCatalogPrefetchInFlight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private int softwareCatalogPrefetchWorkersRunning = 0;
         private const int SoftwareCatalogMaxResolvePrefetchWorkers = 3;
@@ -8144,7 +8144,7 @@ namespace ToolboxClient
                 softwareCatalogPrefetchQueue.Clear();
                 foreach (KeyValuePair<string, SoftwareCatalogEntry> item in pending)
                 {
-                    if (!softwareCatalogPrefetchInFlight.Contains(item.Key)) softwareCatalogPrefetchQueue.Enqueue(item);
+                    if (!softwareCatalogPrefetchInFlight.Contains(item.Key)) softwareCatalogPrefetchQueue.Add(item);
                 }
                 int desiredWorkers = Math.Min(SoftwareCatalogMaxResolvePrefetchWorkers, softwareCatalogPrefetchQueue.Count);
                 workersToStart = Math.Max(0, desiredWorkers - softwareCatalogPrefetchWorkersRunning);
@@ -8179,7 +8179,8 @@ namespace ToolboxClient
                         softwareCatalogPrefetchWorkersRunning = Math.Max(0, softwareCatalogPrefetchWorkersRunning - 1);
                         return;
                     }
-                    item = softwareCatalogPrefetchQueue.Dequeue();
+                    item = softwareCatalogPrefetchQueue[0];
+                    softwareCatalogPrefetchQueue.RemoveAt(0);
                     if (!softwareCatalogPrefetchInFlight.Add(item.Key)) continue;
                 }
 
@@ -10760,7 +10761,8 @@ namespace ToolboxClient
             bool[,] visited =
                 new bool[bitmap.Width, bitmap.Height];
 
-            Queue<Point> queue = new Queue<Point>();
+            List<Point> queue = new List<Point>();
+            int queueIndex = 0;
 
             Action<int, int> enqueue = delegate(int x, int y)
             {
@@ -10784,7 +10786,7 @@ namespace ToolboxClient
                 if (transparent || darkBackground)
                 {
                     visited[x, y] = true;
-                    queue.Enqueue(new Point(x, y));
+                    queue.Add(new Point(x, y));
                 }
             };
 
@@ -10800,9 +10802,9 @@ namespace ToolboxClient
                 enqueue(bitmap.Width - 1, y);
             }
 
-            while (queue.Count > 0)
+            while (queueIndex < queue.Count)
             {
-                Point point = queue.Dequeue();
+                Point point = queue[queueIndex++];
 
                 bitmap.SetPixel(
                     point.X,
