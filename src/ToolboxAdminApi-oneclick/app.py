@@ -3595,7 +3595,9 @@ def public_order(order):
     remaining_seconds = int(order.get("remainingSeconds", 0) or 0)
     is_expired = bool(order.get("isExpired", False) or order.get("status") == "expired")
     public_status = order.get("status", "pending")
-    if order.get("status") == "pending" and order.get("action") == "cloud_resolver_plan_purchase":
+    if order.get("status") == "pending" and order.get("action") in (
+        "cloud_resolver_plan_purchase", "cloud_resolver_code_generate"
+    ):
         try:
             if pending_expires_at:
                 expires_at = parse_iso_datetime(pending_expires_at)
@@ -5888,6 +5890,8 @@ class Handler(BaseHTTPRequestHandler):
                 fulfill_balance_recharge_order(order, paid=True, external_trade_no=external_trade_no)
             elif order.get("action") == "cloud_resolver_plan_purchase" and cloud_resolver:
                 cloud_resolver.fulfill_order(_app_context(), order, external_trade_no=external_trade_no)
+            elif order.get("action") == "cloud_resolver_code_generate" and cloud_resolver:
+                cloud_resolver.fulfill_agent_code_order(_app_context(), order, external_trade_no=external_trade_no)
             else:
                 fulfill_invite_order(order, paid=True, external_trade_no=external_trade_no)
             order["status"] = "paid"
@@ -6592,7 +6596,9 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 rows = data.get("orders", [])
                 if (getattr(self, "query", {}) or {}).get("scope", [""])[-1] == "cloud_resolver":
-                    rows = [order for order in rows if order.get("action") == "cloud_resolver_plan_purchase"]
+                    rows = [order for order in rows if order.get("action") in (
+                        "cloud_resolver_plan_purchase", "cloud_resolver_code_generate"
+                    )]
                 return self.send_json({"orders": [public_order(order) for order in rows[:200]]})
             if method == "PATCH":
                 body = self.read_body()
@@ -6602,6 +6608,12 @@ class Handler(BaseHTTPRequestHandler):
                 status = body.get("status") or "pending"
                 if status not in ("pending", "paid", "done", "cancelled"):
                     raise ValueError("不支持的订单状态。")
+                if order.get("action") == "cloud_resolver_code_generate":
+                    current_status = order.get("status") or "pending"
+                    if status in ("paid", "done") and not order.get("fulfilledAt"):
+                        return self.send_json({"error": "代理卡密订单必须完成付款并自动发卡后，才能标记为已支付或已完成。"}, 400)
+                    if status == "pending" and current_status in ("cancelled", "expired"):
+                        return self.send_json({"error": "已取消或已失效的卡密订单不能重新开启，请重新下单。"}, 400)
                 order["status"] = status
                 order["updatedAt"] = now_iso()
                 write_orders(data)
@@ -6619,7 +6631,7 @@ class Handler(BaseHTTPRequestHandler):
                     removed = []
                     kept = []
                     for order in data.get("orders", []):
-                        if order.get("action") != "cloud_resolver_plan_purchase":
+                        if order.get("action") not in ("cloud_resolver_plan_purchase", "cloud_resolver_code_generate"):
                             kept.append(order)
                             continue
                         public = public_order(order)

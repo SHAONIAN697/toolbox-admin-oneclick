@@ -78,6 +78,16 @@ class CloudResolverTests(unittest.TestCase):
         self.assertFalse(order["isExpired"])
         self.assertEqual(order["status"], "pending")
 
+    def test_public_order_includes_expiry_for_agent_code_generation(self):
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=20)
+        order = APP.public_order({
+            "id": "order_agent_codes", "userId": "agent", "status": "pending",
+            "action": "cloud_resolver_code_generate", "createdAt": datetime.now(timezone.utc).isoformat(),
+            "pendingExpiresAt": expires_at.isoformat(),
+        })
+        self.assertGreater(order["remainingSeconds"], 1100)
+        self.assertFalse(order["isExpired"])
+
     def test_cloud_order_expiry_uses_system_management_setting(self):
         created_at = datetime.now(timezone.utc)
         with patch.object(APP, "read_system_settings", return_value={"cloudResolverOrderExpiryMinutes": 45}):
@@ -93,12 +103,14 @@ class CloudResolverTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.original_parse_executor = RESOLVER.PARSE_EXECUTOR
         self.original_system_path = APP.SYSTEM_PATH
+        self.original_orders_path = APP.ORDERS_PATH
         self.original_diagnostic_log_path = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH
         RESOLVER.PARSE_EXECUTOR = InlineExecutor()
         RESOLVER.ACTIVE_PARSE_TASKS.clear()
         data = Path(self.temp.name)
         APP.DATA = data
         APP.SYSTEM_PATH = data / "system.json"
+        APP.ORDERS_PATH = data / "orders.json"
         APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = data / "cloud-resolver-diagnostics.jsonl"
         APP.USERS_PATH = data / "users.json"
         APP.USER_TEMPLATE_PATH = data / "user-template.json"
@@ -126,6 +138,7 @@ class CloudResolverTests(unittest.TestCase):
     def tearDown(self):
         RESOLVER.PARSE_EXECUTOR = self.original_parse_executor
         APP.SYSTEM_PATH = self.original_system_path
+        APP.ORDERS_PATH = self.original_orders_path
         APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = self.original_diagnostic_log_path
         APP.CLOUD_RESOLVER_MOCK_ENABLED = False
         self.temp.cleanup()
@@ -626,6 +639,125 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(deleted["deleted"], 2)
         self.assertEqual(RESOLVER._load(APP)["codes"], [])
+
+    def create_agent_code_plan(self, price=12.5):
+        status, plan = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "代理自助测试", "durationDays": 30, "parseQuota": 50,
+            "trafficQuota": 100, "dailyParseLimit": 20,
+            "agentWholesalePrice": price, "allowedProviders": ["mock"],
+        })
+        self.assertEqual(status, 201)
+        return plan
+
+    def set_agent_balance(self, amount):
+        users = APP.read_users()
+        next(row for row in users["users"] if row["id"] == "agent")["balance"] = amount
+        APP.write_users(users)
+
+    def test_agent_generates_owned_codes_after_atomic_balance_payment(self):
+        plan = self.create_agent_code_plan()
+        self.set_agent_balance(100)
+        status, quote = self.call("agent", "/api/agent/cloud-resolver/codes/quote", "POST", {
+            "planId": plan["id"], "count": 3, "maxUses": 2,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(quote["total"], 37.5)
+        self.assertTrue(quote["balanceEnough"])
+        status, result = self.call("agent", "/api/agent/cloud-resolver/codes", "POST", {
+            "planId": plan["id"], "count": 3, "maxUses": 2, "paymentMethod": "balance",
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual(len(result["codes"]), 3)
+        self.assertEqual(result["balance"], 62.5)
+        store = RESOLVER._load(APP)
+        created = [row for row in store["codes"] if row.get("generatedByAgent")]
+        self.assertEqual(len(created), 3)
+        self.assertTrue(all(row["assignedAgentId"] == "agent" for row in created))
+        self.assertTrue(all(row["maxUses"] == 2 and row["status"] == "assigned" for row in created))
+        self.assertEqual(len(set(result["codes"])), 3)
+        self.assertEqual(self.call("agent", "/api/agent/cloud-resolver/code-inventory", "GET")[1]["codes"][0]["code"], result["codes"][0])
+
+    def test_agent_online_payment_creates_no_code_until_fulfilled_and_is_idempotent(self):
+        plan = self.create_agent_code_plan(price=7.25)
+        self.set_agent_balance(100)
+        with patch.object(APP, "public_payment_channels", return_value=[
+            {"key": "easypay", "paymentType": "alipay", "label": "易支付 / 支付宝"}
+        ]), patch.object(APP, "build_payment_url", return_value="https://pay.example/order"):
+            status, result = self.call("agent", "/api/agent/cloud-resolver/codes", "POST", {
+                "planId": plan["id"], "count": 2, "maxUses": 1,
+                "paymentMethod": "interface", "paymentChannel": "easypay", "paymentType": "alipay",
+            })
+        self.assertEqual(status, 201)
+        self.assertEqual(result["paymentUrl"], "https://pay.example/order")
+        self.assertEqual(RESOLVER._load(APP)["codes"], [])
+        order = APP.read_orders()["orders"][0]
+        self.assertEqual(order["status"], "pending")
+        self.assertEqual(APP.read_users()["users"][-1]["balance"], 100)
+        codes = RESOLVER.fulfill_agent_code_order(APP, order, external_trade_no="trade-1")
+        self.assertEqual(len(codes), 2)
+        self.assertEqual(order["status"], "paid")
+        self.assertTrue(order["fulfilledAt"])
+        self.assertEqual(RESOLVER.fulfill_agent_code_order(APP, order, external_trade_no="trade-1"), codes)
+        self.assertEqual(len(RESOLVER._load(APP)["codes"]), 2)
+
+    def test_agent_cannot_generate_codes_without_price_or_as_another_role(self):
+        plan = self.create_agent_code_plan(price=0)
+        with self.assertRaisesRegex(ValueError, "代理拿货价"):
+            self.call("agent", "/api/agent/cloud-resolver/codes/quote", "POST", {
+                "planId": plan["id"], "count": 1,
+            })
+        status, _ = self.call("alice", "/api/agent/cloud-resolver/codes/quote", "POST", {
+            "planId": plan["id"], "count": 1,
+        })
+        self.assertEqual(status, 403)
+
+    def test_super_cloud_order_list_includes_plan_and_agent_code_orders(self):
+        APP.write_orders({"orders": [
+            {"id": "member-plan", "userId": "alice", "username": "alice", "status": "paid",
+             "action": "cloud_resolver_plan_purchase", "request": {"planId": "p1"}},
+            {"id": "agent-codes", "userId": "agent", "username": "agent", "status": "pending",
+             "action": "cloud_resolver_code_generate", "request": {"planId": "p1", "count": 2},
+             "createdAt": datetime.now(timezone.utc).isoformat(),
+             "pendingExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()},
+            {"id": "invite", "userId": "agent", "status": "paid", "action": "create_invites"},
+        ]})
+        class SuperHandler(FakeHandler):
+            query = {"scope": ["cloud_resolver"]}
+
+        handler = SuperHandler()
+        APP.Handler.handle_super(handler, "/api/super/orders", "GET", self.auth("admin"))
+        status, result = handler.responses[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual({row["id"] for row in result["orders"]}, {"member-plan", "agent-codes"})
+        by_id = {row["id"]: row for row in result["orders"]}
+        self.assertEqual(by_id["member-plan"]["username"], "alice")
+        self.assertEqual(by_id["agent-codes"]["username"], "agent")
+
+    def test_super_cannot_mark_unpaid_agent_code_order_paid_or_reopen_cancelled_order(self):
+        order = {
+            "id": "agent-code-order", "userId": "agent", "username": "agent",
+            "status": "pending", "action": "cloud_resolver_code_generate",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "pendingExpiresAt": (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat(),
+            "request": {"planId": "plan-1", "count": 1, "maxUses": 1},
+        }
+        APP.write_orders({"orders": [order]})
+
+        for status in ("paid", "done"):
+            handler = FakeHandler({"id": order["id"], "status": status})
+            APP.Handler.handle_super(handler, "/api/super/orders", "PATCH", self.auth("admin"))
+            self.assertEqual(400, handler.responses[-1][0])
+            self.assertEqual("pending", APP.read_orders()["orders"][0]["status"])
+
+        handler = FakeHandler({"id": order["id"], "status": "cancelled"})
+        APP.Handler.handle_super(handler, "/api/super/orders", "PATCH", self.auth("admin"))
+        self.assertEqual("cancelled", handler.responses[-1][1]["status"])
+        handler = FakeHandler({"id": order["id"], "status": "pending"})
+        APP.Handler.handle_super(handler, "/api/super/orders", "PATCH", self.auth("admin"))
+        self.assertEqual(400, handler.responses[-1][0])
+        with self.assertRaisesRegex(ValueError, "不能再生成激活码"):
+            RESOLVER.fulfill_agent_code_order(APP, APP.read_orders()["orders"][0])
+        self.assertEqual([], RESOLVER._load(APP)["codes"])
 
     def test_lanzou_download_redirect_allows_verified_cdn_host(self):
         request = urllib.request.Request("https://developer4.lanrar.com/file/?token")

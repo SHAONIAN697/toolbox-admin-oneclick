@@ -277,9 +277,19 @@
         <div class="panel-head"><h2>开通网盘解析</h2><button id="cloudResolverPlansRefreshBtn" type="button">刷新套餐</button></div>
         <div id="cloudResolverPlanCards" class="resolver-plan-grid"></div>
       </div>
-      <div class="panel" id="cloudResolverOrdersPanel">
-        <div class="panel-head"><h2>我的订单</h2><button id="cloudResolverOrdersRefreshBtn" type="button">刷新订单</button></div>
-        <div class="table-wrap"><table><thead><tr><th>套餐</th><th>金额</th><th>状态</th><th>剩余有效时间</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="cloudResolverOrderRows"></tbody></table></div>
+      <div class="panel collapsible-panel" id="cloudResolverOrdersPanel" data-collapsible-panel>
+        <div class="panel-head">
+          <h2><span id="cloudResolverOrdersTitle">我的订单</span></h2>
+          <div class="button-pair cloud-resolver-order-admin-actions" id="cloudResolverAdminOrderActions" hidden>
+            <button id="cloudResolverDeleteAllOrdersBtn" class="danger" type="button">删除全部订单</button>
+            <button id="cloudResolverDeleteCompletedOrdersBtn" class="danger" type="button">删除已完成</button>
+            <button id="cloudResolverDeleteExpiredOrdersBtn" class="danger" type="button">删除已失效</button>
+            <button id="cloudResolverDeleteSelectedOrdersBtn" class="danger" type="button" disabled>删除选中</button>
+            <button id="cloudResolverAdminRefreshOrdersBtn" type="button">刷新订单</button>
+          </div>
+          <button id="cloudResolverOrdersRefreshBtn" type="button">刷新订单</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th class="cloud-resolver-order-select" hidden><input id="cloudResolverSelectAllOrders" type="checkbox" aria-label="全选网盘解析订单"></th><th class="cloud-order-owner" hidden>下单用户</th><th>套餐或内容</th><th>金额</th><th>状态</th><th>剩余有效时间</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="cloudResolverOrderRows"></tbody></table></div>
       </div>
       <div class="panel cloudResolver-unauthed" id="cloudResolverRedeemPanel">
         <div class="panel-head"><h2>兑换激活码</h2></div>
@@ -314,10 +324,20 @@
       </div>
       <div class="panel cloudResolver-authorized" id="cloudResolverButtonManagerPanel" hidden><div class="panel-head"><h2>按钮管理</h2><button id="cloudResolverButtonManagerBtn" type="button">管理按钮与下载线路</button></div></div>
       <div class="panel agent-only" id="cloudResolverAgentPanel" hidden>
-        <div class="panel-head"><h2>网盘激活码库存与销售</h2><button id="cloudResolverAgentRefreshBtn" type="button">刷新库存</button></div>
-        <p class="note">选中自己的库存卡密和下级成员后销售。销售仅交付卡密，必须由成员本人登录兑换；销售价格按系统管理设置从代理余额扣除。</p>
+        <div class="panel-head"><h2>代理网盘激活码</h2><button id="cloudResolverAgentRefreshBtn" type="button">刷新</button></div>
+        <p class="note">生成后卡密归当前代理所有。可使用代理余额或总管理员配置的在线支付；在线付款成功后自动生成。</p>
+        <div class="form-grid compact">
+          <label>选择套餐<select id="cloudResolverAgentCodePlan"></select><small id="cloudResolverAgentCodePrice">请选择套餐查看拿货价</small></label>
+          <label>生成数量<input id="cloudResolverAgentCodeCount" type="number" min="1" max="500" value="1"></label>
+          <label>每码使用次数<input id="cloudResolverAgentCodeUses" type="number" min="1" max="100" value="1"></label>
+          <button id="cloudResolverAgentGenerateCodesBtn" type="button">生成激活码</button>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>卡密</th><th>套餐</th><th>状态</th><th>已用次数</th><th>操作</th></tr></thead><tbody id="cloudResolverAgentCodeRows"></tbody></table></div>
+        <h3>卡密订单</h3>
+        <div class="table-wrap"><table><thead><tr><th>订单内容</th><th>金额</th><th>状态</th><th>剩余有效时间</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="cloudResolverAgentOrderRows"></tbody></table></div>
+        <h3>销售给下级成员</h3>
+        <p class="note">下级成员需本人登录并兑换卡密；销售费用按系统管理设置从代理余额扣除。</p>
         <div class="form-grid compact"><label>可售库存<select id="cloudResolverAgentCodeSelect"></select></label><label>销售给下级成员<select id="cloudResolverAgentUserSelect"></select></label><button id="cloudResolverAgentSellBtn" type="button">销售卡密</button></div>
-        <div class="table-wrap"><table><thead><tr><th>库存编号</th><th>套餐</th><th>状态</th><th>使用次数</th><th></th></tr></thead><tbody id="cloudResolverAgentCodeRows"></tbody></table></div>
         <div class="table-wrap"><table><thead><tr><th>销售套餐</th><th>成员</th><th>销售时间</th><th>状态</th></tr></thead><tbody id="cloudResolverAgentSalesRows"></tbody></table></div>
       </div>
       <div class="panel super-only" id="cloudResolverCodesAdminPanel" hidden>
@@ -630,7 +650,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026102301"></script>
+  <script src="/admin.js?v=2026102302"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

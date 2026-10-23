@@ -44,6 +44,7 @@
   cloudResolverParseStartedAt: 0,
   cloudResolverParseActive: false,
   cloudOrderSelectedIds: new Set(),
+  cloudResolverAdminSelectedOrderIds: new Set(),
   cloudUserEntitlements: {}
 };
 
@@ -946,7 +947,7 @@ const CLOUD_PROVIDER_LABELS = {
 };
 const CLOUD_STATUS_LABELS = {
   pending: '等待中', parsed: '已解析', failed: '失败', browser: '浏览器下载', cancelled: '已取消', active: '启用', enabled: '启用',
-  disabled: '停用', draft: '草稿', sold: '已销售', redeemed: '已兑换', used: '已使用', available: '可用',
+  disabled: '停用', draft: '草稿', assigned: '代理库存', sold: '已销售', redeemed: '已兑换', used: '已使用', available: '可用',
   unavailable: '不可用', expired: '已过期', processing: '处理中', done: '已完成'
 };
 const CLOUD_SOURCE_LABELS = {
@@ -995,7 +996,9 @@ async function loadCloudResolver() {
   try { feature.entitlement = await api('/api/cloud-resolver/entitlement'); } catch (error) { feature.error = cloudErrorMessage(error); }
   try { feature.plans = (await api('/api/cloud-resolver/plans')).plans || []; } catch (error) { feature.plans = []; feature.error = feature.error || cloudErrorMessage(error); }
   try { feature.paymentChannels = (await api('/api/cloud-resolver/payment-channels')).channels || []; } catch { feature.paymentChannels = []; }
-  try { feature.orders = (await api('/api/cloud-resolver/orders')).orders || []; } catch { feature.orders = []; }
+  try {
+    feature.orders = (await api(isSuper() ? '/api/super/orders?scope=cloud_resolver' : '/api/cloud-resolver/orders')).orders || [];
+  } catch { feature.orders = []; }
   if (feature.entitlement?.allowed) {
     try {
       const resources = await api('/api/cloud-resolver/resources');
@@ -1016,6 +1019,7 @@ async function loadCloudResolver() {
   if (isAgent()) {
     try { feature.agentCodes = (await api('/api/agent/cloud-resolver/code-inventory')).codes || []; } catch { feature.agentCodes = []; }
     try { feature.agentSales = (await api('/api/agent/cloud-resolver/sales')).sales || []; } catch { feature.agentSales = []; }
+    try { feature.agentCodeOrders = (await api('/api/agent/cloud-resolver/code-orders')).orders || []; } catch { feature.agentCodeOrders = []; }
   }
 }
 
@@ -1029,14 +1033,77 @@ function cloudRemaining(seconds) {
   const minutes = Math.floor((value % 3600) / 60); const secs = value % 60;
   return `${days ? days + '天 ' : ''}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
+function cloudOrderContent(order) {
+  const detail = String(order.detail || '').trim();
+  if (detail && !['cloud_resolver_plan_purchase', 'cloud_resolver_code_generate'].includes(detail)) return detail;
+  if (order.action === 'cloud_resolver_code_generate') {
+    return `生成网盘激活码 × ${Math.max(1, Number(order.request?.count || 1))}`;
+  }
+  if (order.action === 'cloud_resolver_plan_purchase') {
+    return `网盘解析套餐 ${order.request?.planName || order.request?.planId || ''}`.trim();
+  }
+  return detail || '网盘解析订单';
+}
 function renderCloudOrders() {
   const rows = $('cloudResolverOrderRows'); if (!rows) return;
   const orders = state.cloudResolver.orders || [];
+  const adminView = isSuper();
+  const title = $('cloudResolverOrdersTitle');
+  if (title) title.textContent = adminView ? '所有用户网盘解析订单' : '我的订单';
+  const adminActions = $('cloudResolverAdminOrderActions');
+  if (adminActions) adminActions.hidden = !adminView;
+  const personalRefresh = $('cloudResolverOrdersRefreshBtn');
+  if (personalRefresh) personalRefresh.hidden = adminView;
+  const selectHeader = $('cloudResolverSelectAllOrders')?.closest('th');
+  if (selectHeader) selectHeader.hidden = !adminView;
+  document.querySelectorAll('.cloud-order-owner').forEach((cell) => { cell.hidden = !adminView; });
+  const visibleIds = new Set(orders.map((order) => String(order.id || '')).filter(Boolean));
+  state.cloudResolverAdminSelectedOrderIds = new Set(
+    [...state.cloudResolverAdminSelectedOrderIds].filter((id) => visibleIds.has(id))
+  );
+  const updateSelectionControls = () => {
+    const selectedCount = state.cloudResolverAdminSelectedOrderIds.size;
+    const deleteSelected = $('cloudResolverDeleteSelectedOrdersBtn');
+    if (deleteSelected) deleteSelected.disabled = selectedCount === 0;
+    const selectAll = $('cloudResolverSelectAllOrders');
+    if (selectAll) {
+      selectAll.checked = orders.length > 0 && selectedCount === orders.length;
+      selectAll.indeterminate = selectedCount > 0 && selectedCount < orders.length;
+    }
+  };
   rows.innerHTML = orders.length ? orders.map((order) => {
-    const planName = order.request?.planId ? ((state.cloudResolver.plans || []).find((p) => p.id === order.request.planId)?.name || order.request.planId) : order.detail || '网盘套餐';
-    const canPay = order.status === 'pending' && !order.isExpired && Number(order.remainingSeconds || 0) > 0 && order.paymentUrl;
-    return `<tr><td>${escapeHtml(planName)}</td><td>¥${Number(order.amount || 0).toFixed(2)}</td><td>${escapeHtml(cloudOrderStatus(order.status))}</td><td>${order.status === 'pending' ? cloudRemaining(order.remainingSeconds) : '-'}</td><td>${escapeHtml(cloudDateTime(order.createdAt))}</td><td>${canPay ? `<button type="button" data-cloud-continue-order="${escapeAttr(order.id)}">继续支付</button>` : order.status === 'expired' ? '请重新购买' : '-'}</td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="empty-cell">暂无订单</td></tr>';
+    const plans = adminView ? (state.cloudResolver.adminPlans || []) : (state.cloudResolver.plans || []);
+    const planName = adminView
+      ? (order.detail || (plans.find((plan) => plan.id === order.request?.planId)?.name) || order.request?.planId || '网盘套餐')
+      : (order.request?.planId ? (plans.find((plan) => plan.id === order.request.planId)?.name || order.request.planId) : order.detail || '网盘套餐');
+    const canPay = !adminView && order.status === 'pending' && !order.isExpired && Number(order.remainingSeconds || 0) > 0 && order.paymentUrl;
+    const account = `${order.displayName || order.username || order.userId || ''}${order.username && order.displayName !== order.username ? `（${order.username}）` : ''}`;
+    const orderId = String(order.id || '');
+    const canMarkDone = order.action !== 'cloud_resolver_code_generate' || !!order.fulfilledAt;
+    const actions = adminView
+      ? `<div class="actions"><button type="button" data-cloud-resolver-order-status="done" data-order-id="${escapeAttr(orderId)}"${canMarkDone ? '' : ' disabled title="未付款发卡订单不能标记为已处理"'}>已处理</button><button type="button" class="danger" data-cloud-resolver-order-status="cancelled" data-order-id="${escapeAttr(orderId)}">取消</button><button type="button" class="danger" data-cloud-resolver-order-delete="${escapeAttr(orderId)}">删除</button></div>`
+      : canPay ? `<button type="button" data-cloud-continue-order="${escapeAttr(orderId)}">继续支付</button>` : order.status === 'expired' ? '请重新购买' : '-';
+    return `<tr>${adminView ? `<td><input type="checkbox" data-cloud-resolver-order-select="${escapeAttr(orderId)}" aria-label="选择订单 ${escapeAttr(orderId)}"${state.cloudResolverAdminSelectedOrderIds.has(orderId) ? ' checked' : ''}></td><td>${escapeHtml(account)}</td>` : ''}<td>${escapeHtml(adminView ? cloudOrderContent(order) : planName)}</td><td>¥${Number(order.amount || 0).toFixed(2)}</td><td>${escapeHtml(cloudOrderStatus(order.status))}</td><td>${order.status === 'pending' ? cloudRemaining(order.remainingSeconds) : order.status === 'expired' ? '已失效' : '-'}</td><td>${escapeHtml(cloudDateTime(order.createdAt))}</td><td>${actions}</td></tr>`;
+  }).join('') : `<tr><td colspan="${adminView ? 8 : 6}" class="empty-cell">暂无订单</td></tr>`;
+  if (adminView) {
+    rows.querySelectorAll('[data-cloud-resolver-order-status]').forEach((button) => {
+      button.onclick = () => updateOrderStatus(button.dataset.orderId, button.dataset.cloudResolverOrderStatus)
+        .catch((error) => setStatus(error.message, true));
+    });
+    rows.querySelectorAll('[data-cloud-resolver-order-delete]').forEach((button) => {
+      button.onclick = () => deleteCloudResolverOrder(button.dataset.cloudResolverOrderDelete)
+        .catch((error) => setStatus(error.message, true));
+    });
+    rows.querySelectorAll('[data-cloud-resolver-order-select]').forEach((checkbox) => {
+      checkbox.onchange = () => {
+        const id = checkbox.dataset.cloudResolverOrderSelect || '';
+        if (checkbox.checked) state.cloudResolverAdminSelectedOrderIds.add(id);
+        else state.cloudResolverAdminSelectedOrderIds.delete(id);
+        updateSelectionControls();
+      };
+    });
+  }
+  updateSelectionControls();
 }
 
 async function loadUserCloudEntitlements() {
@@ -1086,13 +1153,40 @@ function renderCloudAgentPanel() {
   const codeRows = $('cloudResolverAgentCodeRows');
   const codes = feature.agentCodes || [];
   const members = (state.users || []).filter((user) => user.parentAgentId === state.currentUser?.id && user.active !== false);
+  const planSelect = $('cloudResolverAgentCodePlan');
+  if (planSelect) {
+    const selectedPlanId = planSelect.value;
+    planSelect.innerHTML = plans.map((plan) => `<option value="${escapeAttr(plan.id)}">${escapeHtml(plan.name || '网盘套餐')}</option>`).join('') || '<option value="">暂无可用套餐</option>';
+    if (plans.some((plan) => plan.id === selectedPlanId)) planSelect.value = selectedPlanId;
+    renderAgentCloudCodePrice();
+  }
   const codeSelect = $('cloudResolverAgentCodeSelect');
   const userSelect = $('cloudResolverAgentUserSelect');
   if (codeSelect) codeSelect.innerHTML = codes.filter((code) => code.redeemable !== false).map((code) => `<option value="${escapeAttr(code.inventoryId || '')}">${escapeHtml(code.maskedCode || code.inventoryId || '')} · ${escapeHtml(plans.find((plan) => plan.id === code.planId)?.name || code.planId || '')}</option>`).join('') || '<option value="">暂无可售库存</option>';
   if (userSelect) userSelect.innerHTML = members.map((user) => `<option value="${escapeAttr(user.id)}">${escapeHtml(displayNameOf(user, user.username))}</option>`).join('') || '<option value="">暂无下级成员</option>';
-  if (codeRows) codeRows.innerHTML = codes.map((code) => `<tr><td class="mono-cell">${escapeHtml(code.inventoryId || '')}</td><td>${escapeHtml(plans.find((plan) => plan.id === code.planId)?.name || code.planId || '')}</td><td>${escapeHtml(cloudStatusLabel(code.status))}</td><td>${Number(code.usedCount || 0)} / ${Number(code.maxUses || 1)}</td><td>${code.redeemable !== false ? '可售' : '不可售'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-cell">暂无代理库存</td></tr>';
+  if (codeRows) codeRows.innerHTML = codes.map((code) => {
+    const value = code.code || code.maskedCode || code.inventoryId || '';
+    const copy = code.code ? `<button type="button" data-cloud-copy-agent-code="${escapeAttr(code.code)}">复制</button>` : '完整卡密仅在生成时提供';
+    return `<tr><td><input class="cloud-code-input" type="text" readonly value="${escapeAttr(value)}" title="${code.code ? '完整卡密' : '此库存卡密由总管理员分配，未提供明文'}"></td><td>${escapeHtml(plans.find((plan) => plan.id === code.planId)?.name || code.planId || '')}</td><td>${escapeHtml(cloudStatusLabel(code.status))}</td><td>${Number(code.usedCount || 0)} / ${Number(code.maxUses || 1)}</td><td>${copy}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty-cell">暂无代理卡密</td></tr>';
   const salesRows = $('cloudResolverAgentSalesRows');
   if (salesRows) salesRows.innerHTML = (feature.agentSales || []).map((sale) => `<tr><td>${escapeHtml(plans.find((plan) => plan.id === sale.planId)?.name || sale.planId || '')}</td><td>${escapeHtml(userNameFromId(sale.soldTo, sale.soldTo || ''))}</td><td>${escapeHtml(cloudDateTime(sale.soldAt))}</td><td>${escapeHtml(cloudStatusLabel(sale.status))}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-cell">暂无销售记录</td></tr>';
+  renderAgentCloudOrders();
+}
+
+function renderAgentCloudOrders() {
+  const orderRows = $('cloudResolverAgentOrderRows');
+  if (orderRows) orderRows.innerHTML = (state.cloudResolver?.agentCodeOrders || []).map((order) => {
+    const canPay = order.status === 'pending' && !order.isExpired && Number(order.remainingSeconds || 0) > 0 && order.paymentUrl;
+    return `<tr><td>${escapeHtml(order.detail || '生成网盘激活码')}</td><td>¥${Number(order.amount || 0).toFixed(2)}</td><td>${escapeHtml(cloudOrderStatus(order.status))}</td><td>${order.status === 'pending' ? cloudRemaining(order.remainingSeconds) : '-'}</td><td>${escapeHtml(cloudDateTime(order.createdAt))}</td><td>${canPay ? `<button type="button" data-agent-cloud-continue-order="${escapeAttr(order.id)}">继续支付</button>` : '-'}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty-cell">暂无卡密订单</td></tr>';
+}
+
+function renderAgentCloudCodePrice() {
+  const label = $('cloudResolverAgentCodePrice');
+  const selectedId = $('cloudResolverAgentCodePlan')?.value;
+  const plan = (state.cloudResolver?.plans || []).find((item) => item.id === selectedId);
+  if (label) label.textContent = plan ? `代理拿货价：¥${Number(plan.agentWholesalePrice || 0).toFixed(2)} / 张` : '请选择套餐查看拿货价';
 }
 
 async function sellCloudAgentCode() {
@@ -1288,7 +1382,8 @@ async function loadAndRenderCloudResolver() {
   scheduleCloudResolverTaskPoll();
 }
 setInterval(() => {
-  const orders = state.cloudResolver?.orders || [];
+  const feature = state.cloudResolver || {};
+  const orders = [...(feature.orders || []), ...(feature.agentCodeOrders || [])];
   if (!orders.length) return;
   orders.forEach((order) => {
     if (order.status !== 'pending') return;
@@ -1299,11 +1394,12 @@ setInterval(() => {
     }
   });
   renderCloudOrders();
+  renderAgentCloudOrders();
 }, 1000);
 setInterval(() => {
   let changed = false;
   (state.orders || []).forEach((order) => {
-    if (order.action !== 'cloud_resolver_plan_purchase' || order.status !== 'pending') return;
+    if (!['cloud_resolver_plan_purchase', 'cloud_resolver_code_generate'].includes(order.action) || order.status !== 'pending') return;
     if (Number(order.remainingSeconds || 0) > 0) {
       order.remainingSeconds = Number(order.remainingSeconds) - 1;
       if (order.remainingSeconds <= 0) {
@@ -1368,6 +1464,35 @@ async function generateCloudCodes() {
   }) });
   await loadAndRenderCloudResolver();
   openCloudCodeResultDialog(result.codes || []);
+}
+async function generateAgentCloudCodes() {
+  const payload = {
+    planId: $('cloudResolverAgentCodePlan')?.value || '',
+    count: Number($('cloudResolverAgentCodeCount')?.value || 1),
+    maxUses: Number($('cloudResolverAgentCodeUses')?.value || 1),
+  };
+  if (!payload.planId) throw new Error('请先选择套餐。');
+  const quote = await api('/api/agent/cloud-resolver/codes/quote', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+  state.inviteCurrency = quote.currency || state.inviteCurrency || 'CNY';
+  if (state.currentUser) state.currentUser.balance = quote.balance;
+  renderUserContext();
+  const choice = await showInvitePaymentDialog(quote, { title: '网盘激活码付款', quantitySuffix: '张' });
+  if (!choice) return;
+  const result = await api('/api/agent/cloud-resolver/codes', {
+    method: 'POST', body: JSON.stringify({ ...payload, ...choice }),
+  });
+  if (result.paymentUrl || result.order?.paymentUrl) {
+    window.location.href = result.paymentUrl || result.order.paymentUrl;
+    return;
+  }
+  if (!result.codes?.length) throw new Error('付款完成，但服务器没有返回激活码，请刷新订单后重试。');
+  if (state.currentUser && typeof result.balance !== 'undefined') state.currentUser.balance = result.balance;
+  await loadAndRenderCloudResolver();
+  renderUserContext();
+  openCloudCodeResultDialog(result.codes);
+  showToast(result.message || '付款成功，激活码已生成。', 'success');
 }
 async function copyCloudCodes(codes) {
   const values = (codes || []).map((code) => code.code || '').filter(Boolean);
@@ -1714,9 +1839,46 @@ async function handlePaymentReturnStatus() {
   }
   try {
     // 支付状态和卡密必须以已登录账号可访问的服务端订单为准。
-    const order = await api(`/api/super/orders/${encodeURIComponent(orderId)}`);
-    if (order.action === 'recharge_balance') {
-      if (!['paid', 'done'].includes(order.status) || !order.fulfilledAt) {
+    let order = await api(isSuper() || isAgent()
+      ? `/api/super/orders/${encodeURIComponent(orderId)}`
+      : `/api/cloud-resolver/orders/${encodeURIComponent(orderId)}`);
+    let orderData = order.order || order;
+    if (orderData.action === 'cloud_resolver_code_generate' && isAgent()) {
+      order = await api(`/api/agent/cloud-resolver/code-orders/${encodeURIComponent(orderId)}`);
+      orderData = order.order || order;
+    }
+    if (orderData.action === 'cloud_resolver_code_generate') {
+      if (!['paid', 'done'].includes(orderData.status) || !orderData.fulfilledAt || !(order.codes || []).length) {
+        setStatus('订单尚未完成发卡，请稍后刷新重试；已支付请勿重复购买。', true);
+        return true;
+      }
+      const codes = order.codes || [];
+      await loadAndRenderCloudResolver();
+      openCloudCodeResultDialog(codes);
+      params.delete('payment');
+      params.delete('order');
+      const query = params.toString();
+      window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+      setStatus(`支付成功，已生成 ${codes.length} 张网盘激活码。`);
+      return true;
+    }
+    const resolvedOrder = orderData;
+    if (resolvedOrder.action === 'cloud_resolver_plan_purchase') {
+      if (!['paid', 'done'].includes(resolvedOrder.status) || !resolvedOrder.fulfilledAt) {
+        setStatus('网盘套餐订单尚未完成，请稍后刷新重试；已支付请勿重复购买。', true);
+        return true;
+      }
+      await loadAndRenderCloudResolver();
+      params.delete('payment');
+      params.delete('order');
+      const query = params.toString();
+      window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+      setStatus('支付成功，网盘解析套餐已开通。');
+      showToast('网盘解析套餐已开通。', 'success');
+      return true;
+    }
+    if (resolvedOrder.action === 'recharge_balance') {
+      if (!['paid', 'done'].includes(resolvedOrder.status) || !resolvedOrder.fulfilledAt) {
         setStatus('充值订单尚未完成入账，请稍后刷新重试；已支付请勿重复充值。', true);
         return true;
       }
@@ -1728,13 +1890,13 @@ async function handlePaymentReturnStatus() {
       params.delete('order');
       const query = params.toString();
       window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
-      const balance = formatMoney(state.currentUser?.balance, order.currency || state.inviteCurrency || 'CNY');
+      const balance = formatMoney(state.currentUser?.balance, resolvedOrder.currency || state.inviteCurrency || 'CNY');
       setStatus(`充值成功，当前代理余额为 ${balance}。`);
       showToast('充值金额已到账。', 'success');
       return true;
     }
-    const fulfilledCodes = order.fulfilledInviteCodes || [];
-    if (!['paid', 'done'].includes(order.status) || !order.fulfilledAt || !fulfilledCodes.length) {
+    const fulfilledCodes = resolvedOrder.fulfilledInviteCodes || [];
+    if (!['paid', 'done'].includes(resolvedOrder.status) || !resolvedOrder.fulfilledAt || !fulfilledCodes.length) {
       setStatus('订单尚未完成发卡，请稍后刷新重试；已支付请勿重复购买。', true);
       return true;
     }
@@ -3704,7 +3866,7 @@ function renderClientVariants() {
 function renderOrders() {
   const tbody = $('orderRows');
   if (!tbody) return;
-  const orders = (state.orders || []).filter((order) => order.action === 'cloud_resolver_plan_purchase');
+  const orders = (state.orders || []).filter((order) => ['cloud_resolver_plan_purchase', 'cloud_resolver_code_generate'].includes(order.action));
   const visibleIds = new Set(orders.map((order) => String(order.id || '')).filter(Boolean));
   state.cloudOrderSelectedIds = new Set([...state.cloudOrderSelectedIds].filter((id) => visibleIds.has(id)));
   const updateSelectionControls = () => {
@@ -5677,8 +5839,12 @@ function ensureInvitePaymentDialog() {
   return overlay;
 }
 
-function showInvitePaymentDialog(quote) {
+function showInvitePaymentDialog(quote, options = {}) {
   const overlay = ensureInvitePaymentDialog();
+  const title = options.title || '邀请码付款';
+  const itemName = options.itemName || '单个价格';
+  const quantitySuffix = options.quantitySuffix || '个';
+  $('invitePaymentTitle').textContent = title;
   const currency = quote.currency || 'CNY';
   const channels = quote.channels || [];
   const canPayBalance = quote.balanceEnough === true;
@@ -5686,8 +5852,8 @@ function showInvitePaymentDialog(quote) {
     <div class="invite-pay-grid">
       <div><span>账户余额</span><strong>${escapeHtml(formatMoney(quote.balance, currency))}</strong></div>
       <div><span>本次需付</span><strong>${escapeHtml(formatMoney(quote.total, currency))}</strong></div>
-      <div><span>单个价格</span><strong>${escapeHtml(formatMoney(quote.price, currency))}</strong></div>
-      <div><span>生成数量</span><strong>${Number(quote.request?.count || 1)} 个</strong></div>
+      <div><span>${escapeHtml(itemName)}</span><strong>${escapeHtml(formatMoney(quote.price, currency))}</strong></div>
+      <div><span>生成数量</span><strong>${Number(quote.request?.count || 1)} ${escapeHtml(quantitySuffix)}</strong></div>
     </div>
     <p class="invite-pay-note">请选择余额或已启用的支付宝、微信支付接口。</p>
   `;
@@ -6701,6 +6867,10 @@ async function resetTemplate() {
 async function refreshOrders(showMessage = true) {
   const result = await api('/api/super/orders?scope=cloud_resolver');
   state.orders = result.orders || [];
+  if (state.cloudResolver) {
+    state.cloudResolver.orders = state.orders;
+    renderCloudOrders();
+  }
   renderOrders();
   if (showMessage) setStatus('订单列表已刷新。');
 }
@@ -6726,10 +6896,10 @@ async function deleteOrder(id) {
   setStatus('订单已删除。');
 }
 
-async function deleteCloudOrderGroup(filter) {
+async function deleteCloudOrderGroup(filter, selectedOrders = state.cloudOrderSelectedIds) {
   const labels = { all: '全部网盘解析订单', completed: '已完成网盘解析订单', expired: '已失效网盘解析订单', selected: '选中的网盘解析订单' };
-  const label = labels[filter];
-  const ids = filter === 'selected' ? [...state.cloudOrderSelectedIds] : [];
+  const label = labels[filter] || '网盘解析订单';
+  const ids = filter === 'selected' ? [...selectedOrders] : [];
   if (filter === 'selected' && !ids.length) {
     setStatus('请先勾选要删除的网盘订单。', true);
     return;
@@ -6739,9 +6909,21 @@ async function deleteCloudOrderGroup(filter) {
     method: 'DELETE',
     body: JSON.stringify({ cloudResolverFilter: filter, ids })
   });
-  state.cloudOrderSelectedIds.clear();
+  selectedOrders.clear();
   await refreshOrders(false);
   setStatus(`已删除 ${Number(result.deleted || 0)} 笔${label}。`);
+}
+
+async function deleteCloudResolverOrder(orderId) {
+  if (!orderId || !confirm(`确定删除网盘解析订单「${orderId}」吗？此操作不可恢复。`)) return;
+  await api('/api/super/orders', {
+    method: 'DELETE',
+    body: JSON.stringify({ cloudResolverFilter: 'selected', ids: [orderId] }),
+  });
+  state.cloudResolverAdminSelectedOrderIds.delete(orderId);
+  state.cloudOrderSelectedIds.delete(orderId);
+  await refreshOrders(false);
+  setStatus('网盘解析订单已删除。');
 }
 
 async function jumpToOrder(orderId) {
@@ -7693,13 +7875,23 @@ document.addEventListener('change', (event) => {
 });
 if ($('cloudResolverAgentSellBtn')) $('cloudResolverAgentSellBtn').onclick = () => sellCloudAgentCode().catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverAgentRefreshBtn')) $('cloudResolverAgentRefreshBtn').onclick = () => loadAndRenderCloudResolver().catch((error) => setStatus(cloudErrorMessage(error), true));
+if ($('cloudResolverAgentGenerateCodesBtn')) $('cloudResolverAgentGenerateCodesBtn').onclick = () => generateAgentCloudCodes().catch((error) => setStatus(cloudErrorMessage(error), true));
+if ($('cloudResolverAgentCodePlan')) $('cloudResolverAgentCodePlan').onchange = renderAgentCloudCodePrice;
 document.addEventListener('click', (event) => {
   const buy = event.target.closest('[data-cloud-buy]');
   if (buy) buyCloudPlan(buy.dataset.cloudBuy, buy.dataset.cloudBuyMode === 'renew').catch((error) => setStatus(cloudErrorMessage(error), true));
+  const agentOrder = event.target.closest('[data-agent-cloud-continue-order]');
+  if (agentOrder) {
+    const order = (state.cloudResolver.agentCodeOrders || []).find((item) => item.id === agentOrder.dataset.agentCloudContinueOrder);
+    if (order?.paymentUrl) window.location.href = order.paymentUrl;
+    else showToast('该订单暂时没有可用支付地址，请重新生成。', 'error');
+  }
   const disable = event.target.closest('[data-cloud-plan-disable]');
   if (disable && disable.textContent !== '已停用') api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(disable.dataset.cloudPlanDisable), { method: 'DELETE' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
   const cloudCopy = event.target.closest('[data-cloud-copy-code]');
   if (cloudCopy && cloudCopy.dataset.cloudCopyCode) copyText(cloudCopy.dataset.cloudCopyCode).catch((error) => setStatus(error.message, true));
+  const agentCodeCopy = event.target.closest('[data-cloud-copy-agent-code]');
+  if (agentCodeCopy && agentCodeCopy.dataset.cloudCopyAgentCode) copyText(agentCodeCopy.dataset.cloudCopyAgentCode).catch((error) => setStatus(error.message, true));
   const codeStatus = event.target.closest('[data-cloud-code-status]');
   if (codeStatus) setCloudCodeStatus(codeStatus.dataset.cloudCodeId, codeStatus.dataset.cloudCodeStatus).catch((error) => setStatus(cloudErrorMessage(error), true));
   const deleteCode = event.target.closest('[data-cloud-delete-code]');
@@ -7755,8 +7947,9 @@ if ($('editTemplateBtn')) $('editTemplateBtn').onclick = () => toggleTemplateMod
 if ($('copyCurrentToTemplateBtn')) $('copyCurrentToTemplateBtn').onclick = () => copyCurrentToTemplate().catch((error) => setStatus(error.message, true));
 if ($('resetTemplateBtn')) $('resetTemplateBtn').onclick = () => resetTemplate().catch((error) => setStatus(error.message, true));
 if ($('refreshOrdersBtn')) $('refreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
+if ($('cloudResolverAdminRefreshOrdersBtn')) $('cloudResolverAdminRefreshOrdersBtn').onclick = () => refreshOrders().catch((error) => setStatus(error.message, true));
 if ($('selectAllCloudOrders')) $('selectAllCloudOrders').onchange = (event) => {
-  const ids = (state.orders || []).filter((order) => order.action === 'cloud_resolver_plan_purchase').map((order) => String(order.id || '')).filter(Boolean);
+  const ids = (state.orders || []).filter((order) => ['cloud_resolver_plan_purchase', 'cloud_resolver_code_generate'].includes(order.action)).map((order) => String(order.id || '')).filter(Boolean);
   state.cloudOrderSelectedIds = event.target.checked ? new Set(ids) : new Set();
   renderOrders();
 };
@@ -7764,6 +7957,15 @@ if ($('deleteAllCloudOrdersBtn')) $('deleteAllCloudOrdersBtn').onclick = () => d
 if ($('deleteCompletedCloudOrdersBtn')) $('deleteCompletedCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('completed').catch((error) => setStatus(error.message, true));
 if ($('deleteExpiredCloudOrdersBtn')) $('deleteExpiredCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('expired').catch((error) => setStatus(error.message, true));
 if ($('deleteSelectedCloudOrdersBtn')) $('deleteSelectedCloudOrdersBtn').onclick = () => deleteCloudOrderGroup('selected').catch((error) => setStatus(error.message, true));
+if ($('cloudResolverSelectAllOrders')) $('cloudResolverSelectAllOrders').onchange = (event) => {
+  const ids = (state.cloudResolver?.orders || []).map((order) => String(order.id || '')).filter(Boolean);
+  state.cloudResolverAdminSelectedOrderIds = event.target.checked ? new Set(ids) : new Set();
+  renderCloudOrders();
+};
+if ($('cloudResolverDeleteAllOrdersBtn')) $('cloudResolverDeleteAllOrdersBtn').onclick = () => deleteCloudOrderGroup('all', state.cloudResolverAdminSelectedOrderIds).catch((error) => setStatus(error.message, true));
+if ($('cloudResolverDeleteCompletedOrdersBtn')) $('cloudResolverDeleteCompletedOrdersBtn').onclick = () => deleteCloudOrderGroup('completed', state.cloudResolverAdminSelectedOrderIds).catch((error) => setStatus(error.message, true));
+if ($('cloudResolverDeleteExpiredOrdersBtn')) $('cloudResolverDeleteExpiredOrdersBtn').onclick = () => deleteCloudOrderGroup('expired', state.cloudResolverAdminSelectedOrderIds).catch((error) => setStatus(error.message, true));
+if ($('cloudResolverDeleteSelectedOrdersBtn')) $('cloudResolverDeleteSelectedOrdersBtn').onclick = () => deleteCloudOrderGroup('selected', state.cloudResolverAdminSelectedOrderIds).catch((error) => setStatus(error.message, true));
 document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) => {
   input.addEventListener('change', () => {
     if (input.checked) saveButtonContentLayout(input.value);

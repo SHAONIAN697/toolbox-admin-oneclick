@@ -7,6 +7,7 @@ import html
 import http.client
 import http.cookiejar
 import json
+import math
 import ipaddress
 import os
 import re
@@ -2057,6 +2058,272 @@ def _norm_name(value):
     return unicodedata.normalize("NFC", str(value or "").strip())
 
 
+def _agent_code_request(body):
+    try:
+        count = int(body.get("count", 1))
+        max_uses = int(body.get("maxUses", 1))
+    except (TypeError, ValueError):
+        raise ValueError("生成数量和每码使用次数必须是整数。")
+    return {
+        "planId": str(body.get("planId") or "").strip(),
+        "count": max(1, min(500, count)),
+        "maxUses": max(1, min(100, max_uses)),
+    }
+
+
+def _agent_code_quote(app, store, user, body):
+    if not app.is_agent(user):
+        raise PermissionError("仅代理可生成网盘激活码。")
+    request = _agent_code_request(body)
+    plan = next((row for row in store["plans"]
+                 if row.get("id") == request["planId"] and row.get("enabled", True)), None)
+    if not plan:
+        raise ValueError("套餐不存在或已停用。")
+    try:
+        unit_price = float(plan.get("agentWholesalePrice") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("套餐代理拿货价配置无效。")
+    if not math.isfinite(unit_price) or unit_price <= 0:
+        raise ValueError("该套餐尚未设置有效的代理拿货价，请联系总管理员配置。")
+    unit_price = round(unit_price, 2)
+    if unit_price <= 0:
+        raise ValueError("套餐代理拿货价不能低于 0.01。")
+    total = round(request["count"] * unit_price, 2)
+    try:
+        balance = round(float(user.get("balance") or 0), 2)
+    except (TypeError, ValueError):
+        balance = 0.0
+    settings = app.read_system_settings()
+    snapshot = {
+        "planId": plan["id"], "planName": str(plan.get("name") or "网盘套餐"),
+        "durationDays": int(plan.get("durationDays", 30)),
+        "parseQuota": int(plan.get("parseQuota", -1)),
+        "trafficQuota": int(plan.get("trafficQuota", -1)),
+        "dailyParseLimit": int(plan.get("dailyParseLimit", 20)),
+        "allowedProviders": [key for key in (plan.get("allowedProviders") or list(PROVIDERS)) if key in PROVIDERS],
+    }
+    return {
+        "request": request, "plan": snapshot, "price": unit_price, "total": total,
+        "currency": (settings.get("agent") or {}).get("currency") or "CNY",
+        "balance": balance, "balanceEnough": balance >= total,
+        "channels": app.public_payment_channels(settings),
+    }
+
+
+def _persist_order(app, order):
+    data = app.read_orders()
+    current = next((row for row in data.get("orders", []) if row.get("id") == order.get("id")), None)
+    if current:
+        current.update(order)
+        app.write_orders(data)
+
+
+def _create_agent_codes_for_order(app, store, order, agent):
+    existing = [row for row in store["codes"] if row.get("generatedByOrderId") == order.get("id")]
+    if existing:
+        return existing
+    request = order.get("request") or {}
+    plan = request.get("plan") or {}
+    plan_id = str(request.get("planId") or plan.get("planId") or "")
+    count = max(1, min(500, int(request.get("count", 1))))
+    max_uses = max(1, min(100, int(request.get("maxUses", 1))))
+    if not plan_id or not plan:
+        raise ValueError("卡密订单缺少套餐信息。")
+    existing_hashes = {str(row.get("codeHash") or "") for row in store["codes"]}
+    created = []
+    for _ in range(count):
+        while True:
+            code = app.random_hex(8).upper()
+            digest = hashlib.sha256(code.encode()).hexdigest()
+            if digest not in existing_hashes:
+                break
+        existing_hashes.add(digest)
+        row = {
+            "code": code, "codeHash": digest, "maskedCode": code[:4] + "****" + code[-4:],
+            "planId": plan_id, "featureCode": FEATURE, "maxUses": max_uses, "usedCount": 0,
+            "status": "assigned", "assignedAgentId": agent["id"], "createdBy": agent.get("username", ""),
+            "createdById": agent["id"], "createdAt": _iso(_now()), "expiresAt": "", "redeemedUsers": [],
+            "durationDays": int(plan.get("durationDays", 30)), "parseQuota": int(plan.get("parseQuota", -1)),
+            "trafficQuota": int(plan.get("trafficQuota", -1)),
+            "dailyParseLimit": int(plan.get("dailyParseLimit", 20)),
+            "allowedProviders": [key for key in (plan.get("allowedProviders") or list(PROVIDERS)) if key in PROVIDERS],
+            "generatedByAgent": True, "generatedByOrderId": order.get("id", ""),
+        }
+        store["codes"].append(row)
+        created.append(row)
+    _save(app, store)
+    return created
+
+
+def fulfill_agent_code_order(app, order, external_trade_no=""):
+    if order.get("action") != "cloud_resolver_code_generate":
+        return []
+    with LOCK:
+        if order.get("fulfilledAt"):
+            store = _load(app)
+            return [row.get("code", "") for row in store["codes"]
+                    if row.get("generatedByOrderId") == order.get("id")]
+        if order.get("status") == "expired":
+            raise ValueError("订单已过期，请重新生成支付订单。")
+        if order.get("status") != "pending":
+            raise ValueError("订单已取消或已处理，不能再生成激活码。")
+        if _order_expiry(app, order) <= _now():
+            order["status"] = "expired"
+            order["expiredAt"] = _iso(_now())
+            order["updatedAt"] = order["expiredAt"]
+            _persist_order(app, order)
+            raise ValueError("订单已过期，请重新生成支付订单。")
+        agent_store = app.read_users()
+        agent = next((row for row in agent_store.get("users", [])
+                      if row.get("id") == (order.get("userId") or order.get("agentId"))), None)
+        if not agent or not app.is_agent(agent):
+            raise ValueError("订单对应的代理不存在或已失效。")
+        store = _load(app)
+        generated = [row for row in store["codes"] if row.get("generatedByOrderId") == order.get("id")]
+        if not generated and order.get("paymentMethod") == "balance":
+            charged_orders = agent.get("cloudResolverCodeBalanceOrders") or []
+            if order.get("id") not in charged_orders:
+                balance = round(float(agent.get("balance") or 0), 2)
+                amount = round(float(order.get("amount") or 0), 2)
+                if balance < amount:
+                    raise ValueError("代理余额不足，无法生成网盘激活码。")
+                agent["balance"] = round(balance - amount, 2)
+                charged_orders.append(order["id"])
+                agent["cloudResolverCodeBalanceOrders"] = charged_orders
+                app.write_users(agent_store)
+        generated = _create_agent_codes_for_order(app, store, order, agent)
+        charged_orders = agent.get("cloudResolverCodeBalanceOrders") or []
+        if order.get("id") in charged_orders:
+            agent["cloudResolverCodeBalanceOrders"] = [value for value in charged_orders if value != order.get("id")]
+            app.write_users(agent_store)
+        order["status"] = "paid"
+        order["fulfilledAt"] = _iso(_now())
+        order["paidAt"] = order.get("paidAt") or order["fulfilledAt"]
+        order["updatedAt"] = order["fulfilledAt"]
+        order["externalTradeNo"] = external_trade_no or order.get("externalTradeNo", "")
+        order["fulfilledBy"] = "payment_callback" if order.get("paymentMethod") == "interface" else "balance"
+        order["fulfilledCodeCount"] = len(generated)
+        _persist_order(app, order)
+        _audit(app, agent, None, "agent_codes_generate", order.get("request", {}).get("planId", ""),
+               {"count": len(generated), "amount": order.get("amount", 0), "paymentMethod": order.get("paymentMethod", "")})
+        return [row.get("code", "") for row in generated]
+
+
+def _create_agent_code_order(handler, app, store, user):
+    latest_users = app.read_users()
+    user = next((row for row in latest_users.get("users", []) if row.get("id") == user.get("id")), None)
+    if not user or not app.is_agent(user):
+        raise ValueError("代理账号不存在或已失效。")
+    body = handler.read_body()
+    quote = _agent_code_quote(app, store, user, body)
+    payment_method = str(body.get("paymentMethod") or "").strip()
+    payment_channel = str(body.get("paymentChannel") or "").strip()
+    payment_type = str(body.get("paymentType") or "").strip().lower()
+    settings = app.read_system_settings()
+    selected = None
+    if payment_method == "interface":
+        selected = next((row for row in quote["channels"] if row.get("key") == payment_channel
+                         and row.get("paymentType") == payment_type), None)
+        if not selected:
+            matches = [row for row in quote["channels"] if row.get("key") == payment_channel]
+            if len(matches) == 1:
+                selected = matches[0]
+                payment_type = selected.get("paymentType") or "alipay"
+        if not selected:
+            raise ValueError("支付通道未配置或未启用。")
+    elif payment_method == "balance":
+        if not quote["balanceEnough"]:
+            raise ValueError("代理余额不足，请改用已配置的在线支付接口。")
+    else:
+        raise ValueError("请选择余额支付或已配置的在线支付方式。")
+
+    request = {**quote["request"], "plan": quote["plan"]}
+    plan_name = quote["plan"]["planName"]
+    action = "cloud_resolver_code_generate"
+    orders = app.read_orders()
+    existing = next((row for row in orders.get("orders", [])
+                     if row.get("userId") == user.get("id") and row.get("action") == action
+                     and row.get("status") == "pending" and row.get("paymentMethod") == payment_method
+                     and (row.get("request") or {}).get("planId") == quote["request"]["planId"]
+                     and (row.get("request") or {}).get("count") == quote["request"]["count"]
+                     and (row.get("request") or {}).get("maxUses") == quote["request"]["maxUses"]), None)
+    if existing:
+        expiry = _order_expiry(app, existing)
+        if expiry > _now():
+            if payment_method == "interface":
+                existing["paymentProvider"] = payment_channel
+                existing["paymentChannel"] = payment_channel
+                existing["paymentType"] = payment_type
+                existing["paymentUrl"] = app.build_payment_url(existing, settings, handler.base_url())
+            existing["pendingExpiresAt"] = _iso(expiry)
+            existing["updatedAt"] = _iso(_now())
+            app.write_orders(orders)
+            if payment_method == "balance":
+                codes = fulfill_agent_code_order(app, existing)
+                return handler.send_json({"order": app.public_order(existing), "codes": codes,
+                                          "balance": next((row.get("balance", 0) for row in app.read_users().get("users", [])
+                                                           if row.get("id") == user.get("id")), 0),
+                                          "message": "支付成功，激活码已生成。"})
+            return handler.send_json({"order": app.public_order(existing), "paymentUrl": existing.get("paymentUrl", ""),
+                                      "reused": True, "message": "未支付订单仍在有效期内，已恢复原订单支付。"})
+        existing["status"] = "expired"
+        existing["expiredAt"] = _iso(_now())
+        existing["updatedAt"] = existing["expiredAt"]
+        app.write_orders(orders)
+
+    order, _ = app.create_admin_order(
+        user, action, quote["total"], quote["currency"],
+        f"生成网盘激活码：{plan_name} × {quote['request']['count']}",
+        request=request, payment_method=payment_method, payment_channel=payment_channel,
+        reuse_existing=False,
+    )
+    order.update({"cloudPlanId": quote["request"]["planId"], "unitPrice": quote["price"],
+                  "paymentType": payment_type, "paymentProvider": payment_channel,
+                  "pendingExpiresAt": _iso(_order_expiry(app, order)), "updatedAt": _iso(_now())})
+    if payment_method == "interface":
+        order["paymentUrl"] = app.build_payment_url(order, settings, handler.base_url())
+        _persist_order(app, order)
+        return handler.send_json({"order": app.public_order(order), "paymentUrl": order["paymentUrl"],
+                                  "message": "订单已创建，正在跳转支付。"}, 201)
+    codes = fulfill_agent_code_order(app, order)
+    return handler.send_json({"order": app.public_order(order), "codes": codes,
+                              "balance": next((row.get("balance", 0) for row in app.read_users().get("users", [])
+                                               if row.get("id") == user.get("id")), 0),
+                              "message": "支付成功，激活码已生成。"}, 201)
+
+
+def _sell_agent_code(handler, app, store, user):
+    user_id = user.get("id")
+    body = handler.read_body()
+    inventory_id = str(body.get("inventoryId") or "").strip().lower()
+    digest = hashlib.sha256(str(body.get("code") or "").strip().upper().encode()).hexdigest()
+    row = next((x for x in store["codes"]
+                if (x.get("codeHash") == digest or bool(inventory_id) and x.get("codeHash", "").lower()[:16] == inventory_id)
+                and x.get("assignedAgentId") == user_id
+                and x.get("status") in ("available", "assigned")), None)
+    if not row:
+        return handler.send_json({"error": "卡密不属于当前代理或已售出。"}, 403)
+    target = app.find_user_by_id(str(body.get("userId") or ""))
+    if not target or target.get("parentAgentId") != user_id:
+        return handler.send_json({"error": "只能销售给自己的下级成员。"}, 403)
+    price = float((app.read_system_settings().get("agent") or {}).get("cloudCodePrice") or 0)
+    if price > 0:
+        latest = app.read_users()
+        agent = next((x for x in latest.get("users", []) if x.get("id") == user_id), None)
+        if not agent or float(agent.get("balance") or 0) < price:
+            return handler.send_json({"error": "代理余额不足，无法销售网盘激活码。"}, 400)
+        agent["balance"] = round(float(agent.get("balance") or 0) - price, 2)
+        app.write_users(latest)
+    row["status"] = "sold"
+    row["soldTo"] = target["id"]
+    row["soldAt"] = _iso(_now())
+    row["soldPrice"] = price
+    _save(app, store)
+    _audit(app, user, handler, "code_sell", row["planId"], {"recipientId": target["id"], "price": price})
+    balance = next((x.get("balance") for x in app.read_users().get("users", []) if x.get("id") == user_id), user.get("balance", 0))
+    return handler.send_json({"ok": True, "message": "卡密已售出，需由成员本人兑换。", "balance": balance})
+
+
 def route(handler, app, path, method, auth):
     user = auth["user"]
     user_id = user.get("id")
@@ -2065,6 +2332,17 @@ def route(handler, app, path, method, auth):
     _diag("resolver_api_route_started", {
         "method": method, "path": path, "query": getattr(handler, "query", {}),
     })
+    if path in ("/api/agent/cloud-resolver/codes", "/api/agent/cloud-resolver/sell-code") and method == "POST":
+        if not app.is_agent(user):
+            return handler.send_json({"error": "仅代理可访问。"}, 403)
+        with app.PAYMENT_LOCK:
+            with LOCK:
+                latest_user = app.find_user_by_id(user_id)
+                if not latest_user or not app.is_agent(latest_user):
+                    return handler.send_json({"error": "代理账号不存在或已失效。"}, 403)
+                if path.endswith("/sell-code"):
+                    return _sell_agent_code(handler, app, _load(app), latest_user)
+                return _create_agent_code_order(handler, app, _load(app), latest_user)
     with LOCK:
         store = _load(app)
         if path == "/api/cloud-resolver/config" and method == "GET":
@@ -2077,7 +2355,11 @@ def route(handler, app, path, method, auth):
                 _save(app, store)
             return handler.send_json({"entitlement": entitlement, "allowed": bool(entitlement), "role": user.get("role")})
         if path == "/api/cloud-resolver/plans" and method == "GET":
-            return handler.send_json({"plans": [row for row in sorted(store["plans"], key=lambda x: (int(x.get("sortOrder", 0)), x.get("createdAt", ""))) if row.get("enabled", True)]})
+            plans = [dict(row) for row in sorted(store["plans"], key=lambda x: (int(x.get("sortOrder", 0)), x.get("createdAt", ""))) if row.get("enabled", True)]
+            if not app.is_agent(user) and not is_super:
+                for plan in plans:
+                    plan.pop("agentWholesalePrice", None)
+            return handler.send_json({"plans": plans})
         if path == "/api/cloud-resolver/payment-channels" and method == "GET":
             return handler.send_json({"channels": app.public_payment_channels(app.read_system_settings())})
         if path == "/api/cloud-resolver/renewal-history" and method == "GET":
@@ -2100,6 +2382,15 @@ def route(handler, app, path, method, auth):
             if changed:
                 app.write_orders(order_data)
             return handler.send_json({"orders": orders[:100]})
+        cloud_order_match = re.fullmatch(r"/api/cloud-resolver/orders/([^/]+)", path)
+        if cloud_order_match and method == "GET":
+            order_id = cloud_order_match.group(1)
+            order = next((row for row in app.read_orders().get("orders", [])
+                          if row.get("id") == order_id and (row.get("userId") or row.get("agentId")) == user_id
+                          and row.get("action") == "cloud_resolver_plan_purchase"), None)
+            if not order:
+                return handler.send_json({"error": "订单不存在或无权查看。"}, 404)
+            return handler.send_json(_order_public_with_expiry(app, order))
         if path == "/api/cloud-resolver/orders" and method == "POST":
             body = handler.read_body()
             plan = next((x for x in store["plans"] if x.get("id") == body.get("planId") and x.get("enabled", True)), None)
@@ -2830,35 +3121,39 @@ def route(handler, app, path, method, auth):
                 return handler.send_json(_public_code(row))
         if path.startswith("/api/agent/cloud-resolver/"):
             if not app.is_agent(user): return handler.send_json({"error": "仅代理可访问。"}, 403)
+            if path == "/api/agent/cloud-resolver/codes/quote" and method == "POST":
+                return handler.send_json(_agent_code_quote(app, store, user, handler.read_body()))
             if path in ("/api/agent/cloud-resolver/code-inventory", "/api/agent/cloud-resolver/codes") and method == "GET":
-                return handler.send_json({"codes": [{**_public_code(x), "inventoryId": x.get("codeHash", "")[:16], "redeemable": x.get("status") in ("available", "assigned")} for x in store["codes"] if x.get("assignedAgentId") == user_id]})
+                return handler.send_json({"codes": [{**_public_code(x, include_code=x.get("generatedByAgent") is True), "inventoryId": x.get("codeHash", "")[:16], "redeemable": x.get("status") in ("available", "assigned")} for x in store["codes"] if x.get("assignedAgentId") == user_id]})
+            if path == "/api/agent/cloud-resolver/code-orders" and method == "GET":
+                orders = app.read_orders()
+                rows = []
+                changed = False
+                for order in orders.get("orders", []):
+                    if order.get("userId") != user_id or order.get("action") != "cloud_resolver_code_generate":
+                        continue
+                    if order.get("status") == "pending" and _order_expiry(app, order) <= _now():
+                        order["status"] = "expired"
+                        order["expiredAt"] = _iso(_now())
+                        order["updatedAt"] = order["expiredAt"]
+                        changed = True
+                    rows.append(_order_public_with_expiry(app, order))
+                if changed:
+                    app.write_orders(orders)
+                return handler.send_json({"orders": rows[:100]})
+            code_order = re.fullmatch(r"/api/agent/cloud-resolver/code-orders/([^/]+)", path)
+            if code_order and method == "GET":
+                order_id = code_order.group(1)
+                order = next((row for row in app.read_orders().get("orders", [])
+                              if row.get("id") == order_id and row.get("userId") == user_id
+                              and row.get("action") == "cloud_resolver_code_generate"), None)
+                if not order:
+                    return handler.send_json({"error": "卡密订单不存在或无权查看。"}, 404)
+                codes = [row.get("code", "") for row in store["codes"]
+                         if row.get("assignedAgentId") == user_id and row.get("generatedByOrderId") == order_id]
+                return handler.send_json({"order": _order_public_with_expiry(app, order), "codes": codes})
             if path == "/api/agent/cloud-resolver/sell-code" and method == "POST":
-                body = handler.read_body()
-                inventory_id = str(body.get("inventoryId") or "").strip().lower()
-                digest = hashlib.sha256(str(body.get("code") or "").strip().upper().encode()).hexdigest()
-                # An administrator assigns inventory with ``assigned`` status;
-                # keep accepting ``available`` for codes created by older
-                # versions of the module.  Selling is still restricted to the
-                # assigned agent and the target must be their own member.
-                row = next((x for x in store["codes"]
-                            if (x.get("codeHash") == digest or bool(inventory_id) and x.get("codeHash", "").lower()[:16] == inventory_id)
-                            and x.get("assignedAgentId") == user_id
-                            and x.get("status") in ("available", "assigned")), None)
-                if not row: return handler.send_json({"error": "卡密不属于当前代理或已售出。"}, 403)
-                target = app.find_user_by_id(str(body.get("userId") or ""))
-                if not target or target.get("parentAgentId") != user_id: return handler.send_json({"error": "只能销售给自己的下级成员。"}, 403)
-                price = float((app.read_system_settings().get("agent") or {}).get("cloudCodePrice") or 0)
-                if price > 0 and row.get("status") not in ("available", "assigned"):
-                    return handler.send_json({"error": "该卡密已销售，不能重复扣费。"}, 409)
-                if price > 0:
-                    with app.PAYMENT_LOCK:
-                        latest = app.read_users()
-                        agent = next((x for x in latest.get("users", []) if x.get("id") == user_id), None)
-                        if not agent or float(agent.get("balance") or 0) < price:
-                            return handler.send_json({"error": "代理余额不足，无法销售网盘激活码。"}, 400)
-                        agent["balance"] = round(float(agent.get("balance") or 0) - price, 2)
-                        app.write_users(latest)
-                row["status"] = "sold"; row["soldTo"] = target["id"]; row["soldAt"] = _iso(_now()); row["soldPrice"] = price; _save(app, store); _audit(app, user, handler, "code_sell", row["planId"], {"recipientId": target["id"], "price": price}); return handler.send_json({"ok": True, "message": "卡密已售出，需由成员本人兑换。", "balance": next((x.get("balance") for x in app.read_users().get("users", []) if x.get("id") == user_id), user.get("balance", 0))})
+                return _sell_agent_code(handler, app, store, user)
             if path == "/api/agent/cloud-resolver/sales" and method == "GET":
                 return handler.send_json({"sales": [{"planId": x.get("planId"), "soldTo": x.get("soldTo"), "soldAt": x.get("soldAt"), "status": x.get("status")}
                                             for x in store["codes"] if x.get("assignedAgentId") == user_id and x.get("status") in ("sold", "redeemed")]})
