@@ -4,6 +4,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import gzip
 import html
+import http.client
 import http.cookiejar
 import json
 import ipaddress
@@ -233,6 +234,58 @@ def _qaiu_error(status=0, payload=None):
     return "QAIU_PARSE_FAILED"
 
 
+_QAIU_DEFAULT_TIMEOUT = object()
+
+
+def _qaiu_create_connection_ipv4_first(address, timeout=_QAIU_DEFAULT_TIMEOUT, source_address=None):
+    host, port = address[:2]
+    last_error = None
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            addresses = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            last_error = last_error or exc
+            continue
+        for address_family, socket_type, protocol, _, socket_address in addresses:
+            connection = None
+            try:
+                connection = socket.socket(address_family, socket_type, protocol)
+                if timeout is not _QAIU_DEFAULT_TIMEOUT:
+                    connection.settimeout(timeout)
+                if source_address:
+                    connection.bind(source_address)
+                connection.connect(socket_address)
+                return connection
+            except OSError as exc:
+                last_error = exc
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except OSError:
+                        pass
+    if last_error:
+        raise last_error
+    raise OSError("DNS lookup returned no IPv4 or IPv6 addresses")
+
+
+class _QaiuIPv4PreferredHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _qaiu_create_connection_ipv4_first
+
+
+class _QaiuIPv4PreferredHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_QaiuIPv4PreferredHTTPSConnection, request, context=self._context)
+
+
+def _qaiu_urlopen(request, timeout):
+    if urllib.parse.urlsplit(request.full_url).scheme.casefold() != "https":
+        return urllib.request.urlopen(request, timeout=timeout)
+    opener = urllib.request.build_opener(_QaiuIPv4PreferredHTTPSHandler())
+    return opener.open(request, timeout=timeout)
+
+
 def _qaiu_request(path, params=None, api_key="", require_api_key=True, api_base=None):
     if require_api_key and not str(api_key or "").strip():
         _diag("upstream_request_skipped", {"endpointPath": str(path or ""), "reason": "QAIU_API_KEY_REQUIRED"})
@@ -261,7 +314,7 @@ def _qaiu_request(path, params=None, api_key="", require_api_key=True, api_base=
         "requestParams": safe_params,
     }, redact_values=request_secrets)
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        with _qaiu_urlopen(request, timeout=HTTP_TIMEOUT) as response:
             raw = response.read(QAIU_MAX_RESPONSE_BYTES + 1)
             status = getattr(response, "status", None) or response.getcode()
             response_headers = {key: value for key, value in response.headers.items()

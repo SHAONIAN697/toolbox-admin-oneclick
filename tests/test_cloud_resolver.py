@@ -211,7 +211,7 @@ class CloudResolverTests(unittest.TestCase):
         response.headers = {"Content-Type": "application/json", "Set-Cookie": "response-cookie-secret"}
         response.__enter__.return_value = response
         response.__exit__.return_value = False
-        with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response):
+        with patch.object(RESOLVER, "_qaiu_urlopen", return_value=response):
             payload = RESOLVER._qaiu_request("/v2/getFileList", {
                 "url": "https://cloud.189.cn/t/private-share-id", "pwd": "share-access-secret",
             }, api_key="upstream-api-secret", api_base="https://resolver.example")
@@ -839,7 +839,7 @@ class CloudResolverTests(unittest.TestCase):
         response.status = 200
         response.getcode.return_value = 200
         response.read.return_value = b'{"code":200,"data":{}}'
-        with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response) as urlopen:
+        with patch.object(RESOLVER, "_qaiu_urlopen", return_value=response) as urlopen:
             payload = RESOLVER._qaiu_request("/v2/linkInfo", {"url": "https://share.example/x"}, self.qaiu_key)
         self.assertEqual(payload["code"], 200)
         request = urlopen.call_args.args[0]
@@ -850,9 +850,39 @@ class CloudResolverTests(unittest.TestCase):
                                    api_base="http://127.0.0.1:6430")
         self.assertEqual(local_urlopen.call_args.args[0].full_url, "http://127.0.0.1:6430/json/parser")
         response.read.return_value = b"not-json"
-        with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response):
+        with patch.object(RESOLVER, "_qaiu_urlopen", return_value=response):
             with self.assertRaisesRegex(RESOLVER.ProviderError, "PROVIDER_BAD_RESPONSE"):
                 RESOLVER._qaiu_request("/v2/linkInfo", {}, self.qaiu_key)
+
+    def test_qaiu_https_connection_prefers_ipv4_then_falls_back_to_ipv6(self):
+        ipv4_socket, ipv6_socket = Mock(), Mock()
+        ipv4_socket.connect.side_effect = OSError("IPv4 route unavailable")
+        resolver = RESOLVER.socket
+        ipv4_info = [(resolver.AF_INET, resolver.SOCK_STREAM, 6, "", ("192.0.2.1", 443))]
+        ipv6_info = [(resolver.AF_INET6, resolver.SOCK_STREAM, 6, "", ("2001:db8::1", 443, 0, 0))]
+        with patch.object(resolver, "getaddrinfo", side_effect=[ipv4_info, ipv6_info]) as getaddrinfo:
+            with patch.object(resolver, "socket", side_effect=[ipv4_socket, ipv6_socket]) as create_socket:
+                connected = RESOLVER._qaiu_create_connection_ipv4_first(("resolver.example", 443), timeout=4)
+
+        self.assertIs(connected, ipv6_socket)
+        self.assertEqual([call.args[2] for call in getaddrinfo.call_args_list], [resolver.AF_INET, resolver.AF_INET6])
+        self.assertEqual([call.args[0] for call in create_socket.call_args_list], [resolver.AF_INET, resolver.AF_INET6])
+        ipv4_socket.close.assert_called_once_with()
+        ipv6_socket.connect.assert_called_once_with(("2001:db8::1", 443, 0, 0))
+
+    def test_qaiu_https_connection_keeps_hostname_for_tls_sni(self):
+        raw_socket = Mock()
+        tls_socket = Mock()
+        context = Mock()
+        context.wrap_socket.return_value = tls_socket
+        connection_type = RESOLVER._QaiuIPv4PreferredHTTPSConnection
+        connection = connection_type("resolver.example", context=context)
+
+        with patch.object(connection, "_create_connection", return_value=raw_socket):
+            connection.connect()
+
+        context.wrap_socket.assert_called_once_with(raw_socket, server_hostname="resolver.example")
+        self.assertIs(connection.sock, tls_socket)
 
     def test_qaiu_directory_parse_recurses_and_keeps_safe_download_metadata(self):
         replies = {
