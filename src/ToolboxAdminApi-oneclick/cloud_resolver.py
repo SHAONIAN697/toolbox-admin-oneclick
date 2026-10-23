@@ -48,6 +48,7 @@ FEIJI_API_BASE = "https://api.feijipan.com"
 FEIJI_AES_KEY = b"dingHao-disk-app"
 QAIU_API_BASE = "https://pan.vst76.cn"
 QAIU_API_KEY_ENV = "NFD189_API_KEY"
+QAIU_API_BASE_ENV = "NFD189_API_BASE"
 QAIU_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 QAIU_DOWNLOAD_HEADER_NAMES = {
     "accept": "Accept", "accept-language": "Accept-Language", "origin": "Origin",
@@ -64,6 +65,49 @@ def _qaiu_api_key(app, store):
     encrypted = (store.get("qaiuApiKeyEncrypted") or "").strip()
     saved = _unprotect(app, encrypted) if encrypted else ""
     return saved or os.environ.get(QAIU_API_KEY_ENV, "").strip()
+
+
+def _normalize_qaiu_api_base(value):
+    value = str(value or "").strip()
+    if not value or len(value) > 512 or any(char.isspace() for char in value):
+        raise ValueError("请输入有效的聚合解析服务地址。")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError as exc:
+        raise ValueError("服务地址格式无效。") from exc
+    if (parsed.scheme.lower() not in ("http", "https") or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("服务地址必须是有效的 HTTP 或 HTTPS 基础地址，且不能包含账号、参数或片段。")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("服务地址中的端口无效。") from exc
+    if parsed.scheme.lower() == "http":
+        hostname = parsed.hostname.lower()
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = hostname == "localhost"
+        if not is_loopback:
+            raise ValueError("为保护 API Key，HTTP 地址仅允许本机回环地址；其他地址请使用 HTTPS。")
+    return urllib.parse.urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _qaiu_configured_api_base(store):
+    configured = str((store or {}).get("qaiuApiBase") or os.environ.get(QAIU_API_BASE_ENV, "")).strip()
+    if not configured:
+        return None
+    try:
+        return _normalize_qaiu_api_base(configured)
+    except ValueError as exc:
+        raise ProviderError("QAIU_API_BASE_INVALID") from exc
+
+
+def _qaiu_api_base_for_display(store):
+    try:
+        return _qaiu_configured_api_base(store) or QAIU_API_BASE
+    except ProviderError:
+        return ""
 
 
 def _qaiu_error(status=0, payload=None):
@@ -83,11 +127,15 @@ def _qaiu_error(status=0, payload=None):
     return "QAIU_PARSE_FAILED"
 
 
-def _qaiu_request(path, params=None, api_key="", require_api_key=True):
+def _qaiu_request(path, params=None, api_key="", require_api_key=True, api_base=None):
     if require_api_key and not str(api_key or "").strip():
         raise ProviderError("QAIU_API_KEY_REQUIRED")
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
-    endpoint = QAIU_API_BASE.rstrip("/") + "/" + str(path or "").lstrip("/")
+    try:
+        base = _normalize_qaiu_api_base(api_base or QAIU_API_BASE)
+    except ValueError as exc:
+        raise ProviderError("QAIU_API_BASE_INVALID") from exc
+    endpoint = base + "/" + str(path or "").lstrip("/")
     if query:
         endpoint += "?" + query
     headers = {"Accept": "application/json", "User-Agent": "ToolboxCloudResolver/1.0"}
@@ -1137,7 +1185,13 @@ def _qaiu_list_rows(payload):
     return []
 
 
-def _qaiu_folder_files(url, access_code, api_key, provider_name, headers):
+def _qaiu_request_at_base(path, params, api_key, api_base, require_api_key=True):
+    if api_base is None:
+        return _qaiu_request(path, params, api_key, require_api_key)
+    return _qaiu_request(path, params, api_key, require_api_key, api_base=api_base)
+
+
+def _qaiu_folder_files(url, access_code, api_key, provider_name, headers, api_base=None):
     files, visited = [], set()
 
     def visit(folder_url, folder_path="", depth=0):
@@ -1147,7 +1201,7 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers):
         if marker in visited:
             return
         visited.add(marker)
-        payload = _qaiu_request("/v2/getFileList", {"url": marker, "pwd": access_code}, api_key)
+        payload = _qaiu_request_at_base("/v2/getFileList", {"url": marker, "pwd": access_code}, api_key, api_base)
         for item in _qaiu_list_rows(payload):
             if not isinstance(item, dict):
                 continue
@@ -1182,7 +1236,7 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers):
     return files
 
 
-def _qaiu_parse(url, access_code="", api_key="", provider=""):
+def _qaiu_parse(url, access_code="", api_key="", provider="", api_base=None):
     if not str(api_key or "").strip():
         raise ProviderError("QAIU_API_KEY_REQUIRED")
     # Feijipan commonly carries its extraction code in ?code=... instead of
@@ -1191,7 +1245,8 @@ def _qaiu_parse(url, access_code="", api_key="", provider=""):
         access_code = urllib.parse.parse_qs(urlparse(str(url)).query).get("code", [""])[0].strip()
     details = {}
     try:
-        details = _qaiu_request("/v2/linkInfo", {"url": url, "pwd": access_code}, require_api_key=False)
+        details = _qaiu_request_at_base("/v2/linkInfo", {"url": url, "pwd": access_code}, "", api_base,
+                                        require_api_key=False)
     except ProviderError:
         # linkInfo is an optional, unmetered hint; the actual JSON parser below
         # remains authoritative for whether a share is supported and usable.
@@ -1200,7 +1255,10 @@ def _qaiu_parse(url, access_code="", api_key="", provider=""):
     provider_name = provider_name or PROVIDERS.get(provider, {}).get("label") or "其他网盘"
     download_headers = _qaiu_download_headers(other_param, provider_type)
     try:
-        files = _qaiu_folder_files(url, access_code, api_key, provider_name, download_headers)
+        if api_base is None:
+            files = _qaiu_folder_files(url, access_code, api_key, provider_name, download_headers)
+        else:
+            files = _qaiu_folder_files(url, access_code, api_key, provider_name, download_headers, api_base)
     except ProviderError as exc:
         if str(exc) in ("QAIU_API_KEY_REQUIRED", "QAIU_API_KEY_INVALID", "QAIU_QUOTA_EXHAUSTED"):
             raise
@@ -1208,7 +1266,7 @@ def _qaiu_parse(url, access_code="", api_key="", provider=""):
     if files:
         return files
 
-    payload = _qaiu_request("/json/parser", {"url": url, "pwd": access_code}, api_key)
+    payload = _qaiu_request_at_base("/json/parser", {"url": url, "pwd": access_code}, api_key, api_base)
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     file_info = data.get("fileInfo") if isinstance(data.get("fileInfo"), dict) else {}
     download_url = str(data.get("directLink") or data.get("downloadUrl") or "").strip()
@@ -1225,14 +1283,16 @@ def _qaiu_parse(url, access_code="", api_key="", provider=""):
              "providerName": provider_name, "resolverType": "qaiu", "downloadHeaders": download_headers}]
 
 
-def _provider_parse(provider, url, access_code="", api_key=""):
+def _provider_parse(provider, url, access_code="", api_key="", api_base=None):
     if provider == "lanzou":
         return _lanzou_parse(url, access_code)
     if provider == "mock":
         raise ProviderError("OFFICIAL_API_UNSUPPORTED")
     if provider == "xiaofeiji":
         try:
-            return _qaiu_parse(url, access_code, api_key, provider)
+            if api_base is None:
+                return _qaiu_parse(url, access_code, api_key, provider)
+            return _qaiu_parse(url, access_code, api_key, provider, api_base)
         except ProviderError as exc:
             # Keep the aggregate service as the primary path. If it is
             # temporarily unable to parse Feijipan, use the official listing
@@ -1240,7 +1300,15 @@ def _provider_parse(provider, url, access_code="", api_key=""):
             if str(exc) not in ("QAIU_PARSE_FAILED", "PROVIDER_UNAVAILABLE"):
                 raise
             return _feiji_parse(url, access_code)
-    return _qaiu_parse(url, access_code, api_key, provider)
+    if api_base is None:
+        return _qaiu_parse(url, access_code, api_key, provider)
+    return _qaiu_parse(url, access_code, api_key, provider, api_base)
+
+
+def _provider_parse_configured(provider, url, access_code, api_key, api_base):
+    if api_base is None:
+        return _provider_parse(provider, url, access_code, api_key)
+    return _provider_parse(provider, url, access_code, api_key, api_base)
 
 
 def _has_downloadable_file(files):
@@ -1257,8 +1325,8 @@ def _parse_failure_code(files):
     return next((x.get("errorCode") for x in files if x.get("errorCode")), "DOWNLOAD_URL_UNAVAILABLE")
 
 
-def _parse_task_files(task, access_code="", api_key=""):
-    files = _provider_parse(task.get("provider"), task.get("shareUrl"), access_code, api_key)
+def _parse_task_files(task, access_code="", api_key="", api_base=None):
+    files = _provider_parse_configured(task.get("provider"), task.get("shareUrl"), access_code, api_key, api_base)
     task["files"] = files
     task["resolverType"] = "qaiu" if task.get("provider") not in ("lanzou", "mock") else "official"
     task["providerName"] = next((x.get("providerName") for x in files if x.get("providerName")),
@@ -1283,7 +1351,8 @@ def _process_parse_task(app, task_id):
         api_key = _qaiu_api_key(app, store)
 
     try:
-        _parse_task_files(task, access_code, api_key)
+        api_base = _qaiu_configured_api_base(store)
+        _parse_task_files(task, access_code, api_key, api_base)
     except ProviderError as exc:
         task.update({"status": "failed", "errorCode": str(exc), "updatedAt": _iso(_now())})
     except Exception:
@@ -1324,6 +1393,7 @@ def defaults():
     return {
         "enabled": True,
         "qaiuApiKeyEncrypted": "",
+        "qaiuApiBase": "",
         "providers": {key: {"enabled": True, "status": row["status"]} for key, row in PROVIDERS.items()},
         "resources": [], "tasks": [], "sources": [], "downloadTasks": [],
         "entitlements": [], "renewalHistory": [], "plans": [], "codes": [], "settings": {
@@ -2182,8 +2252,8 @@ def route(handler, app, path, method, auth):
                 if source.get("provider") not in ("mock",):
                     try:
                         access_code = _unprotect(app, source.get("accessCodeEncrypted"))
-                        refreshed = _provider_parse(source.get("provider"), source.get("shareUrl"), access_code,
-                                                    _qaiu_api_key(app, store))
+                        refreshed = _provider_parse_configured(source.get("provider"), source.get("shareUrl"), access_code,
+                                                              _qaiu_api_key(app, store), _qaiu_configured_api_base(store))
                         match_file = next((x for x in refreshed if x.get("id") == source.get("fileId")), None)
                         if match_file:
                             source.update({"downloadUrl": match_file.get("downloadUrl", ""),
@@ -2226,8 +2296,8 @@ def route(handler, app, path, method, auth):
                     if source.get("provider") == "lanzou":
                         refreshed = _lanzou_parse(source.get("shareUrl"), access_code)
                     else:
-                        refreshed = _provider_parse(source.get("provider"), source.get("shareUrl"), access_code,
-                                                    _qaiu_api_key(app, store))
+                        refreshed = _provider_parse_configured(source.get("provider"), source.get("shareUrl"), access_code,
+                                                              _qaiu_api_key(app, store), _qaiu_configured_api_base(store))
                     match_file = next((x for x in refreshed if x.get("id") == source.get("fileId")), None)
                     if match_file:
                         download_url = match_file.get("downloadUrl") or download_url
@@ -2314,11 +2384,21 @@ def route(handler, app, path, method, auth):
             if path == "/api/admin/cloud-resolver/settings" and method == "GET":
                 return handler.send_json({"enabled": store["enabled"], "settings": store["settings"],
                                           "providers": store["providers"], "qaiuApiKeySet": bool(_qaiu_api_key(app, store)),
-                                          "qaiuApiBase": QAIU_API_BASE})
+                                          "qaiuApiBase": _qaiu_api_base_for_display(store)})
             if path == "/api/admin/cloud-resolver/settings" and method == "PATCH":
-                body = handler.read_body(); before = {"enabled": store["enabled"], "settings": dict(store["settings"])}
+                body = handler.read_body()
+                api_base_update = None
+                if "qaiuApiBase" in body:
+                    raw_api_base = str(body.get("qaiuApiBase") or "").strip()
+                    try:
+                        api_base_update = _normalize_qaiu_api_base(raw_api_base) if raw_api_base else ""
+                    except ValueError as exc:
+                        return handler.send_json({"error": str(exc)}, 400)
+                before = {"enabled": store["enabled"], "settings": dict(store["settings"]),
+                          "qaiuApiBase": _qaiu_api_base_for_display(store)}
                 if "enabled" in body: store["enabled"] = bool(body["enabled"])
                 store["settings"].update({k: v for k, v in (body.get("settings") or {}).items() if k in ("maxFileSize", "dailyParseLimit", "maxRetries", "mergeByName")})
+                if api_base_update is not None: store["qaiuApiBase"] = api_base_update
                 if body.get("clearQaiuApiKey") is True:
                     store["qaiuApiKeyEncrypted"] = ""
                 elif "qaiuApiKey" in body and str(body.get("qaiuApiKey") or "").strip():
@@ -2326,9 +2406,10 @@ def route(handler, app, path, method, auth):
                     if len(key) > 512:
                         return handler.send_json({"error": "API Key 长度不能超过 512 个字符。"}, 400)
                     store["qaiuApiKeyEncrypted"] = _protect(app, key)
-                _save(app, store); _audit(app, user, handler, "settings_update", details={"before": before, "after": {"enabled": store["enabled"], "settings": store["settings"]}})
+                _save(app, store); _audit(app, user, handler, "settings_update", details={"before": before, "after": {"enabled": store["enabled"], "settings": store["settings"], "qaiuApiBase": _qaiu_api_base_for_display(store)}})
                 return handler.send_json({"enabled": store["enabled"], "settings": store["settings"],
-                                          "qaiuApiKeySet": bool(_qaiu_api_key(app, store)), "qaiuApiBase": QAIU_API_BASE})
+                                          "qaiuApiKeySet": bool(_qaiu_api_key(app, store)),
+                                          "qaiuApiBase": _qaiu_api_base_for_display(store)})
             if path == "/api/admin/cloud-resolver/providers" and method == "GET": return handler.send_json(store["providers"])
             provider_match = re.fullmatch(r"/api/admin/cloud-resolver/providers/([^/]+)", path)
             if provider_match and method == "PATCH":

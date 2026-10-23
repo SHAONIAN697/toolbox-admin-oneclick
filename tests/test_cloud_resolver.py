@@ -623,6 +623,47 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertNotIn("not-allowed", json.dumps(denied))
 
+    def test_qaiu_api_base_is_admin_configurable_and_rejects_plaintext_remote_hosts(self):
+        local_base = "http://127.0.0.1:6430"
+        status, payload = self.call("admin", "/api/admin/cloud-resolver/settings", "PATCH", {
+            "qaiuApiBase": local_base,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["qaiuApiBase"], local_base)
+        self.assertEqual(RESOLVER._load(APP)["qaiuApiBase"], local_base)
+
+        status, denied = self.call("alice", "/api/admin/cloud-resolver/settings", "PATCH", {
+            "qaiuApiBase": "http://127.0.0.1:6431",
+        })
+        self.assertEqual(status, 403)
+        self.assertNotIn("6431", json.dumps(denied))
+
+        status, invalid = self.call("admin", "/api/admin/cloud-resolver/settings", "PATCH", {
+            "qaiuApiBase": "http://pan.vst76.cn",
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(RESOLVER._load(APP)["qaiuApiBase"], local_base)
+
+    def test_qaiu_parser_uses_configured_local_api_base_for_all_requests(self):
+        local_base = "http://127.0.0.1:6430"
+        calls = []
+
+        def qaiu_reply(path, params=None, api_key="", require_api_key=True, api_base=None):
+            calls.append((path, api_base))
+            if path == "/v2/linkInfo":
+                return {"data": {"shareLinkInfo": {"panName": "测试网盘"}}}
+            if path == "/json/parser":
+                return {"data": {"directLink": "https://download.example/file.exe",
+                                  "fileInfo": {"fileName": "file.exe", "size": 42}}}
+            self.fail(f"Unexpected aggregate API path: {path}")
+
+        with patch.object(RESOLVER, "_qaiu_folder_files", return_value=[]), \
+                patch.object(RESOLVER, "_qaiu_request", side_effect=qaiu_reply):
+            files = RESOLVER._qaiu_parse("https://share.example/file", api_key=self.qaiu_key,
+                                         provider="qaiu", api_base=local_base)
+        self.assertEqual(files[0]["name"], "file.exe")
+        self.assertEqual(calls, [("/v2/linkInfo", local_base), ("/json/parser", local_base)])
+
     def test_unlimited_global_daily_default_is_inherited_by_new_plans(self):
         status, settings = self.call("admin", "/api/admin/cloud-resolver/settings", "PATCH", {
             "settings": {"dailyParseLimit": -1},
@@ -647,6 +688,10 @@ class CloudResolverTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "https://pan.vst76.cn/v2/linkInfo?url=https%3A%2F%2Fshare.example%2Fx")
         self.assertEqual(request.get_header("X-api-key"), self.qaiu_key)
+        with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response) as local_urlopen:
+            RESOLVER._qaiu_request("/json/parser", {}, self.qaiu_key,
+                                   api_base="http://127.0.0.1:6430")
+        self.assertEqual(local_urlopen.call_args.args[0].full_url, "http://127.0.0.1:6430/json/parser")
         response.read.return_value = b"not-json"
         with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response):
             with self.assertRaisesRegex(RESOLVER.ProviderError, "PROVIDER_BAD_RESPONSE"):
