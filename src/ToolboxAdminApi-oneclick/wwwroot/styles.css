@@ -3971,3 +3971,4 @@ body.sidebar-collapsed .announcement-nav .nav-badge { right: 2px; top: 5px; tran
 .button-layout-status.success { color: #20a464; }
 .button-layout-status.error { color: #e05252; }
 @media (max-width: 760px) { .button-layout-options { grid-template-columns: 1fr; } }
+.cloud-resolver-diagnostic-log { max-height: min(60vh, 680px); margin: 12px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-2); color: var(--text); font: 12px/1.5 Consolas, "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

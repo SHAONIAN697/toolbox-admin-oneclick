@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import threading
+import time
 import unicodedata
 import uuid
 import urllib.error
@@ -58,6 +59,111 @@ QAIU_DOWNLOAD_HEADER_NAMES = {
 
 class ProviderError(ValueError):
     """A user-facing, non-sensitive provider failure."""
+
+
+_DIAGNOSTIC_CONTEXT = threading.local()
+
+
+def _set_diagnostic_context(app, redact_values=None, **details):
+    _DIAGNOSTIC_CONTEXT.app = app
+    _DIAGNOSTIC_CONTEXT.details = details
+    _DIAGNOSTIC_CONTEXT.redact_values = list(redact_values or [])
+
+
+def _diag(event, details=None, redact_values=None):
+    app = getattr(_DIAGNOSTIC_CONTEXT, "app", None)
+    writer = getattr(app, "cloud_resolver_diagnostic_log", None) if app else None
+    if not callable(writer):
+        return
+    merged = dict(getattr(_DIAGNOSTIC_CONTEXT, "details", {}) or {})
+    merged.update(details or {})
+    context_secrets = getattr(_DIAGNOSTIC_CONTEXT, "redact_values", []) or []
+    writer(event, merged, redact_values=list(context_secrets) + list(redact_values or []))
+
+
+def _diagnostic_enabled():
+    app = getattr(_DIAGNOSTIC_CONTEXT, "app", None)
+    enabled = getattr(app, "cloud_resolver_diagnostic_enabled", None) if app else None
+    return bool(callable(enabled) and enabled())
+
+
+def _diagnostic_response_body(raw):
+    try:
+        return json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return {"rawText": raw.decode("utf-8", errors="replace")}
+
+
+def _diagnostic_request_body(request):
+    raw = getattr(request, "data", None)
+    if not raw:
+        return None
+    if not isinstance(raw, bytes):
+        raw = str(raw).encode("utf-8", "replace")
+    text = raw.decode("utf-8", "replace")
+    content_type = str(request.get_header("Content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            return json.loads(text)
+        except (TypeError, ValueError):
+            pass
+    if "application/x-www-form-urlencoded" in content_type:
+        parsed = urllib.parse.parse_qs(text, keep_blank_values=True)
+        return {key: values[-1] if len(values) == 1 else values for key, values in parsed.items()}
+    return {"rawText": text[:MAX_PAGE_BYTES], "bytes": len(raw)}
+
+
+def _diag_http_started(request, endpoint_path=""):
+    if not _diagnostic_enabled():
+        return
+    request_headers = dict(request.header_items())
+    query_params = urllib.parse.parse_qs(urlparse(request.full_url).query, keep_blank_values=True)
+    safe_headers = {
+        key: value for key, value in request_headers.items()
+        if key.casefold() in ("accept", "accept-encoding", "content-type", "origin", "referer", "user-agent", "x-requested-with")
+    }
+    _diag("provider_http_request_started", {
+        "method": getattr(request, "method", None) or ("POST" if request.data else "GET"),
+        "requestUrl": request.full_url,
+        "endpointPath": endpoint_path or urlparse(request.full_url).path,
+        "requestParams": {key: values[-1] if len(values) == 1 else values for key, values in query_params.items()},
+        "requestHeaders": safe_headers,
+        "requestHeaderNames": sorted(request_headers),
+        "requestBodyBytes": len(request.data or b"") if isinstance(request.data, bytes) else 0,
+        "requestBody": _diagnostic_request_body(request),
+    })
+
+
+def _diag_http_response(response, raw, started, endpoint_path="", body=None, truncated=False):
+    if not _diagnostic_enabled():
+        return
+    headers = getattr(response, "headers", {}) or {}
+    safe_headers = {
+        key: value for key, value in headers.items()
+        if key.casefold() in ("content-type", "content-length", "content-encoding", "date", "server", "retry-after", "x-request-id", "trace-id")
+    }
+    _diag("provider_http_response_received", {
+        "endpointPath": endpoint_path or urlparse(response.geturl()).path,
+        "responseUrl": response.geturl(),
+        "httpStatus": getattr(response, "status", None) or response.getcode(),
+        "elapsedMs": round((time.monotonic() - started) * 1000),
+        "responseHeaders": safe_headers,
+        "responseBodyBytes": len(raw or b""),
+        "responseBodyTruncated": bool(truncated),
+        "responseBody": body if body is not None else _diagnostic_response_body(raw or b""),
+    })
+
+
+def _diag_http_failure(request, started, exc):
+    if not _diagnostic_enabled():
+        return
+    _diag("provider_http_request_failed", {
+        "endpointPath": urlparse(request.full_url).path,
+        "httpStatus": getattr(exc, "code", None),
+        "elapsedMs": round((time.monotonic() - started) * 1000),
+        "errorType": type(exc).__name__,
+        "error": str(getattr(exc, "reason", exc)),
+    })
 
 
 def _qaiu_api_key(app, store):
@@ -129,36 +235,97 @@ def _qaiu_error(status=0, payload=None):
 
 def _qaiu_request(path, params=None, api_key="", require_api_key=True, api_base=None):
     if require_api_key and not str(api_key or "").strip():
+        _diag("upstream_request_skipped", {"endpointPath": str(path or ""), "reason": "QAIU_API_KEY_REQUIRED"})
         raise ProviderError("QAIU_API_KEY_REQUIRED")
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
     try:
         base = _normalize_qaiu_api_base(api_base or QAIU_API_BASE)
     except ValueError as exc:
+        _diag("upstream_request_skipped", {"endpointPath": str(path or ""), "reason": "QAIU_API_BASE_INVALID", "error": str(exc)})
         raise ProviderError("QAIU_API_BASE_INVALID") from exc
     endpoint = base + "/" + str(path or "").lstrip("/")
-    if query:
-        endpoint += "?" + query
     headers = {"Accept": "application/json", "User-Agent": "ToolboxCloudResolver/1.0"}
     if api_key:
         headers["X-API-Key"] = str(api_key).strip()
-    request = urllib.request.Request(endpoint, headers=headers)
+    request = urllib.request.Request(endpoint + (("?" + query) if query else ""), headers=headers)
+    started = time.monotonic()
+    safe_params = dict(params or {})
+    if safe_params.get("pwd"):
+        safe_params["pwd"] = "[已脱敏]"
+    request_secrets = [api_key, (params or {}).get("pwd", "")]
+    _diag("upstream_request_started", {
+        "method": "GET", "endpoint": endpoint, "endpointPath": "/" + str(path or "").lstrip("/"),
+        "timeoutSeconds": HTTP_TIMEOUT,
+        "credentialPresent": bool(api_key),
+        "requestHeaders": {"Accept": headers["Accept"], "User-Agent": headers["User-Agent"]},
+        "requestParams": safe_params,
+    }, redact_values=request_secrets)
     try:
         with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
             raw = response.read(QAIU_MAX_RESPONSE_BYTES + 1)
-            if len(raw) > QAIU_MAX_RESPONSE_BYTES:
-                raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
-            payload = json.loads(raw.decode("utf-8-sig"))
             status = getattr(response, "status", None) or response.getcode()
+            response_headers = {key: value for key, value in response.headers.items()
+                                if key.casefold() in ("content-type", "content-length", "date", "server", "retry-after", "x-request-id", "trace-id")}
     except urllib.error.HTTPError as exc:
-        raise ProviderError(_qaiu_error(exc.code)) from exc
+        try:
+            raw = exc.read(QAIU_MAX_RESPONSE_BYTES + 1)
+        except Exception:
+            raw = b""
+        response_body = _diagnostic_response_body(raw)
+        mapped_error = _qaiu_error(exc.code, response_body if isinstance(response_body, dict) else None)
+        error_headers = {key: value for key, value in (exc.headers.items() if exc.headers else [])
+                         if key.casefold() in ("content-type", "content-length", "date", "server", "retry-after", "x-request-id", "trace-id")}
+        _diag("upstream_response_received", {
+            "endpoint": endpoint, "httpStatus": exc.code, "elapsedMs": round((time.monotonic() - started) * 1000),
+            "responseHeaders": error_headers, "responseBodyBytes": len(raw),
+            "responseBodyTruncated": len(raw) > QAIU_MAX_RESPONSE_BYTES,
+            "responseBody": response_body, "mappedError": mapped_error,
+        }, redact_values=request_secrets)
+        raise ProviderError(mapped_error) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _diag("upstream_request_failed", {
+            "endpoint": endpoint, "elapsedMs": round((time.monotonic() - started) * 1000),
+            "errorType": type(exc).__name__, "error": str(getattr(exc, "reason", exc)),
+            "mappedError": "PROVIDER_UNAVAILABLE",
+        }, redact_values=request_secrets)
         raise ProviderError("PROVIDER_UNAVAILABLE") from exc
+    if len(raw) > QAIU_MAX_RESPONSE_BYTES:
+        _diag("upstream_response_received", {
+            "endpoint": endpoint, "httpStatus": status, "elapsedMs": round((time.monotonic() - started) * 1000),
+            "responseHeaders": response_headers, "responseBodyBytes": len(raw), "responseBodyTruncated": True,
+            "responseBody": _diagnostic_response_body(raw[:QAIU_MAX_RESPONSE_BYTES]),
+            "mappedError": "PROVIDER_RESPONSE_TOO_LARGE",
+        }, redact_values=request_secrets)
+        raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+        _diag("upstream_response_received", {
+            "endpoint": endpoint, "httpStatus": status, "elapsedMs": round((time.monotonic() - started) * 1000),
+            "responseHeaders": response_headers, "responseBodyBytes": len(raw),
+            "responseBody": _diagnostic_response_body(raw), "errorType": type(exc).__name__,
+            "error": str(exc), "mappedError": "PROVIDER_BAD_RESPONSE",
+        }, redact_values=request_secrets)
         raise ProviderError("PROVIDER_BAD_RESPONSE") from exc
     if not isinstance(payload, dict):
+        _diag("upstream_response_received", {
+            "endpoint": endpoint, "httpStatus": status, "elapsedMs": round((time.monotonic() - started) * 1000),
+            "responseHeaders": response_headers, "responseBodyBytes": len(raw),
+            "responseBody": payload, "mappedError": "PROVIDER_BAD_RESPONSE",
+        }, redact_values=request_secrets)
         raise ProviderError("PROVIDER_BAD_RESPONSE")
+    mapped_error = ""
     if status >= 400 or (payload.get("code") not in (None, 200, "200") or payload.get("success") is False):
-        raise ProviderError(_qaiu_error(status, payload))
+        mapped_error = _qaiu_error(status, payload)
+    if "data" not in payload:
+        mapped_error = mapped_error or "PROVIDER_BAD_RESPONSE"
+    _diag("upstream_response_received", {
+        "endpoint": endpoint, "httpStatus": status, "elapsedMs": round((time.monotonic() - started) * 1000),
+        "responseHeaders": response_headers, "responseBodyBytes": len(raw), "responseBodyTruncated": False,
+        "responseBody": payload, "mappedError": mapped_error,
+    }, redact_values=request_secrets)
+    if mapped_error:
+        raise ProviderError(mapped_error)
     if "data" not in payload:
         raise ProviderError("PROVIDER_BAD_RESPONSE")
     return payload
@@ -337,6 +504,8 @@ class _LanzouDownloadRedirect(urllib.request.HTTPRedirectHandler):
 def _read_http(opener, request, limit=MAX_PAGE_BYTES):
     if not _allowed_lanzou_host(request.full_url):
         raise ProviderError("PROVIDER_HOST_BLOCKED")
+    started = time.monotonic()
+    _diag_http_started(request)
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
             chunks, size = [], 0
@@ -347,17 +516,28 @@ def _read_http(opener, request, limit=MAX_PAGE_BYTES):
                 chunks.append(chunk)
                 size += len(chunk)
                 if size > limit:
+                    raw = b"".join(chunks)
+                    _diag_http_response(response, raw, started, body=_diagnostic_response_body(raw), truncated=True)
                     raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
-            body = b"".join(chunks)
+            raw = b"".join(chunks)
+            body = raw
             if "gzip" in str(response.headers.get("Content-Encoding") or "").lower():
                 try:
                     body = gzip.decompress(body)
                 except (OSError, EOFError) as exc:
+                    _diag_http_response(response, raw, started, body={"error": str(exc)}, truncated=False)
                     raise ProviderError("PROVIDER_BAD_RESPONSE") from exc
+            _diag_http_response(response, raw, started, body=_diagnostic_response_body(body))
             return body, response.geturl()
     except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(limit + 1)
+        except Exception:
+            raw = b""
+        _diag_http_response(exc, raw[:limit], started, body=_diagnostic_response_body(raw[:limit]), truncated=len(raw) > limit)
         raise ProviderError("PROVIDER_HTTP_ERROR") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _diag_http_failure(request, started, exc)
         raise ProviderError("PROVIDER_UNAVAILABLE") from exc
 
 
@@ -803,12 +983,16 @@ def _tianyi_json(opener, endpoint, params, referer=""):
         "Browser-Id": _tianyi_browser_id(params.get("shareCode") or params.get("shareId") or "share"),
         "Sign-Type": "1",
     })
+    started = time.monotonic()
+    _diag_http_started(request, endpoint)
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
             raw = response.read(MAX_PAGE_BYTES)
+            _diag_http_response(response, raw, started, endpoint, truncated=len(raw) >= MAX_PAGE_BYTES)
     except urllib.error.HTTPError as exc:
         try:
             raw = exc.read(MAX_PAGE_BYTES)
+            _diag_http_response(exc, raw, started, endpoint, truncated=len(raw) >= MAX_PAGE_BYTES)
             data = json.loads(raw.decode("utf-8", "replace"))
             error = _tianyi_error(data) if isinstance(data, dict) else ""
             if error:
@@ -821,6 +1005,7 @@ def _tianyi_json(opener, endpoint, params, referer=""):
             raise ProviderError("SHARE_NOT_FOUND") from exc
         raise ProviderError("PROVIDER_HTTP_ERROR") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _diag_http_failure(request, started, exc)
         raise ProviderError("PROVIDER_UNAVAILABLE") from exc
     try:
         data = json.loads(raw.decode("utf-8", "replace"))
@@ -928,12 +1113,22 @@ def _feiji_request(opener, endpoint, params):
         "Origin": "https://share.feijipan.com",
         "Referer": "https://share.feijipan.com/",
     }, method="POST")
+    started = time.monotonic()
+    _diag_http_started(request, endpoint)
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
-            data = json.loads(response.read(MAX_PAGE_BYTES).decode("utf-8", "replace"))
+            raw = response.read(MAX_PAGE_BYTES)
+            _diag_http_response(response, raw, started, endpoint, truncated=len(raw) >= MAX_PAGE_BYTES)
+            data = json.loads(raw.decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(MAX_PAGE_BYTES)
+        except Exception:
+            raw = b""
+        _diag_http_response(exc, raw, started, endpoint, truncated=len(raw) >= MAX_PAGE_BYTES)
         raise ProviderError("PROVIDER_HTTP_ERROR") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _diag_http_failure(request, started, exc)
         raise ProviderError("PROVIDER_UNAVAILABLE") from exc
     if not isinstance(data, dict):
         raise ProviderError("PROVIDER_RESPONSE_INVALID")
@@ -966,18 +1161,25 @@ def _feiji_file_redirect(opener, share_id, file_id, browser_url="", user_id="", 
         "Origin": "https://share.feijipan.com",
         "Referer": browser_url or "https://share.feijipan.com/",
     })
+    started = time.monotonic()
+    _diag_http_started(request, "/ws/file/redirect")
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
             content_type = str(response.headers.get("Content-Type") or "").lower()
             resolved = response.geturl()
             payload = None
+            raw = b""
             if "json" in content_type:
-                payload = json.loads(response.read(MAX_PAGE_BYTES).decode("utf-8", "replace"))
+                raw = response.read(MAX_PAGE_BYTES)
+                payload = json.loads(raw.decode("utf-8", "replace"))
+            _diag_http_response(response, raw, started, "/ws/file/redirect", body=payload,
+                                truncated=len(raw) >= MAX_PAGE_BYTES)
             if isinstance(payload, dict) and payload.get("code") not in (None, 0, 200):
                 return ""
             if resolved and not resolved.startswith(FEIJI_API_BASE):
                 return resolved
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        _diag_http_failure(request, started, exc)
         return ""
     return ""
 
@@ -1043,17 +1245,26 @@ def _weiyun_read(opener, url, data=None, referer=""):
         "Referer": referer or url, "Origin": "https://share.weiyun.com",
         "Content-Type": "application/json", "Accept": "application/json,text/html",
     })
+    started = time.monotonic()
+    _diag_http_started(request)
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
             if urlparse(response.geturl()).hostname != "share.weiyun.com":
                 raise ProviderError("PROVIDER_REDIRECT_BLOCKED")
             raw = response.read(MAX_PAGE_BYTES + 1)
+            _diag_http_response(response, raw[:MAX_PAGE_BYTES], started, truncated=len(raw) > MAX_PAGE_BYTES)
             if len(raw) > MAX_PAGE_BYTES:
                 raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
             return raw.decode("utf-8")
     except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read(MAX_PAGE_BYTES + 1)
+        except Exception:
+            raw = b""
+        _diag_http_response(exc, raw[:MAX_PAGE_BYTES], started, truncated=len(raw) > MAX_PAGE_BYTES)
         raise ProviderError("WEIYUN_VERIFICATION_REQUIRED" if exc.code in (401, 403) else "PROVIDER_HTTP_ERROR") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        _diag_http_failure(request, started, exc)
         raise ProviderError("PROVIDER_UNAVAILABLE") from exc
     except UnicodeError as exc:
         raise ProviderError("PROVIDER_BAD_RESPONSE") from exc
@@ -1199,10 +1410,14 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers, api_ba
             raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
         marker = str(folder_url or "")
         if marker in visited:
+            _diag("folder_visit_skipped", {"reason": "duplicate", "depth": depth, "folderPath": folder_path})
             return
         visited.add(marker)
+        _diag("folder_list_started", {"depth": depth, "folderPath": folder_path, "folderUrl": marker})
         payload = _qaiu_request_at_base("/v2/getFileList", {"url": marker, "pwd": access_code}, api_key, api_base)
-        for item in _qaiu_list_rows(payload):
+        rows = _qaiu_list_rows(payload)
+        _diag("folder_list_received", {"depth": depth, "folderPath": folder_path, "entryCount": len(rows)})
+        for item in rows:
             if not isinstance(item, dict):
                 continue
             name = html.unescape(str(item.get("fileName") or item.get("name") or "未命名文件").strip())[:240]
@@ -1243,13 +1458,18 @@ def _qaiu_parse(url, access_code="", api_key="", provider="", api_base=None):
     # the separate password field. Pass it to the aggregate service as pwd.
     if provider == "xiaofeiji" and not str(access_code or "").strip():
         access_code = urllib.parse.parse_qs(urlparse(str(url)).query).get("code", [""])[0].strip()
+    _diag("aggregate_parse_started", {
+        "provider": provider, "shareUrl": url, "accessCodePresent": bool(access_code),
+        "credentialPresent": bool(api_key), "apiBase": api_base or QAIU_API_BASE,
+    }, redact_values=[access_code, api_key])
     details = {}
     try:
         details = _qaiu_request_at_base("/v2/linkInfo", {"url": url, "pwd": access_code}, "", api_base,
                                         require_api_key=False)
-    except ProviderError:
+    except ProviderError as exc:
         # linkInfo is an optional, unmetered hint; the actual JSON parser below
         # remains authoritative for whether a share is supported and usable.
+        _diag("link_info_hint_failed", {"errorCode": str(exc), "continuing": True}, redact_values=[access_code, api_key])
         details = {}
     provider_name, provider_type, other_param = _qaiu_link_details(details)
     provider_name = provider_name or PROVIDERS.get(provider, {}).get("label") or "其他网盘"
@@ -1261,11 +1481,16 @@ def _qaiu_parse(url, access_code="", api_key="", provider="", api_base=None):
             files = _qaiu_folder_files(url, access_code, api_key, provider_name, download_headers, api_base)
     except ProviderError as exc:
         if str(exc) in ("QAIU_API_KEY_REQUIRED", "QAIU_API_KEY_INVALID", "QAIU_QUOTA_EXHAUSTED"):
+            _diag("folder_parse_failed", {"errorCode": str(exc), "provider": provider}, redact_values=[access_code, api_key])
             raise
+        _diag("folder_parse_unavailable", {"errorCode": str(exc), "continuingToSingleFileParser": True}, redact_values=[access_code, api_key])
         files = []
     if files:
+        _diag("aggregate_parse_result", {"provider": provider, "resultType": "folder_list", "fileCount": len(files),
+                                          "files": [{"id": row.get("id"), "name": row.get("name"), "size": row.get("size"), "type": row.get("type")} for row in files]})
         return files
 
+    _diag("single_file_parser_started", {"provider": provider, "endpointPath": "/json/parser"}, redact_values=[access_code, api_key])
     payload = _qaiu_request_at_base("/json/parser", {"url": url, "pwd": access_code}, api_key, api_base)
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     file_info = data.get("fileInfo") if isinstance(data.get("fileInfo"), dict) else {}
@@ -1278,9 +1503,13 @@ def _qaiu_parse(url, access_code="", api_key="", provider="", api_base=None):
     except (TypeError, ValueError):
         size = 0
     file_id = str(data.get("shareKey") or hashlib.sha256(url.encode("utf-8")).hexdigest()[:24])[:160]
-    return [{"id": file_id, "name": name, "path": "/" + name, "size": size, "type": "file",
-             "downloadUrl": download_url, "backupUrl": "", "browserUrl": url,
-             "providerName": provider_name, "resolverType": "qaiu", "downloadHeaders": download_headers}]
+    result = [{"id": file_id, "name": name, "path": "/" + name, "size": size, "type": "file",
+               "downloadUrl": download_url, "backupUrl": "", "browserUrl": url,
+               "providerName": provider_name, "resolverType": "qaiu", "downloadHeaders": download_headers}]
+    _diag("aggregate_parse_result", {"provider": provider, "resultType": "single_file_parser", "fileCount": 1,
+                                      "files": [{"id": file_id, "name": name, "size": size, "type": "file"}],
+                                      "downloadUrl": download_url}, redact_values=[access_code, api_key])
+    return result
 
 
 def _provider_parse(provider, url, access_code="", api_key="", api_base=None):
@@ -1326,6 +1555,11 @@ def _parse_failure_code(files):
 
 
 def _parse_task_files(task, access_code="", api_key="", api_base=None):
+    started = time.monotonic()
+    _diag("provider_parse_started", {
+        "taskId": task.get("id", ""), "provider": task.get("provider", ""), "shareUrl": task.get("shareUrl", ""),
+        "accessCodePresent": bool(access_code), "credentialPresent": bool(api_key), "apiBase": api_base or "",
+    }, redact_values=[access_code, api_key])
     files = _provider_parse_configured(task.get("provider"), task.get("shareUrl"), access_code, api_key, api_base)
     task["files"] = files
     task["resolverType"] = "qaiu" if task.get("provider") not in ("lanzou", "mock") else "official"
@@ -1337,6 +1571,12 @@ def _parse_task_files(task, access_code="", api_key="", api_base=None):
     if task.get("provider") == "weiyun" and not _has_downloadable_file(files):
         task["errorCode"] = _parse_failure_code(files)
     task["updatedAt"] = _iso(_now())
+    _diag("provider_parse_completed", {
+        "taskId": task.get("id", ""), "provider": task.get("provider", ""), "status": task.get("status"),
+        "errorCode": task.get("errorCode", ""), "fileCount": len(files),
+        "files": [{"id": row.get("id"), "name": row.get("name"), "size": row.get("size"), "type": row.get("type")} for row in files if isinstance(row, dict)],
+        "elapsedMs": round((time.monotonic() - started) * 1000),
+    }, redact_values=[access_code, api_key])
     return files
 
 
@@ -1350,13 +1590,22 @@ def _process_parse_task(app, task_id):
         access_code = _unprotect(app, saved_task.get("accessCodeEncrypted"))
         api_key = _qaiu_api_key(app, store)
 
+    started = time.monotonic()
+    _set_diagnostic_context(app, redact_values=[access_code, api_key], taskId=task_id,
+                            provider=task.get("provider", ""), ownerUserId=task.get("ownerUserId", ""))
+    _diag("parse_task_started", {
+        "shareUrl": task.get("shareUrl", ""), "accessCodePresent": bool(access_code),
+        "apiKeyConfigured": bool(api_key), "taskStatus": task.get("status", ""),
+    }, redact_values=[access_code, api_key])
     try:
         api_base = _qaiu_configured_api_base(store)
         _parse_task_files(task, access_code, api_key, api_base)
     except ProviderError as exc:
         task.update({"status": "failed", "errorCode": str(exc), "updatedAt": _iso(_now())})
-    except Exception:
+        _diag("parse_task_error", {"errorType": type(exc).__name__, "error": str(exc), "errorCode": str(exc)}, redact_values=[access_code, api_key])
+    except Exception as exc:
         task.update({"status": "failed", "errorCode": "PROVIDER_UNAVAILABLE", "updatedAt": _iso(_now())})
+        _diag("parse_task_error", {"errorType": type(exc).__name__, "error": str(exc), "errorCode": "PROVIDER_UNAVAILABLE"}, redact_values=[access_code, api_key])
 
     with LOCK:
         store = _load(app)
@@ -1366,6 +1615,10 @@ def _process_parse_task(app, task_id):
         for key in ("files", "status", "errorCode", "resolverType", "providerName", "updatedAt"):
             saved_task[key] = task.get(key)
         _save(app, store)
+    _diag("parse_task_finished", {
+        "status": task.get("status", ""), "errorCode": task.get("errorCode", ""),
+        "fileCount": len(task.get("files") or []), "elapsedMs": round((time.monotonic() - started) * 1000),
+    }, redact_values=[access_code, api_key])
 
 
 def _run_parse_task(app, task_id):
@@ -1755,6 +2008,10 @@ def route(handler, app, path, method, auth):
     user = auth["user"]
     user_id = user.get("id")
     is_super = app.is_super(user)
+    _set_diagnostic_context(app, actorId=user_id or "", actor=user.get("username", ""))
+    _diag("resolver_api_route_started", {
+        "method": method, "path": path, "query": getattr(handler, "query", {}),
+    })
     with LOCK:
         store = _load(app)
         if path == "/api/cloud-resolver/config" and method == "GET":
@@ -1954,11 +2211,19 @@ def route(handler, app, path, method, auth):
                 elif provider != "mock":
                     pending_parse_task_ids.append(task["id"])
                 store["tasks"].insert(0, task); tasks.append(task)
+                _diag("parse_task_queued", {
+                    "taskId": task["id"], "provider": provider, "shareUrl": url,
+                    "accessCodePresent": bool(access_code), "metadata": {
+                        "version": task.get("version", ""), "platform": task.get("platform", ""),
+                        "architecture": task.get("architecture", ""), "language": task.get("language", ""),
+                    },
+                })
                 entitlement["parseUsed"] = int(entitlement.get("parseUsed") or 0) + 1
                 entitlement["dailyParseUsed"] = used + len(tasks); entitlement["lastUsedAt"] = task["createdAt"]
             _save(app, store); _audit(app, user, handler, "parse_submit", ",".join(x["id"] for x in tasks), {"count": len(tasks), "providers": sorted({x["provider"] for x in tasks})})
             for task_id in pending_parse_task_ids:
                 _schedule_parse_task(app, task_id)
+                _diag("parse_task_scheduled", {"taskId": task_id})
             latest_tasks = {row.get("id"): row for row in _load(app)["tasks"]}
             tasks = [_public_task(latest_tasks.get(task.get("id"), task)) for task in tasks]
             return handler.send_json({"tasks": tasks}, 201)

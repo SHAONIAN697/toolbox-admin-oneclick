@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026090701">
+  <link rel="stylesheet" href="/styles.css?v=2026102301">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -396,6 +396,22 @@
     </section>
 
     <section class="view" id="view-system">
+      <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1" id="cloudResolverDiagnosticsPanel" hidden>
+        <div class="panel-head"><h2>网盘解析测试日志</h2><span id="cloudResolverDiagnosticsStatus" class="status-chip">已关闭</span></div>
+        <div class="form-grid compact">
+          <label class="toggle-line">记录详细解析过程<span><input id="cloudResolverDiagnosticsEnabled" type="checkbox"> 启用</span></label>
+          <p class="note wide">开启后会记录网盘解析请求与返回、上游接口状态和耗时、任务阶段及错误详情。日志只允许总管理员读取；访问码、API Key、登录令牌、Cookie 和分享/下载链接路径及参数会脱敏，但响应中的文件名等业务信息仍可能包含个人数据。日志保存在服务器 data/cloud-resolver-diagnostics.jsonl，最多保留 32 MB；问题复现后请及时关闭并妥善保管导出的日志。</p>
+        </div>
+        <div class="button-pair">
+          <button id="saveCloudResolverDiagnosticsBtn" type="button">保存开关</button>
+          <button id="loadCloudResolverDiagnosticsBtn" type="button">读取日志</button>
+          <button id="downloadCloudResolverDiagnosticsBtn" type="button">下载日志</button>
+          <button id="copyCloudResolverDiagnosticsBtn" type="button">复制日志</button>
+          <button id="clearCloudResolverDiagnosticsBtn" type="button" class="danger">清空日志</button>
+          <span id="cloudResolverDiagnosticsSummary" class="note"></span>
+        </div>
+        <pre id="cloudResolverDiagnosticsContent" class="cloud-resolver-diagnostic-log" hidden></pre>
+      </div>
       <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1" id="cloudResolverAdminPanel" hidden>
         <div class="panel-head"><h2>解析模块全局设置</h2><button id="cloudResolverSaveSettingsBtn" type="button">保存设置</button></div>
         <div class="form-grid compact"><label class="toggle-line">启用模块<span><input id="cloudResolverEnabled" type="checkbox"> 启用</span></label><label>每日默认额度<input id="cloudResolverDailyLimit" type="number" min="-1"><small>-1 表示不限</small></label><label>最大重试次数<input id="cloudResolverRetries" type="number" min="0"></label><label class="wide">聚合解析服务地址<input id="cloudResolverQaiuApiBase" type="url" autocomplete="url" placeholder="https://pan.vst76.cn 或本机 http://127.0.0.1:端口"></label><label class="wide">聚合解析 API Key<input id="cloudResolverQaiuApiKey" type="password" autocomplete="new-password" placeholder="填写服务 API Key；已配置时留空可保留"></label><label class="toggle-line">密钥管理<span><input id="cloudResolverClearQaiuApiKey" type="checkbox"> 清除已保存密钥</span></label></div>
@@ -614,7 +630,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026102201"></script>
+  <script src="/admin.js?v=2026102301"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

@@ -3021,6 +3021,8 @@ function renderSystemSettings() {
   if ($('agentCloudCodePrice')) $('agentCloudCodePrice').value = Number(agent.cloudCodePrice || 0);
   if ($('agentOrderCooldown')) $('agentOrderCooldown').value = Number(agent.orderCooldownMinutes ?? 30);
   if ($('cloudResolverOrderExpiryMinutes')) $('cloudResolverOrderExpiryMinutes').value = Number(state.system.cloudResolverOrderExpiryMinutes ?? 30);
+  if ($('cloudResolverDiagnosticsEnabled')) $('cloudResolverDiagnosticsEnabled').checked = state.system.cloudResolverDiagnosticsEnabled === true;
+  if ($('cloudResolverDiagnosticsStatus')) $('cloudResolverDiagnosticsStatus').textContent = state.system.cloudResolverDiagnosticsEnabled === true ? '已开启' : '已关闭';
   if ($('agentAllowNegative')) $('agentAllowNegative').checked = !!agent.allowNegativeBalance;
   renderAgentLevelRows();
   if ($('payWechatChannel')) $('payWechatChannel').value = pay.wechatChannel || 'disabled';
@@ -6500,6 +6502,77 @@ function renderNewUserAgentLevel() {
   select.disabled = role !== 'agent' || !isSuper();
 }
 
+async function loadCloudResolverDiagnostics() {
+  if (!isSuper()) throw new Error('只有总管理员可以查看诊断日志。');
+  const result = await api('/api/super/cloud-resolver-diagnostics');
+  if (state.system) state.system.cloudResolverDiagnosticsEnabled = result.enabled === true;
+  if ($('cloudResolverDiagnosticsEnabled')) $('cloudResolverDiagnosticsEnabled').checked = result.enabled === true;
+  if ($('cloudResolverDiagnosticsStatus')) $('cloudResolverDiagnosticsStatus').textContent = result.enabled === true ? '已开启' : '已关闭';
+  const content = $('cloudResolverDiagnosticsContent');
+  if (content) {
+    content.textContent = result.content || '当前没有诊断日志。';
+    content.hidden = false;
+  }
+  const size = Number(result.sizeBytes || 0);
+  if ($('cloudResolverDiagnosticsSummary')) {
+    $('cloudResolverDiagnosticsSummary').textContent = `共 ${Number(result.events || 0)} 条，当前显示 ${Number(result.shown || 0)} 条，日志大小 ${(size / 1024).toFixed(1)} KB`;
+  }
+  return result;
+}
+
+async function saveCloudResolverDiagnostics() {
+  if (!isSuper()) throw new Error('只有总管理员可以修改诊断日志设置。');
+  const enabled = $('cloudResolverDiagnosticsEnabled')?.checked === true;
+  const result = await api('/api/super/cloud-resolver-diagnostics', {
+    method: 'PATCH', body: JSON.stringify({ enabled })
+  });
+  if (state.system) state.system.cloudResolverDiagnosticsEnabled = result.enabled === true;
+  if ($('cloudResolverDiagnosticsStatus')) $('cloudResolverDiagnosticsStatus').textContent = result.enabled ? '已开启' : '已关闭';
+  setStatus(result.enabled ? '网盘解析诊断日志已开启。复现问题后请及时关闭。' : '网盘解析诊断日志已关闭。');
+  return result;
+}
+
+async function downloadCloudResolverDiagnostics() {
+  if (!isSuper()) throw new Error('只有总管理员可以下载诊断日志。');
+  const response = await fetch('/api/super/cloud-resolver-diagnostics/export', { headers: authHeaders() });
+  if (!response.ok) {
+    let message = `下载日志失败：HTTP ${response.status}`;
+    try { message = (await response.json()).error || message; } catch {}
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '网盘解析诊断日志.jsonl';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setStatus('诊断日志已下载。');
+}
+
+async function copyCloudResolverDiagnostics() {
+  const content = $('cloudResolverDiagnosticsContent');
+  if (!content || content.hidden) await loadCloudResolverDiagnostics();
+  await navigator.clipboard.writeText($('cloudResolverDiagnosticsContent')?.textContent || '');
+  setStatus('当前显示的诊断日志已复制。');
+}
+
+async function clearCloudResolverDiagnostics() {
+  if (!isSuper()) throw new Error('只有总管理员可以清空诊断日志。');
+  if (!window.confirm('确认清空服务器上的全部网盘解析诊断日志吗？此操作不可恢复。')) return;
+  const currentPassword = window.prompt('请输入当前总管理员密码以确认清空日志：');
+  if (currentPassword === null) return;
+  await api('/api/super/cloud-resolver-diagnostics', {
+    method: 'DELETE', body: JSON.stringify({ currentPassword })
+  });
+  const content = $('cloudResolverDiagnosticsContent');
+  if (content) { content.textContent = '当前没有诊断日志。'; content.hidden = false; }
+  if ($('cloudResolverDiagnosticsSummary')) $('cloudResolverDiagnosticsSummary').textContent = '日志已清空。';
+  setStatus('网盘解析诊断日志已清空。');
+}
+
 async function saveSystemSettings(section) {
   const body = {};
   if (section === 'locations') {
@@ -7662,6 +7735,11 @@ if ($('sendNoticeBtn')) $('sendNoticeBtn').onclick = () => sendNotice().catch((e
 if ($('markAllNoticeReadBtn')) $('markAllNoticeReadBtn').onclick = () => markAllNoticesRead().catch((error) => setStatus(error.message, true));
 if ($('deleteAllNoticesBtn')) $('deleteAllNoticesBtn').onclick = () => deleteAllNotices().catch((error) => setStatus(error.message, true));
 if ($('saveLocationSettingsBtn')) $('saveLocationSettingsBtn').onclick = () => saveSystemSettings('locations').catch((error) => setStatus(error.message, true));
+if ($('saveCloudResolverDiagnosticsBtn')) $('saveCloudResolverDiagnosticsBtn').onclick = () => saveCloudResolverDiagnostics().catch((error) => setStatus(error.message, true));
+if ($('loadCloudResolverDiagnosticsBtn')) $('loadCloudResolverDiagnosticsBtn').onclick = () => loadCloudResolverDiagnostics().catch((error) => setStatus(error.message, true));
+if ($('downloadCloudResolverDiagnosticsBtn')) $('downloadCloudResolverDiagnosticsBtn').onclick = () => downloadCloudResolverDiagnostics().catch((error) => setStatus(error.message, true));
+if ($('copyCloudResolverDiagnosticsBtn')) $('copyCloudResolverDiagnosticsBtn').onclick = () => copyCloudResolverDiagnostics().catch((error) => setStatus(error.message, true));
+if ($('clearCloudResolverDiagnosticsBtn')) $('clearCloudResolverDiagnosticsBtn').onclick = () => clearCloudResolverDiagnostics().catch((error) => setStatus(error.message, true));
 if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
 if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));

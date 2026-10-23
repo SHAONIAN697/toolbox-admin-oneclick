@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
@@ -91,10 +92,14 @@ class CloudResolverTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.original_parse_executor = RESOLVER.PARSE_EXECUTOR
+        self.original_system_path = APP.SYSTEM_PATH
+        self.original_diagnostic_log_path = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH
         RESOLVER.PARSE_EXECUTOR = InlineExecutor()
         RESOLVER.ACTIVE_PARSE_TASKS.clear()
         data = Path(self.temp.name)
         APP.DATA = data
+        APP.SYSTEM_PATH = data / "system.json"
+        APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = data / "cloud-resolver-diagnostics.jsonl"
         APP.USERS_PATH = data / "users.json"
         APP.USER_TEMPLATE_PATH = data / "user-template.json"
         APP.USER_DATA = data / "users"
@@ -120,6 +125,8 @@ class CloudResolverTests(unittest.TestCase):
 
     def tearDown(self):
         RESOLVER.PARSE_EXECUTOR = self.original_parse_executor
+        APP.SYSTEM_PATH = self.original_system_path
+        APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = self.original_diagnostic_log_path
         APP.CLOUD_RESOLVER_MOCK_ENABLED = False
         self.temp.cleanup()
 
@@ -157,6 +164,156 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(len(tasks["tasks"]), 1)
         with self.assertRaises(PermissionError):
             self.call("bob", f"/api/cloud-resolver/parse-tasks/{task['id']}", "GET")
+
+    def test_cloud_resolver_diagnostics_default_off_and_redact_credentials(self):
+        self.assertFalse(APP.cloud_resolver_diagnostic_enabled())
+        self.assertFalse(APP.cloud_resolver_diagnostic_log("must_not_write", {"value": "ignored"}))
+        self.assertFalse(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.exists())
+
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        self.assertTrue(APP.cloud_resolver_diagnostic_log("redaction_test", {
+            "accessCode": "share-secret-123", "apiKey": "upstream-api-secret", "cookie": "session-cookie-secret",
+            "downloadUrl": "https://download.example/file.exe?token=signed-download-secret",
+            "shareUrl": "https://share.example/s/private-share-id?code=share-secret-123",
+            "message": "request failed with upstream-api-secret and share-secret-123; link https://cdn.example/private/path?authToken=embedded-secret",
+            "nested": {"resource": "https://cdn.example/another/private/path?session_id=session-secret"},
+        }, redact_values=["share-secret-123", "upstream-api-secret"]))
+        content = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8")
+        for secret in ("share-secret-123", "upstream-api-secret", "session-cookie-secret", "signed-download-secret",
+                       "private-share-id", "embedded-secret", "another/private/path", "session-secret"):
+            self.assertNotIn(secret, content)
+        self.assertIn("request failed", content)
+        self.assertIn("download.example", content)
+        safe_url = APP._cloud_diagnostic_safe_url(
+            "https://resolver.example/api?offset=1&limit=110&accessCode=share-secret-123&k=signature-secret&t=token-secret",
+            hide_path=True,
+        )
+        self.assertIn("offset=1", safe_url)
+        self.assertIn("limit=110", safe_url)
+        self.assertNotIn("signature-secret", safe_url)
+        self.assertNotIn("token-secret", safe_url)
+
+    def test_upstream_request_and_full_response_are_diagnostic_events(self):
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        RESOLVER._set_diagnostic_context(APP, taskId="task-diagnostic", provider="tianyi")
+        body = {
+            "code": 200, "success": True,
+            "data": {
+                "fileInfo": {"fileName": "demo.zip", "size": 12},
+                "downloadUrl": "https://download.example/demo.zip?token=signed-download-secret",
+                "cookie": "response-cookie-secret",
+            },
+        }
+        response = MagicMock()
+        response.status = 200
+        response.getcode.return_value = 200
+        response.read.return_value = json.dumps(body).encode("utf-8")
+        response.headers = {"Content-Type": "application/json", "Set-Cookie": "response-cookie-secret"}
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with patch.object(RESOLVER.urllib.request, "urlopen", return_value=response):
+            payload = RESOLVER._qaiu_request("/v2/getFileList", {
+                "url": "https://cloud.189.cn/t/private-share-id", "pwd": "share-access-secret",
+            }, api_key="upstream-api-secret", api_base="https://resolver.example")
+        self.assertEqual(payload["data"]["fileInfo"]["fileName"], "demo.zip")
+        content = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8")
+        rows = [json.loads(line) for line in content.splitlines()]
+        self.assertEqual([row["event"] for row in rows], ["upstream_request_started", "upstream_response_received"])
+        self.assertEqual(rows[-1]["details"]["httpStatus"], 200)
+        self.assertEqual(rows[0]["details"]["endpointPath"], "/v2/getFileList")
+        self.assertEqual(rows[-1]["details"]["responseBody"]["data"]["fileInfo"]["fileName"], "demo.zip")
+        for secret in ("upstream-api-secret", "share-access-secret", "response-cookie-secret", "signed-download-secret", "private-share-id"):
+            self.assertNotIn(secret, content)
+
+    def test_direct_provider_http_diagnostics_capture_request_and_response_safely(self):
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        RESOLVER._set_diagnostic_context(APP, taskId="task-direct", provider="tianyi")
+        response_body = {"res_code": "0", "shareId": "private-share-id", "fileId": "private-file-id"}
+        response = MagicMock()
+        response.status = 200
+        response.getcode.return_value = 200
+        response.geturl.return_value = "https://cloud.189.cn/api/open/share/checkAccessCode.action"
+        response.read.return_value = json.dumps(response_body).encode("utf-8")
+        response.headers = {"Content-Type": "application/json", "Set-Cookie": "provider-session-secret"}
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        opener = Mock()
+        opener.open.return_value = response
+
+        payload = RESOLVER._tianyi_json(opener, "/open/share/checkAccessCode.action", {
+            "shareCode": "private-share-code", "accessCode": "share-access-secret",
+        })
+        self.assertEqual(payload["res_code"], "0")
+        content = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8")
+        rows = [json.loads(line) for line in content.splitlines()]
+        self.assertEqual([row["event"] for row in rows], [
+            "provider_http_request_started", "provider_http_response_received",
+        ])
+        self.assertEqual(rows[0]["details"]["endpointPath"], "/open/share/checkAccessCode.action")
+        self.assertEqual(rows[1]["details"]["httpStatus"], 200)
+        self.assertEqual(rows[1]["details"]["responseBody"]["res_code"], "0")
+        for secret in ("private-share-code", "share-access-secret", "private-share-id", "private-file-id", "provider-session-secret"):
+            self.assertNotIn(secret, content)
+
+    def test_direct_provider_connection_failure_is_diagnostic(self):
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        RESOLVER._set_diagnostic_context(APP, taskId="task-timeout", provider="tianyi")
+        opener = Mock()
+        opener.open.side_effect = urllib.error.URLError("connection timed out")
+        with self.assertRaises(RESOLVER.ProviderError):
+            RESOLVER._tianyi_json(opener, "/open/share/getShareInfoByCodeV2.action", {"shareCode": "private-share-code"})
+
+        rows = [json.loads(line) for line in APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([row["event"] for row in rows], [
+            "provider_http_request_started", "provider_http_request_failed",
+        ])
+        self.assertEqual(rows[-1]["details"]["errorType"], "URLError")
+        self.assertIn("timed out", rows[-1]["details"]["error"])
+        self.assertNotIn("private-share-code", json.dumps(rows, ensure_ascii=False))
+
+    def test_cloud_diagnostic_endpoint_is_super_admin_only(self):
+        handler = FakeHandler()
+        result = APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "GET", self.auth("agent"))
+        self.assertEqual(handler.responses[-1][0], 403)
+        self.assertEqual(result["error"], "只有总管理员可以查看网盘解析诊断日志。")
+        handler = FakeHandler()
+        APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics/export", "GET", self.auth("agent"))
+        self.assertEqual(handler.responses[-1][0], 403)
+
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        handler = FakeHandler()
+        APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "GET", self.auth("admin"))
+        self.assertEqual(handler.responses[-1][0], 200)
+        self.assertTrue(handler.responses[-1][1]["enabled"])
+
+    def test_cloud_diagnostic_toggle_and_clear_require_super_admin_and_password(self):
+        handler = FakeHandler({"enabled": True})
+        APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "PATCH", self.auth("admin"))
+        self.assertEqual(handler.responses[-1], (200, {"enabled": True}))
+        self.assertTrue(APP.cloud_resolver_diagnostic_enabled())
+
+        APP.cloud_resolver_diagnostic_log("preserve_on_bad_password", {"result": "example"})
+        before = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8")
+        handler = FakeHandler({"currentPassword": "wrong-password"})
+        APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "DELETE", self.auth("admin"))
+        self.assertEqual(handler.responses[-1][0], 403)
+        self.assertEqual(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8"), before)
+
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": False})
+        self.assertFalse(APP.cloud_resolver_diagnostic_enabled())
+
+    def test_diagnostic_management_responses_are_not_written_back_into_log(self):
+        APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
+        handler = object.__new__(APP.Handler)
+        handler.route = "/api/super/cloud-resolver-diagnostics"
+        handler.command = "GET"
+        handler.wfile = io.BytesIO()
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        with patch.object(APP, "cloud_resolver_diagnostic_log") as log:
+            handler.send_json({"content": "existing diagnostic events"})
+        log.assert_not_called()
 
     def test_provider_recognition_and_tianyi_uses_aggregate_parser(self):
         self.assertEqual(RESOLVER._provider_for("https://cloud.189.cn/t/6VvEryMnyYZz")[0], "tianyi")

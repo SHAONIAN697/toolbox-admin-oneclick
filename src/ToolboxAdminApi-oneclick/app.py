@@ -52,6 +52,9 @@ CLIENT_DOWNLOAD_STATS_PATH = DATA / "client-download-stats.json"
 AUDIT_LOG_PATH = DATA / "security-audit.jsonl"
 AUDIT_LOG_MAX_BYTES = 8 * 1024 * 1024
 AUDIT_LOG_KEEP_EVENTS = 5000
+CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = DATA / "cloud-resolver-diagnostics.jsonl"
+CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_BYTES = 32 * 1024 * 1024
+CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_EVENTS = 10000
 IP_CACHE_PATH = DATA / "ip-location-cache.json"
 BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
@@ -143,6 +146,7 @@ ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "").strip()
 ADMIN_USERNAME = os.environ.get("TOOLBOX_ADMIN_USERNAME", "admin").strip() or "admin"
 SESSIONS = {}
 SECURITY_LOCK = threading.RLock()
+CLOUD_RESOLVER_DIAGNOSTIC_LOCK = threading.RLock()
 LOGIN_ATTEMPTS = {}
 SESSION_TTL_SECONDS = max(900, int(os.environ.get("TOOLBOX_SESSION_TTL_SECONDS", "43200")))
 LOGIN_WINDOW_SECONDS = 15 * 60
@@ -793,6 +797,162 @@ def audit_event(action, actor=None, target="", handler=None, details=None, succe
                 kept_bytes += line_bytes
             kept.reverse()
             AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+
+
+_CLOUD_DIAGNOSTIC_SECRET_KEYS = {
+    "accesscode", "sharecode", "shareid", "fileid", "activationcode", "password", "pwd", "apikey", "token",
+    "t", "k", "gtk",
+    "authorization", "cookie", "setcookie", "secret", "privatekey", "signature", "sign",
+    "auth", "key",
+}
+_CLOUD_DIAGNOSTIC_SIGNED_URL_KEYS = {
+    "directlink", "downloadurl", "parserurl", "resolvedurl", "backupurl", "fileurl",
+    "upstreamurl", "upstreambackupurl",
+}
+_CLOUD_DIAGNOSTIC_SENSITIVE_QUERY_KEYS = {
+    "accesscode", "sharecode", "activationcode", "password", "pwd", "apikey", "token",
+    "authorization", "cookie", "secret", "signature", "sign", "auth", "key", "code",
+    "session", "credential", "sid", "t", "k", "gtk",
+}
+
+
+def _cloud_diagnostic_safe_url(value, hide_path=False, hide_query=False):
+    text = str(value or "")[:10000]
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return text
+        host = parsed.hostname
+        if parsed.port:
+            host += f":{parsed.port}"
+        path = parsed.path or "/"
+        if hide_path and path != "/":
+            path = "/[已脱敏]"
+        query = []
+        for query_key, values in parse_qs(parsed.query, keep_blank_values=True).items():
+            normalized_query_key = query_key.casefold().replace("-", "").replace("_", "")
+            sensitive = hide_query or normalized_query_key in _CLOUD_DIAGNOSTIC_SENSITIVE_QUERY_KEYS or any(
+                normalized_query_key.endswith(marker)
+                for marker in _CLOUD_DIAGNOSTIC_SENSITIVE_QUERY_KEYS - {"t", "k", "gtk"}
+            )
+            for query_value in values or [""]:
+                query.append((query_key, "[已脱敏]" if sensitive else query_value))
+        return parsed._replace(netloc=host, path=path, query=urlencode(query, doseq=True), fragment="").geturl()
+    except Exception:
+        return _CLOUD_DIAGNOSTIC_INLINE_SECRET.sub(r"\1[已脱敏]", text)
+
+
+_CLOUD_DIAGNOSTIC_EMBEDDED_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_CLOUD_DIAGNOSTIC_INLINE_SECRET = re.compile(
+    r'''(?i)(?<![a-z0-9_])(["']?(?:access[_-]?code|share[_-]?(?:code|id)|file[_-]?id|activation[_-]?code|password|pwd|api[_-]?key|access[_-]?token|token|authorization|set-cookie|cookie|secret|private[_-]?key|signature|sign|auth|gtk|t|k)["']?\s*[:=]\s*["']?)[^&\s,"'<>]+'''
+)
+
+
+def _sanitize_embedded_diagnostic_urls(text):
+    def replace(match):
+        candidate = match.group(0)
+        suffix = ""
+        while candidate and candidate[-1] in "),.;!?]}":
+            suffix = candidate[-1] + suffix
+            candidate = candidate[:-1]
+        return _cloud_diagnostic_safe_url(candidate, hide_path=True, hide_query=True) + suffix
+
+    return _CLOUD_DIAGNOSTIC_EMBEDDED_URL.sub(replace, text)
+
+
+def _sanitize_cloud_diagnostic(value, key="", redact_values=(), depth=0):
+    if depth > 12:
+        return "[嵌套过深]"
+    normalized_key = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+    if isinstance(value, bool) and normalized_key.endswith(("present", "configured", "set")):
+        return value
+    if normalized_key in _CLOUD_DIAGNOSTIC_SECRET_KEYS or any(
+            marker in normalized_key for marker in ("password", "accesscode", "apikey", "authorization", "cookie", "secret", "privatekey", "token")):
+        return "[已脱敏]"
+    if normalized_key in _CLOUD_DIAGNOSTIC_SIGNED_URL_KEYS:
+        return _cloud_diagnostic_safe_url(value, hide_path=True, hide_query=True)
+    if normalized_key in ("url", "shareurl", "sharelink", "browserurl", "referer"):
+        return _cloud_diagnostic_safe_url(value, hide_path=True, hide_query=True)
+    if isinstance(value, dict):
+        return {str(item_key)[:120]: _sanitize_cloud_diagnostic(item_value, item_key, redact_values, depth + 1)
+                for item_key, item_value in list(value.items())[:500]}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_cloud_diagnostic(item, key, redact_values, depth + 1) for item in list(value)[:1000]]
+    if isinstance(value, str):
+        text = value[:2 * 1024 * 1024]
+        if normalized_key in ("url", "endpoint", "requesturl", "baseurl"):
+            text = _cloud_diagnostic_safe_url(text)
+        text = _CLOUD_DIAGNOSTIC_INLINE_SECRET.sub(r"\1[已脱敏]", text)
+        for secret in sorted({str(item) for item in (redact_values or []) if len(str(item)) >= 4}, key=len, reverse=True):
+            text = re.sub(re.escape(secret), "[已脱敏]", text, flags=re.I)
+        return _sanitize_embedded_diagnostic_urls(text)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:2000]
+
+
+def cloud_resolver_diagnostic_enabled():
+    try:
+        return read_system_settings().get("cloudResolverDiagnosticsEnabled") is True
+    except Exception:
+        return False
+
+
+def cloud_resolver_diagnostic_log(event, details=None, redact_values=None):
+    """Append a bounded, secret-redacted cloud resolver diagnostic event."""
+    if not cloud_resolver_diagnostic_enabled():
+        return False
+    row = {
+        "time": now_iso(),
+        "event": str(event or "unknown")[:120],
+        "details": _sanitize_cloud_diagnostic(details or {}, redact_values=redact_values or []),
+    }
+    try:
+        line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+        if len(line.encode("utf-8")) > 3 * 1024 * 1024:
+            row["details"] = {"truncated": True, "originalBytes": len(line.encode("utf-8")),
+                              "preview": line[:2 * 1024 * 1024]}
+            line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with CLOUD_RESOLVER_DIAGNOSTIC_LOCK:
+            CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            log_fd = os.open(str(CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH), os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            with os.fdopen(log_fd, "a", encoding="utf-8") as stream:
+                stream.write(line)
+            if CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.stat().st_size > CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_BYTES:
+                lines = CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8").splitlines()
+                kept = []
+                kept_bytes = 0
+                for item in reversed(lines[-CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_EVENTS:]):
+                    item_bytes = len((item + "\n").encode("utf-8"))
+                    if kept and kept_bytes + item_bytes > CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_BYTES:
+                        break
+                    kept.append(item)
+                    kept_bytes += item_bytes
+                kept.reverse()
+                CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def read_cloud_resolver_diagnostics(limit=300):
+    path = CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH
+    if not path.exists():
+        return {"content": "", "events": 0, "sizeBytes": 0}
+    try:
+        with CLOUD_RESOLVER_DIAGNOSTIC_LOCK:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            size = path.stat().st_size
+        selected = lines[-max(1, min(2000, int(limit or 300))):]
+        return {"content": "\n".join(selected), "events": len(lines), "shown": len(selected), "sizeBytes": size}
+    except (OSError, ValueError, TypeError):
+        return {"content": "", "events": 0, "sizeBytes": 0}
+
+
+def clear_cloud_resolver_diagnostics():
+    with CLOUD_RESOLVER_DIAGNOSTIC_LOCK:
+        CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.write_text("", encoding="utf-8")
 
 
 AUDIT_DETAILED_PATHS = {
@@ -2676,6 +2836,7 @@ def handle_desktop_login(handler):
 def default_system_settings():
     return {
         "cloudResolverOrderExpiryMinutes": 30,
+        "cloudResolverDiagnosticsEnabled": False,
         "builtinFunctions": [],
         "menuIconFolders": [{"id": "default", "name": "默认", "sort": 0}],
         "menuIcons": [],
@@ -3183,6 +3344,8 @@ def read_remote_menu_icons(library_url, token="", username="", password=""):
 
 def write_system_settings(body):
     current = read_system_settings()
+    if "cloudResolverDiagnosticsEnabled" in body:
+        current["cloudResolverDiagnosticsEnabled"] = body.get("cloudResolverDiagnosticsEnabled") is True
     if "cloudResolverOrderExpiryMinutes" in body:
         try:
             current["cloudResolverOrderExpiryMinutes"] = max(1, min(10080, int(body.get("cloudResolverOrderExpiryMinutes") or 1)))
@@ -5653,7 +5816,14 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         if length > 2 * 1024 * 1024:
             raise ValueError("请求内容过大。")
-        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        route = str(getattr(self, "route", "") or "")
+        if route.startswith(("/api/cloud-resolver/", "/api/admin/cloud-resolver/", "/api/agent/cloud-resolver/")):
+            cloud_resolver_diagnostic_log("api_request", {
+                "method": self.command.upper(), "path": route, "query": getattr(self, "query", {}),
+                "body": body, "clientIp": client_ip(self),
+            })
+        return body
 
     def read_payment_body(self):
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -5764,6 +5934,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
 
     def send_json(self, value, status=200):
+        route = str(getattr(self, "route", "") or "")
+        is_resolver_api = route.startswith(("/api/cloud-resolver/", "/api/admin/cloud-resolver/", "/api/agent/cloud-resolver/"))
+        is_diagnostic_management_api = route.startswith("/api/super/cloud-resolver-diagnostics")
+        if is_resolver_api and not is_diagnostic_management_api:
+            cloud_resolver_diagnostic_log("api_response", {
+                "method": self.command.upper(), "path": route, "status": int(status), "body": value,
+            })
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -6003,6 +6180,34 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权查看操作日志。"}, 403)
             return self.send_json(read_audit_events())
+        if path in ("/api/super/cloud-resolver-diagnostics", "/api/super/cloud-resolver-diagnostics/export"):
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以查看网盘解析诊断日志。"}, 403)
+            if method == "GET" and path.endswith("/export"):
+                content = CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_bytes() if CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.exists() else b""
+                return self.send_bytes(content, "application/x-ndjson; charset=utf-8", filename="网盘解析诊断日志.jsonl")
+            if method == "GET":
+                result = read_cloud_resolver_diagnostics()
+                result["enabled"] = cloud_resolver_diagnostic_enabled()
+                return self.send_json(result)
+            if method == "PATCH":
+                body = self.read_body()
+                enabled = body.get("enabled") is True
+                was_enabled = cloud_resolver_diagnostic_enabled()
+                if was_enabled and not enabled:
+                    cloud_resolver_diagnostic_log("diagnostics_disabled", {"actor": auth["user"].get("username", "")})
+                settings = write_system_settings({"cloudResolverDiagnosticsEnabled": enabled})
+                if enabled:
+                    cloud_resolver_diagnostic_log("diagnostics_enabled", {"actor": auth["user"].get("username", "")})
+                return self.send_json({"enabled": settings.get("cloudResolverDiagnosticsEnabled") is True})
+            if method == "DELETE":
+                body = self.read_body()
+                if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    return self.send_json({"error": "当前管理员密码错误，未清空日志。"}, 403)
+                clear_cloud_resolver_diagnostics()
+                audit_event("cloud_resolver_diagnostics_cleared", actor=auth["user"], handler=self)
+                return self.send_json({"ok": True})
+            return self.send_json({"error": "请求方法不支持。"}, 405)
         if path == "/api/super/audit" and method == "DELETE":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权清空操作日志。"}, 403)
