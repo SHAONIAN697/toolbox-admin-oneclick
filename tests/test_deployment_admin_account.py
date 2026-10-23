@@ -89,6 +89,25 @@ class DeploymentAdminAccountTests(unittest.TestCase):
         self.assertIn('false), "", packageId, name.Equals(primaryName', source)
         self.assertIn('string launchStatus = "已下载";', source)
 
+    def test_client_and_admin_exe_compilation_force_utf8(self):
+        source = APP_PATH.read_text(encoding="utf-8")
+        self.assertEqual(2, source.count('src.write_text(source, encoding="utf-8-sig")'))
+        self.assertEqual(2, source.count('"-codepage:65001"'))
+
+    def test_latest_package_excludes_runtime_data_and_esports_audio_feature(self):
+        with tarfile.open(LATEST_PACKAGE, "r:gz") as package:
+            names = package.getnames()
+            self.assertFalse(any("/data/" in name or name.endswith("/data") for name in names))
+            for name in (
+                "ToolboxAdminApi-oneclick/app.py",
+                "ToolboxAdminApi-oneclick/client-template/ToolboxClient.cs",
+                "ToolboxAdminApi-oneclick/wwwroot/admin.js",
+                "ToolboxAdminApi-oneclick/wwwroot/index.html",
+                "ToolboxAdminApi-oneclick/wwwroot/styles.css",
+            ):
+                content = package.extractfile(name).read().decode("utf-8-sig")
+                self.assertNotRegex(content, r"esportsAudioModule|ESPORTS_AUDIO|电竞音频|__esports_audio_module__")
+
     def test_password_manager_targets_real_super_admin_and_revokes_sessions(self):
         script = MANAGER_SCRIPT.read_text(encoding="utf-8")
 

@@ -5696,8 +5696,8 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
         )
         src = Path(td) / "ToolboxClient.cs"
         exe = Path(td) / file_name
-        src.write_text(source, encoding="utf-8")
-        compile_args = ["-target:winexe", "-optimize+", f"-out:{exe}", f"-win32icon:{icon_file}",
+        src.write_text(source, encoding="utf-8-sig")
+        compile_args = ["-codepage:65001", "-target:winexe", "-optimize+", f"-out:{exe}", f"-win32icon:{icon_file}",
                         "-r:System.dll", "-r:System.Core.dll", "-r:System.Windows.Forms.dll",
                         "-r:System.Drawing.dll", "-r:System.Web.Extensions.dll", str(src)]
         args = csharp_compile_command(compiler, compile_args)
@@ -5757,8 +5757,9 @@ def make_admin_desktop_exe(base_url):
         icon_file = custom_client_icon(app_config, td)
         src = Path(td) / "ToolboxAdminDesktop.cs"
         exe = Path(td) / file_name
-        src.write_text(source, encoding="utf-8")
+        src.write_text(source, encoding="utf-8-sig")
         compile_args = [
+            "-codepage:65001",
             "-target:winexe",
             "-optimize+",
             f"-out:{exe}",
