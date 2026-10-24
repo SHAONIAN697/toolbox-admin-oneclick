@@ -108,6 +108,9 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("softwareResultsPanel.Controls.Count > 0", cs)
         self.assertIn('Category = "联想应用"', cs)
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
+        self.assertIn("QueueSoftwareCatalogPrefetch(results)", cs)
+        self.assertIn("GetCachedSoftwareCatalogUrl(entry)", cs)
+        self.assertIn("PrefetchSoftwareCatalogEntry", cs)
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
         prefetch = cs[cs.index("private void QueueSoftwareCatalogResolvePrefetch"):cs.index("private Control CreateSoftwareNoResultCard")]
         self.assertIn("softwareCatalogPrefetchQueue.Clear()", prefetch)
