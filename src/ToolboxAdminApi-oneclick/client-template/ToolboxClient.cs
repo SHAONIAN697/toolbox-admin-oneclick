@@ -226,9 +226,6 @@ namespace ToolboxClient
         private string remoteSoftwareCatalogSource = "";
         private bool remoteSoftwareCatalogLoading = false;
         private int remoteSoftwareCatalogRequestVersion = 0;
-        private readonly object softwareCatalogResolveLock = new object();
-        private readonly Dictionary<string, string> softwareCatalogResolvedUrls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> softwareCatalogResolveInFlight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private List<SoftwareCatalogEntry> wingetCatalogResults = new List<SoftwareCatalogEntry>();
         private string wingetCatalogQuery = "";
         private string wingetCatalogPendingQuery = "";
@@ -7859,7 +7856,6 @@ namespace ToolboxClient
             int totalResults = results.Count;
             int displayLimit = SoftwareCatalogDisplayLimit(hasQuery, category);
             if (results.Count > displayLimit) results = results.GetRange(0, displayLimit);
-            QueueSoftwareCatalogPrefetch(results);
 
             if (softwareCatalogStatus != null)
             {
@@ -8790,14 +8786,6 @@ namespace ToolboxClient
                 return;
             }
             ShowVst76InlineDownloadPreparing(entry.Name, BuildSoftwareCatalogDownloadKey(entry));
-            string cachedUrl = GetCachedSoftwareCatalogUrl(entry);
-            if (!String.IsNullOrWhiteSpace(cachedUrl))
-            {
-                entry.DownloadUrl = cachedUrl;
-                status.Text = "正在加入下载：" + entry.Name;
-                DownloadFile(cachedUrl, entry.Name, "", "", "", false, BuildSoftwareCatalogDownloadKey(entry));
-                return;
-            }
             if (!String.IsNullOrWhiteSpace(entry.Id) && entry.Source.Equals("lenovo", StringComparison.OrdinalIgnoreCase))
             {
                 ResolveRemoteSoftwareCatalogEntry(entry);
@@ -8887,76 +8875,6 @@ namespace ToolboxClient
                     ResetVst76InlineDownloadProgress(BuildSoftwareCatalogDownloadKey(entry), entry.Name, "");
                 }));
             });
-        }
-
-        private string SoftwareCatalogResolveKey(SoftwareCatalogEntry entry)
-        {
-            if (entry == null) return "";
-            if (!String.IsNullOrWhiteSpace(entry.Id) && String.Equals(entry.Source, "lenovo", StringComparison.OrdinalIgnoreCase)) return "lenovo:" + entry.Id.Trim();
-            if (!String.IsNullOrWhiteSpace(entry.PackageId)) return "package:" + entry.PackageId.Trim();
-            if (!String.IsNullOrWhiteSpace(entry.Website)) return "website:" + entry.Website.Trim().TrimEnd('/');
-            return "name:" + (entry.Name ?? "").Trim().ToLowerInvariant();
-        }
-
-        private string GetCachedSoftwareCatalogUrl(SoftwareCatalogEntry entry)
-        {
-            string key = SoftwareCatalogResolveKey(entry);
-            if (String.IsNullOrWhiteSpace(key)) return "";
-            lock (softwareCatalogResolveLock)
-            {
-                string url;
-                return softwareCatalogResolvedUrls.TryGetValue(key, out url) ? url : "";
-            }
-        }
-
-        private void QueueSoftwareCatalogPrefetch(List<SoftwareCatalogEntry> entries)
-        {
-            if (entries == null) return;
-            int queued = 0;
-            foreach (SoftwareCatalogEntry entry in entries)
-            {
-                if (entry == null || entry.SearchOnly) continue;
-                string directUrl = entry.DownloadUrl;
-                string key = SoftwareCatalogResolveKey(entry);
-                if (String.IsNullOrWhiteSpace(key)) continue;
-                lock (softwareCatalogResolveLock)
-                {
-                    if (!String.IsNullOrWhiteSpace(directUrl)) softwareCatalogResolvedUrls[key] = directUrl;
-                    if (softwareCatalogResolvedUrls.ContainsKey(key) || !softwareCatalogResolveInFlight.Add(key)) continue;
-                }
-                if (queued >= 12)
-                {
-                    lock (softwareCatalogResolveLock) softwareCatalogResolveInFlight.Remove(key);
-                    break;
-                }
-                queued++;
-                ThreadPool.QueueUserWorkItem(delegate { PrefetchSoftwareCatalogEntry(entry, key); });
-            }
-        }
-
-        private void PrefetchSoftwareCatalogEntry(SoftwareCatalogEntry entry, string key)
-        {
-            string url = "";
-            try
-            {
-                if (!String.IsNullOrWhiteSpace(entry.Id) && String.Equals(entry.Source, "lenovo", StringComparison.OrdinalIgnoreCase))
-                {
-                    string json = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "id", entry.Id } });
-                    Dictionary<string, object> result = AsDict(new JavaScriptSerializer().DeserializeObject(PostJson(SoftwareCatalogApiUrl("resolve"), json)));
-                    url = GetText(result, "downloadUrl", "");
-                }
-                if (String.IsNullOrWhiteSpace(url) && !String.IsNullOrWhiteSpace(entry.PackageId)) url = ResolveWingetInstallerUrl(entry.PackageId);
-                if (String.IsNullOrWhiteSpace(url) && !String.IsNullOrWhiteSpace(entry.Website)) url = ResolveInstallerUrlFromOfficialPage(entry.Website);
-                Uri parsed;
-                if (!Uri.TryCreate(url, UriKind.Absolute, out parsed) || (parsed.Scheme != Uri.UriSchemeHttps && parsed.Scheme != Uri.UriSchemeHttp)) url = "";
-            }
-            catch { url = ""; }
-            lock (softwareCatalogResolveLock)
-            {
-                softwareCatalogResolveInFlight.Remove(key);
-                if (!String.IsNullOrWhiteSpace(url)) softwareCatalogResolvedUrls[key] = url;
-            }
-            if (!String.IsNullOrWhiteSpace(url)) entry.DownloadUrl = url;
         }
 
         private string ResolveWingetInstallerUrl(string packageId)
