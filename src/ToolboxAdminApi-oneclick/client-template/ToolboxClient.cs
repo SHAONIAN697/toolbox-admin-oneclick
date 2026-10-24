@@ -7614,6 +7614,18 @@ namespace ToolboxClient
                 softwareCatalogLayoutUpdating = false;
             }
             RefreshSoftwareCatalogResults();
+            // The first layout pass can run before the newly created controls have
+            // been attached to the form. Retry on the UI queue so the initial
+            // catalog is rendered even when the page is opened from a cold start.
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    if (!IsDisposed && currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+                        RefreshSoftwareCatalogResults();
+                }));
+            }
+            catch { }
         }
 
         private int SoftwareCatalogContentWidth()
