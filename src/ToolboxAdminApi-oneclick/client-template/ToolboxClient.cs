@@ -7614,6 +7614,7 @@ namespace ToolboxClient
                 softwareCatalogLayoutUpdating = false;
             }
             RefreshSoftwareCatalogResults();
+            EnsureSoftwareCatalogHomeFallback();
             // The first layout pass can run before the newly created controls have
             // been attached to the form. Retry on the UI queue so the initial
             // catalog is rendered even when the page is opened from a cold start.
@@ -7622,7 +7623,10 @@ namespace ToolboxClient
                 BeginInvoke(new Action(delegate
                 {
                     if (!IsDisposed && currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
+                    {
                         RefreshSoftwareCatalogResults();
+                        EnsureSoftwareCatalogHomeFallback();
+                    }
                 }));
             }
             catch { }
@@ -7632,6 +7636,33 @@ namespace ToolboxClient
         {
             int width = content == null ? 720 : content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12;
             return Math.Max(640, width);
+        }
+
+        private void EnsureSoftwareCatalogHomeFallback()
+        {
+            if (softwareResultsPanel == null || softwareResultsPanel.IsDisposed ||
+                !currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) ||
+                !String.IsNullOrWhiteSpace(softwareCatalogQuery) || softwareResultsPanel.Controls.Count > 0) return;
+            int available = SoftwareCatalogContentWidth();
+            int gap = 14;
+            int columns = available >= 980 ? 3 : (available >= 640 ? 2 : 1);
+            int minCardWidth = (vst76Variant || audioVariant) ? 248 : 286;
+            while (columns > 1 && ((available - gap * columns - 2) / columns) < minCardWidth) columns--;
+            int cardWidth = Math.Max(minCardWidth, (available - gap * columns - 2) / columns);
+            int cardHeight = (vst76Variant || audioVariant) ? 166 : (portalVariant ? 150 : (studioVariant ? 142 : 148));
+            List<SoftwareCatalogEntry> fallback = SoftwareCatalogFeaturedFallbackEntries();
+            softwareResultsPanel.SuspendLayout();
+            try
+            {
+                for (int i = 0; i < fallback.Count; i++)
+                    softwareResultsPanel.Controls.Add(CreateSoftwareCatalogCard(fallback[i], cardWidth, cardHeight, i));
+                int rows = (int)Math.Ceiling(fallback.Count / (double)columns);
+                softwareResultsPanel.Height = Math.Max(188, rows * (cardHeight + gap) + 6);
+                content.AutoScrollMinSize = new Size(0, softwareResultsPanel.Bottom + softwareResultsPanel.Margin.Bottom + 12);
+                if (softwareCatalogStatus != null) softwareCatalogStatus.Text = "当前目录：" + fallback.Count + " 个本地推荐软件";
+            }
+            finally { softwareResultsPanel.ResumeLayout(); }
+            UpdateContentScrolling();
         }
 
         private Control CreateSoftwareCatalogHeading(int width)
@@ -7796,9 +7827,11 @@ namespace ToolboxClient
                     remoteSoftwareCatalogLoading = false;
                     if (softwareSearchTimer != null) softwareSearchTimer.Stop();
                     RefreshSoftwareCatalogResults();
+                    EnsureSoftwareCatalogHomeFallback();
                     return;
                 }
-                QueueSoftwareCatalogRefresh();
+                if (softwareSearchTimer != null) softwareSearchTimer.Stop();
+                RefreshSoftwareCatalogResults();
             };
             softwareSearchBox.KeyDown += delegate(object sender, KeyEventArgs e)
             {
