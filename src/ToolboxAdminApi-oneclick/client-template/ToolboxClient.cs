@@ -12461,7 +12461,11 @@ namespace ToolboxClient
             if (task == null) return info;
             try
             {
-                int timeout = task.FastStartDirectDownload ? 1500 : 12000;
+                // Some CDN-backed direct links respond slowly to the first
+                // ranged request even though the browser can download them.
+                // Keep the download strictly segmented, but allow the Range
+                // probe enough time to receive the CDN response.
+                int timeout = 12000;
                 using (HttpWebResponse response = OpenProbeDownloadResponse(task, true, 0, 0, timeout, timeout))
                 {
                     if (ResponseLooksLikeWebPage(response)) throw new InvalidOperationException("下载地址返回了网页内容。");

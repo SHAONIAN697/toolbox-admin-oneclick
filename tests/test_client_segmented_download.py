@@ -31,12 +31,12 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         self.assertNotIn("current = task.LastResolvedUrl;", method)
         self.assertLess(method.index(loop), method.index(request))
 
-    def test_fast_start_probe_uses_short_timeout(self):
+    def test_direct_link_probe_keeps_range_timeout_long_enough_for_cdn(self):
         probe_start = self.source.index("private RemoteDownloadInfo ProbeRemoteDownloadInfo(")
         probe_end = self.source.index("private HttpWebResponse OpenProbeDownloadResponse(", probe_start)
         probe = self.source[probe_start:probe_end]
 
-        self.assertIn("int timeout = task.FastStartDirectDownload ? 1500 : 12000;", probe)
+        self.assertIn("int timeout = 12000;", probe)
 
     def test_cloud_proxy_is_not_marked_as_fast_start(self):
         self.assertIn('uri.AbsolutePath.Equals("/api/cloud-resolver/download-file"', self.source)

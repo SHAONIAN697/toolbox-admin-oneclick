@@ -31,7 +31,7 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
 
     def test_direct_downloads_skip_visible_prepare_delay_and_use_short_probe_timeout(self):
         self.assertIn("LooksLikeDirectDownloadFile(originalUrl)", self.source)
-        self.assertIn("task.FastStartDirectDownload ? 1500 : 12000", self.source)
+        self.assertIn("int timeout = 12000;", self.source)
 
     @classmethod
     def setUpClass(cls):
