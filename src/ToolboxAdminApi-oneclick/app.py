@@ -436,12 +436,20 @@ def _catalog_entry(raw, source="lenovo"):
 
 def _catalog_extract(payload, search=False):
     rows = []; data = payload.get("data") if isinstance(payload, dict) else None
-    if search: candidates = data.get("apps", []) if isinstance(data, dict) else []
-    else:
-        candidates = []
-        for group in data if isinstance(data, list) else []:
-            for listing in group.get("dataList") or [] if isinstance(group, dict) else []:
-                if isinstance(listing, dict): candidates.extend(listing.get("apps") or [])
+    candidates = []
+    if isinstance(data, dict):
+        candidates.extend(data.get("apps") or [])
+        candidates.extend(data.get("items") or [])
+        for listing in data.get("dataList") or []:
+            if isinstance(listing, dict): candidates.extend(listing.get("apps") or listing.get("items") or [])
+    elif isinstance(data, list):
+        for group in data:
+            if not isinstance(group, dict): continue
+            candidates.extend(group.get("apps") or group.get("items") or [])
+            for listing in group.get("dataList") or []:
+                if isinstance(listing, dict): candidates.extend(listing.get("apps") or listing.get("items") or [])
+    if not candidates and isinstance(payload, dict):
+        candidates.extend(payload.get("apps") or payload.get("items") or [])
     seen = set()
     for raw in candidates:
         item = _catalog_entry(raw)

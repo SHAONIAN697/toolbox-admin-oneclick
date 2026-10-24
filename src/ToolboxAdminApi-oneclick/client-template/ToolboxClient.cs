@@ -7862,6 +7862,15 @@ namespace ToolboxClient
                 AppendWingetCatalogResults(results, query, category);
                 AppendSoftwareDirectorySearchEntries(results, query, category);
             }
+            if (!hasQuery && results.Count == 0)
+            {
+                // Keep the first screen useful when the online catalog is unavailable or returns an empty payload.
+                foreach (SoftwareCatalogEntry entry in SoftwareCatalogFeaturedFallbackEntries())
+                {
+                    if (!category.Equals("全部", StringComparison.OrdinalIgnoreCase) && !category.Equals(entry.Category, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!ContainsSoftwareEntry(results, entry)) results.Add(entry);
+                }
+            }
             int totalResults = results.Count;
             int displayLimit = SoftwareCatalogDisplayLimit(hasQuery, category);
             if (results.Count > displayLimit) results = results.GetRange(0, displayLimit);
@@ -9620,6 +9629,19 @@ namespace ToolboxClient
             AddSoftware("Voicemeeter", "音频制作", "虚拟调音台和声卡路由工具。", "VB-Audio.Voicemeeter", "https://vb-audio.com/Voicemeeter/", "虚拟声卡");
 
             return softwareCatalogCache;
+        }
+
+        private List<SoftwareCatalogEntry> SoftwareCatalogFeaturedFallbackEntries()
+        {
+            return new List<SoftwareCatalogEntry>
+            {
+                new SoftwareCatalogEntry { Name = "Google Chrome", Category = "浏览器", Description = "常用网页浏览器，可从官网下载安装。", PackageId = "Google.Chrome", Website = "https://www.google.cn/chrome/", Tags = new string[] { "浏览器", "chrome" } },
+                new SoftwareCatalogEntry { Name = "微信", Category = "社交通讯", Description = "常用聊天、文件传输和办公沟通软件。", PackageId = "Tencent.WeChat", Website = "https://weixin.qq.com/", Tags = new string[] { "微信", "通讯" } },
+                new SoftwareCatalogEntry { Name = "7-Zip", Category = "压缩刻录", Description = "开源压缩解压工具。", PackageId = "7zip.7zip", Website = "https://www.7-zip.org/", Tags = new string[] { "压缩", "解压" } },
+                new SoftwareCatalogEntry { Name = "WPS Office", Category = "办公文档", Description = "常用办公套件，支持文字、表格和演示。", PackageId = "Kingsoft.WPSOffice.CN", Website = "https://www.wps.cn/", Tags = new string[] { "办公", "office" } },
+                new SoftwareCatalogEntry { Name = "Visual Studio Code", Category = "开发编程", Description = "微软开源代码编辑器。", PackageId = "Microsoft.VisualStudioCode", Website = "https://code.visualstudio.com/", Tags = new string[] { "开发", "代码" } },
+                new SoftwareCatalogEntry { Name = "OBS Studio", Category = "图像设计", Description = "开源录屏、直播和推流工具。", PackageId = "OBSProject.OBSStudio", Website = "https://obsproject.com/", Tags = new string[] { "录屏", "直播" } }
+            };
         }
 
         private void AddSoftware(string name, string category, string description, string packageId, string website, params string[] tags)

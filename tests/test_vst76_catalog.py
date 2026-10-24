@@ -30,6 +30,18 @@ class Vst76CatalogTests(unittest.TestCase):
         with patch.object(self.app, "_catalog_http", return_value={"data": {"downloadUrls": [{"downLoadUrl": "file:///x"}, {"downLoadUrl": "https://127.0.0.1/x"}]}}):
             self.assertIsNone(self.app.software_catalog_resolve("1"))
 
+    def test_catalog_extract_accepts_current_search_and_home_shapes(self):
+        search_payloads = [
+            {"data": {"apps": [{"softID": "apps-1", "softName": "Apps result"}]}},
+            {"data": {"items": [{"id": "items-1", "name": "Items result"}]}},
+            {"apps": [{"id": "top-1", "name": "Top-level result"}]},
+        ]
+        for payload in search_payloads:
+            rows = self.app._catalog_extract(payload, search=True)
+            self.assertEqual(1, len(rows))
+        home_payload = {"data": [{"dataList": [{"items": [{"id": "home-1", "name": "Home result"}]}]}]}
+        self.assertEqual(["home-1"], [row["id"] for row in self.app._catalog_extract(home_payload)])
+
     def test_resolved_download_url_is_cached_for_fast_repeat_requests(self):
         self.app.SOFTWARE_CATALOG_RESOLVE_CACHE["app-1"] = {"bizInfo": "b", "expires": 9999999999}
         response = {"data": {"downloadUrls": [{"downLoadUrl": "https://cdn.example/setup.exe"}]}}
@@ -85,6 +97,9 @@ class Vst76CatalogTests(unittest.TestCase):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
         self.assertIn("(vst76Variant || audioVariant) && remoteReady", cs)
         self.assertIn("QueueSoftwareCatalogIconLoad(entry.IconUrl, icon);", cs)
+        self.assertIn("SoftwareCatalogFeaturedFallbackEntries()", cs)
+        self.assertIn('Category = "联想应用"', cs)
+        self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
         prefetch = cs[cs.index("private void QueueSoftwareCatalogResolvePrefetch"):cs.index("private Control CreateSoftwareNoResultCard")]
         self.assertIn("softwareCatalogPrefetchQueue.Clear()", prefetch)
