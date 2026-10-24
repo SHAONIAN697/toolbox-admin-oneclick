@@ -7780,6 +7780,15 @@ namespace ToolboxClient
                 }
                 QueueSoftwareCatalogRefresh();
             };
+            softwareSearchBox.KeyDown += delegate(object sender, KeyEventArgs e)
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                softwareCatalogQuery = softwareSearchBox.Text;
+                if (softwareSearchTimer != null) softwareSearchTimer.Stop();
+                RefreshSoftwareCatalogResults();
+            };
             softwareCategoryBox.SelectedIndexChanged += delegate
             {
                 softwareCatalogCategory = Convert.ToString(softwareCategoryBox.SelectedItem);
@@ -7862,9 +7871,9 @@ namespace ToolboxClient
                 AppendWingetCatalogResults(results, query, category);
                 AppendSoftwareDirectorySearchEntries(results, query, category);
             }
-            if (!hasQuery && results.Count == 0)
+            if (!hasQuery && results.Count < 6)
             {
-                // Keep the first screen useful when the online catalog is unavailable or returns an empty payload.
+                // Keep the first screen useful while the online catalog is loading or unavailable.
                 foreach (SoftwareCatalogEntry entry in SoftwareCatalogFeaturedFallbackEntries())
                 {
                     if (!category.Equals("全部", StringComparison.OrdinalIgnoreCase) && !category.Equals(entry.Category, StringComparison.OrdinalIgnoreCase)) continue;
@@ -7959,6 +7968,10 @@ namespace ToolboxClient
             if (!remoteSoftwareCatalogLoading && remoteSoftwareCatalogQuery != null && String.Equals(remoteSoftwareCatalogQuery, requestedQuery, StringComparison.Ordinal)) return;
             if (remoteSoftwareCatalogLoading && String.Equals(remoteSoftwareCatalogPendingQuery, requestedQuery, StringComparison.Ordinal)) return;
             int version = ++remoteSoftwareCatalogRequestVersion;
+            // Invalidate the previous response immediately. Otherwise a new keyword
+            // can briefly reuse the previous keyword's rows while its request runs.
+            remoteSoftwareCatalogEntries = new List<SoftwareCatalogEntry>();
+            remoteSoftwareCatalogQuery = null;
             // Home refresh happens silently; only an actual keyword lookup shows
             // the searching indicator.
             remoteSoftwareCatalogLoading = !String.IsNullOrWhiteSpace(requestedQuery);
