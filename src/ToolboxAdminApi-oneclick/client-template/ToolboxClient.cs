@@ -7789,6 +7789,14 @@ namespace ToolboxClient
                     wingetCatalogPendingQuery = "";
                     wingetCatalogQuery = "";
                     wingetCatalogResults = new List<SoftwareCatalogEntry>();
+                    remoteSoftwareCatalogRequestVersion++;
+                    remoteSoftwareCatalogEntries = new List<SoftwareCatalogEntry>();
+                    remoteSoftwareCatalogQuery = null;
+                    remoteSoftwareCatalogPendingQuery = "";
+                    remoteSoftwareCatalogLoading = false;
+                    if (softwareSearchTimer != null) softwareSearchTimer.Stop();
+                    RefreshSoftwareCatalogResults();
+                    return;
                 }
                 QueueSoftwareCatalogRefresh();
             };
@@ -8668,16 +8676,14 @@ namespace ToolboxClient
             };
 
             bool openOnly = entry.SearchOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId);
+            bool websiteOnly = !openOnly && String.IsNullOrWhiteSpace(entry.DownloadUrl) && String.IsNullOrWhiteSpace(entry.PackageId) && !String.IsNullOrWhiteSpace(entry.Website);
             bool canInstall = !String.IsNullOrWhiteSpace(entry.DownloadUrl) || !String.IsNullOrWhiteSpace(entry.PackageId) || !String.IsNullOrWhiteSpace(entry.Website);
             int buttonTop = Math.Max(102, height - 42);
-            Button install = MakeCatalogButton(openOnly ? "打开" : (canInstall || !String.IsNullOrWhiteSpace(entry.Id) ? "下载" : "搜索"), 72, true);
+            Button install = MakeCatalogButton(openOnly || websiteOnly ? "打开" : (canInstall || !String.IsNullOrWhiteSpace(entry.Id) ? "下载" : "搜索"), 72, true);
             install.Name = "catalogDownloadButton";
             install.Left = 16;
             install.Top = buttonTop;
-            install.Click += delegate
-            {
-                InstallSoftwareCatalogEntry(entry);
-            };
+            install.Click += delegate { if (openOnly || websiteOnly) OpenSoftwareCatalogWebsite(entry); else InstallSoftwareCatalogEntry(entry); };
             Button website = MakeCatalogButton("官网", 66, false);
             website.Left = 96;
             website.Top = buttonTop;

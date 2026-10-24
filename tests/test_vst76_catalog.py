@@ -102,6 +102,8 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("softwareSearchBox.KeyDown", cs)
         self.assertIn("remoteSoftwareCatalogQuery = null", cs)
         self.assertIn("BeginInvoke(new Action(delegate", cs)
+        self.assertIn("remoteSoftwareCatalogRequestVersion++", cs)
+        self.assertIn("bool websiteOnly", cs)
         self.assertIn('Category = "联想应用"', cs)
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
         self.assertIn('DownloadUrl = GetText(item, "downloadUrl", "")', cs)
