@@ -211,6 +211,21 @@ CLIENT_VARIANTS = {
     },
 }
 
+ESPORTS_AUDIO_MODULE_DEFAULT = {
+    "enabled": False,
+    "displayName": "调音师工具箱电竞音频版",
+    "version": "2.2.4",
+    "platform": "windows-x64",
+    "fileName": "调音师工具箱电竞音频版-2.2.4-windows-x64-installer.exe",
+    "downloadUrl": "",
+    "backupUrl": "",
+    "sha256": "",
+    "minimumSystem": "Windows 10 22H2 x64",
+    "requiresAdmin": False,
+    "adminPrompt": "应用默认以普通权限运行；虚拟声卡驱动安装及部分注册表/系统调校会按原有流程提示并按需请求管理员授权。",
+    "updateNotes": "",
+}
+
 SOFTWARE_CATALOG_LOCK = threading.RLock()
 SOFTWARE_CATALOG_CACHE = {"home": None, "search": {}}
 SOFTWARE_CATALOG_RESOLVE_CACHE = {}
@@ -1730,7 +1745,44 @@ def public_client_variants():
                 item[key] = values[key]
         item["downloadCount"] = counts.get(variant_id, 0)
         variants.append(item)
-    return {"variants": variants}
+    return {"variants": variants, "esportsAudioModule": esports_audio_module_settings()}
+
+
+def esports_audio_module_settings(values=None, strict=False):
+    source = values if isinstance(values, dict) else read_system_settings().get("esportsAudioModule")
+    source = source if isinstance(source, dict) else {}
+    module = dict(ESPORTS_AUDIO_MODULE_DEFAULT)
+    module["enabled"] = source.get("enabled") is True
+    module["displayName"] = str(source.get("displayName") or module["displayName"]).strip()[:80]
+    module["version"] = str(source.get("version") or module["version"]).strip()[:40]
+    module["platform"] = "windows-x64"
+    filename = Path(str(source.get("fileName") or module["fileName"]).replace("\\", "/")).name.strip()
+    module["fileName"] = filename[:160] if filename and filename not in (".", "..") else ESPORTS_AUDIO_MODULE_DEFAULT["fileName"]
+    module["downloadUrl"] = str(source.get("downloadUrl") or "").strip()[:2000]
+    module["backupUrl"] = str(source.get("backupUrl") or "").strip()[:2000]
+    module["sha256"] = str(source.get("sha256") or "").strip().lower()
+    module["minimumSystem"] = str(source.get("minimumSystem") or ESPORTS_AUDIO_MODULE_DEFAULT["minimumSystem"]).strip()[:120]
+    module["requiresAdmin"] = source.get("requiresAdmin") is True
+    module["adminPrompt"] = str(source.get("adminPrompt") or ESPORTS_AUDIO_MODULE_DEFAULT["adminPrompt"]).strip()[:500]
+    module["updateNotes"] = str(source.get("updateNotes") or "").strip()[:2000]
+
+    errors = []
+    for key in ("downloadUrl", "backupUrl"):
+        if module[key] and (not http_url(module[key]) or urlparse(module[key]).scheme.lower() != "https"):
+            errors.append("模块下载地址必须使用 HTTPS。")
+            module[key] = ""
+    if module["sha256"] and not re.fullmatch(r"[a-f0-9]{64}", module["sha256"]):
+        errors.append("SHA256 必须是 64 位十六进制字符串。")
+        module["sha256"] = ""
+    if not module["fileName"].lower().endswith(".exe"):
+        errors.append("安装包文件名必须以 .exe 结尾。")
+    if module["enabled"] and (not module["version"] or not module["downloadUrl"] or not module["sha256"]):
+        errors.append("启用电竞音频版前，必须配置版本号、主下载地址和 SHA256。")
+    if errors and strict:
+        raise ValueError(errors[0])
+    if errors:
+        module["enabled"] = False
+    return module
 
 
 def read_client_download_counts():
@@ -2275,6 +2327,9 @@ def public_toolbox_config(user_id, base_url=""):
             "enabled": bool(resolver_store.get("enabled", True)),
             "apiBase": "/api/cloud-resolver",
         }
+    # This manifest is delivered only through the existing API-key protected
+    # client-config route, so disabled/inactive users cannot discover packages.
+    cfg["esportsAudioModule"] = esports_audio_module_settings()
     path = user_config_path(user_id)
     meta = dict(cfg.get("_sync") or {})
     meta["userId"] = user_id
@@ -2944,6 +2999,7 @@ def default_system_settings():
             }
             for variant_id, variant in CLIENT_VARIANTS.items()
         },
+        "esportsAudioModule": dict(ESPORTS_AUDIO_MODULE_DEFAULT),
         "menuIcons": [],
         "menuIconLibraryUrl": "",
         "menuIconLibraryToken": "",
@@ -3497,7 +3553,7 @@ def write_system_settings(body):
                 if get_backup_url(source, True): row["backup_page_url"] = get_backup_url(source, True)
             rows.append(row)
         current["builtinFunctions"] = rows
-    for section in ("locations", "agent", "pay", "integrity", "clientBuild", "clientVariants", "ipLocation"):
+    for section in ("locations", "agent", "pay", "integrity", "clientBuild", "clientVariants", "esportsAudioModule", "ipLocation"):
         patch = body.get(section)
         if not isinstance(patch, dict):
             continue
@@ -3591,6 +3647,9 @@ def write_system_settings(body):
                     "coverMode": mode,
                     "coverUrl": cover_url,
                 }
+            continue
+        if section == "esportsAudioModule":
+            current[section] = esports_audio_module_settings(patch, strict=True)
             continue
         for key, value in patch.items():
             if isinstance(current.get(section, {}).get(key), dict) and isinstance(value, dict):
@@ -5762,7 +5821,8 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
         src.write_text(source, encoding="utf-8-sig")
         compile_args = ["-codepage:65001", "-target:winexe", "-optimize+", f"-out:{exe}", f"-win32icon:{icon_file}",
                         "-r:System.dll", "-r:System.Core.dll", "-r:System.Windows.Forms.dll",
-                        "-r:System.Drawing.dll", "-r:System.Web.Extensions.dll", str(src)]
+                        "-r:System.Drawing.dll", "-r:System.Web.Extensions.dll",
+                        "-r:System.IO.Compression.dll", "-r:System.IO.Compression.FileSystem.dll", str(src)]
         args = csharp_compile_command(compiler, compile_args)
         result = subprocess.run(args, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
         if result.returncode != 0 or not exe.exists():

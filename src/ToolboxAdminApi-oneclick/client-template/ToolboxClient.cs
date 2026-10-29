@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Reflection;
@@ -295,7 +296,7 @@ namespace ToolboxClient
         private List<ResourceSearchEntry> resourceSearchResults = new List<ResourceSearchEntry>();
         private System.Windows.Forms.Timer resourceSearchTimer;
         private Panel resourceSearchHost;
-        private TextBox resourceSearchBox;
+        private ResourceSearchTextBox resourceSearchBox;
         private Button resourceSearchButton;
         private FlowLayoutPanel resourceSearchButtonHost;
         private Button resourceSearchButtonStyleTemplate;
@@ -311,6 +312,7 @@ namespace ToolboxClient
         private string portalBrandTitleSource = "";
         private string portalBrandSubtitleSource = "";
         private bool portalTopMost = false;
+        private bool esportsAudioLaunchPending = false;
         private Size portalWindowRegionSize = Size.Empty;
         private int portalWindowRegionRadius = 0;
         private const int WsSysMenu = 0x00080000;
@@ -3024,6 +3026,13 @@ namespace ToolboxClient
             foreach (Control child in root.Controls)
             {
                 if (child == contactPopupOverlay || child == recordsPanel || child == settingsPanel) continue;
+                if (child == resourceSearchBox)
+                {
+                    child.BackColor = LightTheme ? Color.White : PanelBg;
+                    child.ForeColor = LightTheme ? TextColor : Color.FromArgb(226, 232, 240);
+                    child.Invalidate();
+                    continue;
+                }
                 if (child is TemplateNavButton || child is TemplateActionButton || child is TunerNavButton || child is TunerSectionHeader || child is TunerActionButton || child is RoundedPanel || child is FlatCheckBox)
                 {
                     child.Invalidate();
@@ -3641,9 +3650,10 @@ namespace ToolboxClient
                     AddAudioNavButton(SoftwareCatalogPageId, "软件大全", "");
                     audioAdded.Add(SoftwareCatalogPageId);
                 }
+                AddEsportsAudioAudioNavButton();
                 FitAudioNavButtons();
                 if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
-                else foreach (string key in navButtons.Keys) { ShowPage(key); break; }
+                else foreach (string key in navButtons.Keys) { if (key == "__esports_audio_module__") continue; ShowPage(key); break; }
                 return;
             }
 
@@ -3687,14 +3697,15 @@ namespace ToolboxClient
                         AddTunerNavButton(SoftwareCatalogPageId, "软件大全", TemplateNavIcon("软件大全", SoftwareCatalogPageId));
                         tunerAdded.Add(SoftwareCatalogPageId);
                     }
+                    AddEsportsAudioTunerNavButton(tunerAdded);
                     if (tunerAdded.Count == 0)
                     {
                         AddTunerNavButton(Vst76HomePageId, "系统概览", TemplateNavIcon("系统概览", Vst76HomePageId));
                         tunerAdded.Add(Vst76HomePageId);
                     }
-                    if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage)) ShowPage(currentPage);
+                    if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage) && currentPage != "__esports_audio_module__") ShowPage(currentPage);
                     else if (navButtons.ContainsKey(StudioOverviewPageId)) ShowPage(StudioOverviewPageId);
-                    else foreach (string key in navButtons.Keys) { ShowPage(key); break; }
+                    else foreach (string key in navButtons.Keys) { if (key == "__esports_audio_module__") continue; ShowPage(key); break; }
                     nav.HorizontalScroll.Visible = false;
                     nav.HorizontalScroll.Enabled = false;
                     return;
@@ -3734,6 +3745,7 @@ namespace ToolboxClient
                     AddTunerNavButton(SoftwareCatalogPageId, "软件大全", TemplateNavIcon("软件大全", SoftwareCatalogPageId));
                     tunerAdded.Add(SoftwareCatalogPageId);
                 }
+                AddEsportsAudioTunerNavButton(tunerAdded);
 
                 if (!tunerAdded.Contains("settings"))
                 {
@@ -3741,14 +3753,14 @@ namespace ToolboxClient
                     tunerAdded.Add("settings");
                 }
 
-                if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
+                if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage) && currentPage != "__esports_audio_module__")
                 {
                     ShowPage(currentPage);
                     return;
                 }
                 foreach (string key in navButtons.Keys)
                 {
-                    if (String.Equals(key, "settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (String.Equals(key, "settings", StringComparison.OrdinalIgnoreCase) || key == "__esports_audio_module__") continue;
                     ShowPage(key);
                     break;
                 }
@@ -3779,6 +3791,8 @@ namespace ToolboxClient
                 AddNavButton(id, label);
                 added.Add(id);
             }
+
+            AddEsportsAudioNavButton();
 
             foreach (string pageId in pages.Keys)
             {
@@ -3816,7 +3830,7 @@ namespace ToolboxClient
                 return;
             }
 
-            if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage))
+            if (!String.IsNullOrWhiteSpace(currentPage) && navButtons.ContainsKey(currentPage) && currentPage != "__esports_audio_module__")
             {
                 ShowPage(currentPage);
                 return;
@@ -3824,6 +3838,7 @@ namespace ToolboxClient
 
             foreach (string key in navButtons.Keys)
             {
+                if (key == "__esports_audio_module__") continue;
                 ShowPage(key);
                 break;
             }
@@ -3842,7 +3857,10 @@ namespace ToolboxClient
             button.FlatAppearance.BorderSize = 0;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(54, 64, 71);
             button.ImageAlign = ContentAlignment.MiddleCenter;
-            button.Click += delegate { QueueShowPage((string)button.Tag); };
+            if (String.Equals(id, "__esports_audio_module__", StringComparison.OrdinalIgnoreCase))
+                button.Click += delegate { LaunchEsportsAudioModule(); };
+            else
+                button.Click += delegate { QueueShowPage((string)button.Tag); };
             if (topToolTip != null) topToolTip.SetToolTip(button, label);
             nav.Controls.Add(button);
             navButtons[id] = button;
@@ -3863,6 +3881,24 @@ namespace ToolboxClient
 
         private void AddNavButton(string id, string label)
         {
+            if (String.Equals(id, "__esports_audio_module__", StringComparison.OrdinalIgnoreCase))
+            {
+                TemplateNavButton moduleButton = new TemplateNavButton
+                {
+                    Width = tunerVariant ? 166 : (studioVariant ? 148 : 180),
+                    Height = tunerVariant ? 34 : 36,
+                    Margin = new Padding(0, 0, 0, 6),
+                    SourceCaption = label,
+                    Caption = label,
+                    IconText = "♫",
+                    StudioMode = true,
+                    Tag = id
+                };
+                moduleButton.Click += delegate { LaunchEsportsAudioModule(); };
+                nav.Controls.Add(moduleButton);
+                navButtons[id] = moduleButton;
+                return;
+            }
             if (studioVariant || tunerVariant || portalVariant)
             {
                 TemplateNavButton templateButton = new TemplateNavButton
@@ -3893,6 +3929,284 @@ namespace ToolboxClient
             button.Click += delegate { QueueShowPage((string)button.Tag); };
             nav.Controls.Add(button);
             navButtons[id] = button;
+        }
+
+        private bool EsportsAudioModuleEnabled()
+        {
+            return BoolValue(AsDict(Get(config, "esportsAudioModule")), "enabled", false);
+        }
+
+        private void AddEsportsAudioAudioNavButton()
+        {
+            if (!EsportsAudioModuleEnabled() || navButtons.ContainsKey("__esports_audio_module__")) return;
+            AddAudioNavButton("__esports_audio_module__", "电竞音频", "");
+        }
+
+        private void AddEsportsAudioNavButton()
+        {
+            if (!EsportsAudioModuleEnabled() || navButtons.ContainsKey("__esports_audio_module__")) return;
+            AddNavButton("__esports_audio_module__", "电竞音频");
+        }
+
+        private void AddEsportsAudioTunerNavButton(HashSet<string> added)
+        {
+            if (!EsportsAudioModuleEnabled() || added.Contains("__esports_audio_module__")) return;
+            AddTunerNavButton("__esports_audio_module__", "电竞音频", "audio");
+            added.Add("__esports_audio_module__");
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int command);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        private void LaunchEsportsAudioModule()
+        {
+            if (esportsAudioLaunchPending) return;
+            Dictionary<string, object> module = AsDict(Get(config, "esportsAudioModule"));
+            if (!BoolValue(module, "enabled", false))
+            {
+                MessageBox.Show("电竞音频版当前未在后台启用，请联系管理员。", "调音师工具箱电竞音频版", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string moduleRoot = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "modules", "调音师工具箱电竞音频版");
+            string moduleExe = Path.Combine(moduleRoot, "调音师工具箱电竞音频版.exe");
+            if (File.Exists(moduleExe) && ActivateRunningEsportsModule(moduleExe))
+            {
+                status.Text = "已切换到正在运行的电竞音频版。";
+                return;
+            }
+
+            string version = GetText(module, "version", "").Trim();
+            string installedVersion = ReadInstalledEsportsModuleVersion(moduleRoot);
+            if (File.Exists(moduleExe) && String.Equals(version, installedVersion, StringComparison.OrdinalIgnoreCase))
+            {
+                StartEsportsAudioProcess(moduleExe, moduleRoot, BoolValue(module, "requiresAdmin", false));
+                return;
+            }
+
+            bool updating = File.Exists(moduleExe);
+            string displayName = GetText(module, "displayName", "调音师工具箱电竞音频版");
+            string detail = updating ? "发现可用更新" : "模块尚未安装";
+            string notes = GetText(module, "updateNotes", "");
+            string adminPrompt = GetText(module, "adminPrompt", "");
+            string prompt = displayName + " " + detail + "（版本 " + (String.IsNullOrWhiteSpace(version) ? "未配置" : version) + "）。\n\n" +
+                "将通过 HTTPS 下载独立安装器 EXE，校验 SHA256 后由安装器在模块目录中安全切换；现有配置与预设数据会保留。\n" +
+                (String.IsNullOrWhiteSpace(notes) ? "" : "\n更新说明：" + notes + "\n") +
+                (String.IsNullOrWhiteSpace(adminPrompt) ? "" : "\n权限说明：" + adminPrompt + "\n") +
+                "\n是否继续？";
+            if (MessageBox.Show(prompt, displayName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+
+            string primaryUrl = GetText(module, "downloadUrl", "").Trim();
+            string backupUrl = GetText(module, "backupUrl", "").Trim();
+            string expectedSha256 = GetText(module, "sha256", "").Trim().ToLowerInvariant();
+            if (!IsHttpsModuleUrl(primaryUrl) || !Regex.IsMatch(expectedSha256, "^[a-f0-9]{64}$"))
+            {
+                MessageBox.Show("后台模块地址或 SHA256 未正确配置。请联系管理员完成配置后重试。", displayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (!String.IsNullOrWhiteSpace(backupUrl) && !IsHttpsModuleUrl(backupUrl)) backupUrl = "";
+
+            esportsAudioLaunchPending = true;
+            status.Text = updating ? "正在下载并校验电竞音频版更新..." : "正在下载并校验电竞音频版模块...";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = null;
+                try
+                {
+                    string previousTree = InstallEsportsAudioModule(moduleRoot, primaryUrl, backupUrl, expectedSha256, version);
+                    try { StartEsportsAudioProcess(moduleExe, moduleRoot, BoolValue(module, "requiresAdmin", false)); }
+                    catch
+                    {
+                        RollbackEsportsAudioModule(moduleRoot, previousTree);
+                        throw;
+                    }
+                    if (!String.IsNullOrWhiteSpace(previousTree))
+                    {
+                        try { Directory.Delete(previousTree, true); }
+                        catch { /* Keep a recoverable previous version when Windows still holds it. */ }
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        esportsAudioLaunchPending = false;
+                        if (!String.IsNullOrWhiteSpace(error))
+                        {
+                            status.Text = "电竞音频版安装或启动失败。";
+                            MessageBox.Show(error + "\n\n原有模块目录未被覆盖；若切换失败，旧版本会回滚保留。", displayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                        else status.Text = "调音师工具箱电竞音频版已启动。";
+                    }));
+                }
+                catch { esportsAudioLaunchPending = false; }
+            });
+        }
+
+        private static bool IsHttpsModuleUrl(string value)
+        {
+            Uri uri;
+            return Uri.TryCreate(value, UriKind.Absolute, out uri) && uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ReadInstalledEsportsModuleVersion(string moduleRoot)
+        {
+            try
+            {
+                string marker = Path.Combine(moduleRoot, "module-version.json");
+                if (!File.Exists(marker)) return "";
+                JavaScriptSerializer json = new JavaScriptSerializer();
+                return GetText(AsDict(json.DeserializeObject(File.ReadAllText(marker, Encoding.UTF8))), "version", "");
+            }
+            catch { return ""; }
+        }
+
+        private bool ActivateRunningEsportsModule(string moduleExe)
+        {
+            string processName = Path.GetFileNameWithoutExtension(moduleExe);
+            Process[] processes;
+            try { processes = Process.GetProcessesByName(processName); }
+            catch { return false; }
+            foreach (Process process in processes)
+            {
+                try
+                {
+                    string runningPath = process.MainModule == null ? "" : process.MainModule.FileName;
+                    if (!String.Equals(Path.GetFullPath(runningPath), Path.GetFullPath(moduleExe), StringComparison.OrdinalIgnoreCase)) continue;
+                    IntPtr handle = process.MainWindowHandle;
+                    if (handle != IntPtr.Zero)
+                    {
+                        ShowWindow(handle, 9);
+                        SetForegroundWindow(handle);
+                        return true;
+                    }
+                    // The main window may be hidden in the tray. A second invocation is
+                    // intentionally delegated to Tauri's existing single-instance plugin.
+                    Process.Start(new ProcessStartInfo(moduleExe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(moduleExe) });
+                    return true;
+                }
+                catch { }
+                finally { process.Dispose(); }
+            }
+            return false;
+        }
+
+        private static void StartEsportsAudioProcess(string moduleExe, string moduleRoot, bool requiresAdmin)
+        {
+            if (!File.Exists(moduleExe)) throw new FileNotFoundException("没有找到模块主程序：" + moduleExe);
+            ProcessStartInfo start = new ProcessStartInfo(moduleExe)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = moduleRoot
+            };
+            if (requiresAdmin) start.Verb = "runas";
+            Process.Start(start);
+        }
+
+        private static string InstallEsportsAudioModule(string moduleRoot, string primaryUrl, string backupUrl, string expectedSha256, string version)
+        {
+            string modulesRoot = Path.GetDirectoryName(moduleRoot);
+            Directory.CreateDirectory(modulesRoot);
+            string installerPath = Path.Combine(modulesRoot, ".esports-audio-installer-" + Guid.NewGuid().ToString("N") + ".exe");
+            Exception downloadError = null;
+            string[] urls = String.IsNullOrWhiteSpace(backupUrl) || String.Equals(primaryUrl, backupUrl, StringComparison.OrdinalIgnoreCase) ? new string[] { primaryUrl } : new string[] { primaryUrl, backupUrl };
+            foreach (string url in urls)
+            {
+                try
+                {
+                    using (WebClient client = new WebClient())
+                    {
+                        client.Headers[HttpRequestHeader.UserAgent] = "ToolboxEsportsAudioModule/1.0";
+                        client.DownloadFile(url, installerPath);
+                    }
+                    downloadError = null;
+                    break;
+                }
+                catch (Exception ex) { downloadError = ex; try { if (File.Exists(installerPath)) File.Delete(installerPath); } catch { } }
+            }
+            if (downloadError != null) throw new InvalidOperationException("主下载地址和备用地址均失败：" + downloadError.Message, downloadError);
+            string actualSha256;
+            using (SHA256 sha = SHA256.Create())
+            using (FileStream stream = File.OpenRead(installerPath)) actualSha256 = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+            if (!String.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("电竞音频版安装器 SHA256 校验失败，已拒绝安装。");
+            ProcessStartInfo start = new ProcessStartInfo(installerPath, "--target-dir \"" + moduleRoot.Replace("\"", "") + "\"") { UseShellExecute = true, WorkingDirectory = modulesRoot };
+            Process installer = Process.Start(start);
+            if (installer == null) throw new InvalidOperationException("无法启动电竞音频版安装器。");
+            installer.WaitForExit();
+            int exitCode = installer.ExitCode;
+            installer.Dispose();
+            try { File.Delete(installerPath); } catch { }
+            if (exitCode != 0) throw new InvalidOperationException("电竞音频版安装器执行失败，旧版本未被覆盖。");
+            return "";
+        }
+
+        private static void RollbackEsportsAudioModule(string moduleRoot, string previousTree)
+        {
+            if (String.IsNullOrWhiteSpace(previousTree) || !Directory.Exists(previousTree)) return;
+            if (Directory.Exists(moduleRoot)) Directory.Delete(moduleRoot, true);
+            Directory.Move(previousTree, moduleRoot);
+        }
+
+        private static void ExtractEsportsAudioArchive(string archivePath, string destination)
+        {
+            string root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            long totalUncompressed = 0;
+            int fileCount = 0;
+            using (FileStream file = File.OpenRead(archivePath))
+            using (System.IO.Compression.ZipArchive archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Read))
+            {
+                if (archive.Entries.Count > 50000) throw new InvalidDataException("模块压缩包文件数量异常。");
+                foreach (System.IO.Compression.ZipArchiveEntry entry in archive.Entries)
+                {
+                    string name = (entry.FullName ?? "").Replace('\\', '/');
+                    if (String.IsNullOrWhiteSpace(name) || name.StartsWith("/", StringComparison.Ordinal) || Path.IsPathRooted(name) || name.IndexOf(':') >= 0)
+                        throw new InvalidDataException("模块压缩包包含绝对路径或非法路径。");
+                    string[] segments = name.Split('/');
+                    if (segments.Any(segment => segment == ".." || segment == ".")) throw new InvalidDataException("模块压缩包包含路径穿越条目。");
+                    string target = Path.GetFullPath(Path.Combine(destination, name.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("模块压缩包中的文件超出了模块目录。");
+                    if (name.EndsWith("/", StringComparison.Ordinal))
+                    {
+                        Directory.CreateDirectory(target);
+                        continue;
+                    }
+                    fileCount++;
+                    if (fileCount > 50000) throw new InvalidDataException("模块压缩包展开文件数量超出安全限制。");
+                    string parent = Path.GetDirectoryName(target);
+                    if (!String.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
+                    using (Stream input = entry.Open())
+                    using (FileStream output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        byte[] buffer = new byte[81920];
+                        int read;
+                        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            totalUncompressed += read;
+                            if (totalUncompressed > 2L * 1024L * 1024L * 1024L) throw new InvalidDataException("模块压缩包展开大小超出安全限制。");
+                            output.Write(buffer, 0, read);
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void CopyEsportsAudioUserData(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (string file in Directory.GetFiles(source))
+            {
+                if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) continue;
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), false);
+            }
+            foreach (string directory in Directory.GetDirectories(source))
+            {
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                CopyEsportsAudioUserData(directory, Path.Combine(destination, Path.GetFileName(directory)));
+            }
         }
 
         private void QueueAudioNavIconLoad(string url, Button target)
@@ -3937,7 +4251,10 @@ namespace ToolboxClient
                 AccessibleDescription = "导航：" + label,
                 Tag = id
             };
-            button.Click += delegate { QueueShowPage((string)button.Tag); };
+            if (String.Equals(id, "__esports_audio_module__", StringComparison.OrdinalIgnoreCase))
+                button.Click += delegate { LaunchEsportsAudioModule(); };
+            else
+                button.Click += delegate { QueueShowPage((string)button.Tag); };
             nav.Controls.Add(button);
             navButtons[id] = button;
         }
@@ -9664,8 +9981,8 @@ namespace ToolboxClient
                 if (resourceSearchVisible) HideResourceSearch();
                 else ShowResourceSearch();
             };
-            resourceSearchHost = new Panel { Height = 34, Visible = false };
-            resourceSearchBox = new TextBox
+            resourceSearchHost = new ResourceSearchHostPanel { Height = 34, Visible = false };
+            resourceSearchBox = new ResourceSearchTextBox
             {
                 BorderStyle = BorderStyle.None,
                 Font = new Font(Font.FontFamily, 9.5F, FontStyle.Regular),
@@ -9683,6 +10000,7 @@ namespace ToolboxClient
             SearchGlyphButton insideSearch = new SearchGlyphButton { IsCloseGlyph = false, Width = 32, Height = 32, Left = 1, Top = 1, TabStop = false };
             insideSearch.Enabled = false;
             resourceSearchHost.Controls.Add(resourceSearchBox);
+            ((ResourceSearchHostPanel)resourceSearchHost).SearchBox = resourceSearchBox;
             resourceSearchHost.Controls.Add(resourceSearchClearButton);
             resourceSearchHost.Controls.Add(insideSearch);
             Controls.Add(resourceSearchHost);
@@ -9750,15 +10068,25 @@ namespace ToolboxClient
         private void ApplyResourceSearchTheme()
         {
             if (resourceSearchHost == null) return;
-            // The flagship shell uses a light title bar even though it shares the
-            // generic resource-search control with the dark-theme variants.
-            Color back = (audioVariant || vst76Variant)
+            // The audio-only shell keeps its fixed light search chrome; all themed
+            // variants, including the flagship, follow the active client palette.
+            Color back = audioVariant
                 ? Color.FromArgb(248, 249, 250)
-                : ((studioVariant || tunerVariant) ? (LightTheme ? Color.White : PanelBg) : PanelBg);
+                : ((studioVariant || tunerVariant || vst76Variant) ? (LightTheme ? Color.White : PanelBg) : PanelBg);
             resourceSearchHost.BackColor = back;
             resourceSearchHost.Padding = Padding.Empty;
             resourceSearchBox.BackColor = back;
-            resourceSearchBox.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(28, 28, 28) : TextColor;
+            resourceSearchBox.ForeColor = audioVariant
+                ? Color.FromArgb(28, 28, 28)
+                : (LightTheme ? TextColor : Color.FromArgb(226, 232, 240));
+            ResourceSearchHostPanel themedHost = resourceSearchHost as ResourceSearchHostPanel;
+            if (themedHost != null)
+            {
+                themedHost.EditBackColor = back;
+                themedHost.EditForeColor = resourceSearchBox.ForeColor;
+            }
+            resourceSearchBox.Invalidate();
+            resourceSearchBox.Refresh();
             if (studioVariant)
             {
                 resourceSearchButton.TabStop = false;
@@ -9766,21 +10094,29 @@ namespace ToolboxClient
             }
             else if (tunerVariant && resourceSearchButtonStyleTemplate != null)
             {
-                resourceSearchButton.BackColor = resourceSearchButtonStyleTemplate.BackColor;
-                resourceSearchButton.ForeColor = resourceSearchButtonStyleTemplate.ForeColor;
-                resourceSearchButton.FlatAppearance.BorderSize = resourceSearchButtonStyleTemplate.FlatAppearance.BorderSize;
-                resourceSearchButton.FlatAppearance.MouseOverBackColor = resourceSearchButtonStyleTemplate.FlatAppearance.MouseOverBackColor;
-                resourceSearchButton.FlatAppearance.MouseDownBackColor = resourceSearchButtonStyleTemplate.FlatAppearance.MouseDownBackColor;
+                // The flagship tuner search control must follow the active client theme.
+                // The toolbar template is created before the theme is applied and can retain
+                // the light palette, which made the search field stay white in night mode.
+                resourceSearchButton.BackColor = back;
+                resourceSearchButton.ForeColor = LightTheme ? TextColor : Color.FromArgb(226, 232, 240);
+                resourceSearchButton.FlatAppearance.BorderSize = 0;
+                resourceSearchButton.FlatAppearance.BorderColor = Color.Transparent;
+                resourceSearchButton.FlatAppearance.MouseOverBackColor = LightTheme ? PanelBg2 : Color.FromArgb(52, 63, 80);
+                resourceSearchButton.FlatAppearance.MouseDownBackColor = LightTheme ? Color.FromArgb(226, 239, 255) : Color.FromArgb(62, 76, 94);
             }
             else
             {
                 resourceSearchButton.BackColor = back;
-                resourceSearchButton.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(71, 85, 105) : TextColor;
+                resourceSearchButton.ForeColor = audioVariant
+                    ? Color.FromArgb(71, 85, 105)
+                    : (LightTheme ? TextColor : Color.FromArgb(226, 232, 240));
                 SearchGlyphButton searchGlyph = resourceSearchButton as SearchGlyphButton;
                 if (searchGlyph != null) searchGlyph.BorderColor = Color.Transparent;
             }
             resourceSearchClearButton.BackColor = back;
-            resourceSearchClearButton.ForeColor = (audioVariant || vst76Variant) ? Color.FromArgb(86, 98, 108) : Muted;
+            resourceSearchClearButton.ForeColor = audioVariant
+                ? Color.FromArgb(86, 98, 108)
+                : (LightTheme ? Muted : Color.FromArgb(174, 184, 196));
             resourceSearchClearButton.BorderColor = Color.Transparent;
             foreach (Control child in resourceSearchHost.Controls)
             {
@@ -9789,8 +10125,8 @@ namespace ToolboxClient
                 {
                     glyph.BackColor = back;
                     glyph.ForeColor = glyph.IsCloseGlyph
-                        ? ((audioVariant || vst76Variant) ? Color.FromArgb(86, 98, 108) : Muted)
-                        : ((audioVariant || vst76Variant) ? Color.FromArgb(43, 105, 180) : Accent);
+                        ? (audioVariant ? Color.FromArgb(86, 98, 108) : (LightTheme ? Muted : Color.FromArgb(174, 184, 196)))
+                        : (audioVariant ? Color.FromArgb(43, 105, 180) : (LightTheme ? Accent : Color.FromArgb(191, 204, 220)));
                     glyph.BorderColor = Color.Transparent;
                 }
             }
@@ -10107,6 +10443,37 @@ namespace ToolboxClient
                 info.DownloadKey);
         }
 
+        private bool StartPackageDownload(Dictionary<string, object> item, string displayName)
+        {
+            IList<object> rawFiles = AsList(Get(item, "files"));
+            List<Dictionary<string, object>> files = new List<Dictionary<string, object>>();
+            foreach (object value in rawFiles)
+            {
+                Dictionary<string, object> file = AsDict(value);
+                if (file.Count == 0 || String.IsNullOrWhiteSpace(GetText(file, "url", GetText(file, "download_url", "")))) continue;
+                files.Add(file);
+            }
+            if (files.Count < 2) return false;
+            string packageId = Guid.NewGuid().ToString("N");
+            string directory = GetText(item, "download_directory", GetText(item, "download_path", ""));
+            if (String.IsNullOrWhiteSpace(directory)) directory = Path.Combine(GetDownloadDirectory(), SafeFolderName(GetText(item, "package_name", displayName)));
+            string primaryName = "";
+            foreach (Dictionary<string, object> file in files)
+            {
+                string name = SafeDownloadFileName(GetText(file, "name", GetText(file, "filename", "download.bin")));
+                if (BoolValue(file, "primary", false)) primaryName = name;
+            }
+            if (String.IsNullOrWhiteSpace(primaryName)) primaryName = SafeDownloadFileName(GetText(files[0], "name", GetText(files[0], "filename", "download.bin")));
+            lock (packageDownloadGroupsLock) packageDownloadGroups[packageId] = new PackageDownloadGroup { Remaining = files.Count, PrimaryName = primaryName, DisplayName = displayName, Directory = directory };
+            foreach (Dictionary<string, object> file in files)
+            {
+                string url = GetText(file, "url", GetText(file, "download_url", ""));
+                string name = SafeDownloadFileName(GetText(file, "name", GetText(file, "filename", "download.bin")));
+                DownloadFile(url, name, GetText(file, "backup_url", ""), GetText(file, "backup_page_url", ""), directory, BoolValue(item, "download_delete_on_exit", false), "", packageId, name.Equals(primaryName, StringComparison.OrdinalIgnoreCase));
+            }
+            status.Text = "已加入多文件下载队列：" + displayName;
+            return true;
+        }
         private bool ConfirmButtonGuard(Dictionary<string, object> guard, string name)
         {
             if (guard == null || guard.Count == 0) return true;
@@ -19249,6 +19616,84 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                         e.Graphics.DrawEllipse(pen, ring);
                         e.Graphics.DrawLine(pen, ring.Right - 1, ring.Bottom - 1, ring.Right + 4, ring.Bottom + 4);
                     }
+                }
+            }
+        }
+
+        private sealed class ResourceSearchHostPanel : Panel
+        {
+            private const int WmCtlColorEdit = 0x0133;
+            private const int WmCtlColorStatic = 0x0138;
+            private const int DcBrush = 18;
+
+            public ResourceSearchTextBox SearchBox;
+            public Color EditBackColor = Color.White;
+            public Color EditForeColor = Color.Black;
+
+            protected override void WndProc(ref Message message)
+            {
+                if ((message.Msg == WmCtlColorEdit || message.Msg == WmCtlColorStatic) &&
+                    SearchBox != null && SearchBox.IsHandleCreated && message.LParam == SearchBox.Handle)
+                {
+                    int background = ColorTranslator.ToWin32(EditBackColor);
+                    SetBkMode(message.WParam, 2);
+                    SetBkColor(message.WParam, background);
+                    SetDCBrushColor(message.WParam, background);
+                    SetTextColor(message.WParam, ColorTranslator.ToWin32(EditForeColor));
+                    message.Result = GetStockObject(DcBrush);
+                    return;
+                }
+                base.WndProc(ref message);
+            }
+
+            [DllImport("gdi32.dll", EntryPoint = "GetStockObject")]
+            private static extern IntPtr GetStockObject(int objectType);
+
+            [DllImport("gdi32.dll", EntryPoint = "SetDCBrushColor")]
+            private static extern int SetDCBrushColor(IntPtr deviceContext, int colorRef);
+
+            [DllImport("gdi32.dll", EntryPoint = "SetBkMode")]
+            private static extern int SetBkMode(IntPtr deviceContext, int mode);
+
+            [DllImport("gdi32.dll", EntryPoint = "SetBkColor")]
+            private static extern int SetBkColor(IntPtr deviceContext, int colorRef);
+
+            [DllImport("gdi32.dll", EntryPoint = "SetTextColor")]
+            private static extern int SetTextColor(IntPtr deviceContext, int colorRef);
+        }
+
+        private sealed class ResourceSearchTextBox : RichTextBox
+        {
+            public ResourceSearchTextBox()
+            {
+                BorderStyle = BorderStyle.None;
+                DetectUrls = false;
+                Multiline = false;
+                ScrollBars = RichTextBoxScrollBars.None;
+                WordWrap = false;
+                ShortcutsEnabled = true;
+            }
+
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                ApplyNativeBackColor();
+            }
+
+            protected override void OnBackColorChanged(EventArgs e)
+            {
+                base.OnBackColorChanged(e);
+                ApplyNativeBackColor();
+            }
+
+            private void ApplyNativeBackColor()
+            {
+                if (IsHandleCreated)
+                {
+                    // RichEdit honors EM_SETBKGNDCOLOR reliably on Windows, unlike the
+                    // themed EDIT control that kept repainting this field white.
+                    SendMessage(Handle, 0x0443, 0, ColorTranslator.ToWin32(BackColor));
+                    Invalidate();
                 }
             }
         }

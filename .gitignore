@@ -10,3 +10,5 @@
 **/deploy-toolbox.tar.gz
 **/ToolboxClient.cs.gz
 _tmp/
+design-system/
+.taste-skill/

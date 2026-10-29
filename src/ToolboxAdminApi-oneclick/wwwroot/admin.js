@@ -29,6 +29,7 @@ const state = {
   clientDownloading: false,
   clientBuildTimer: null,
   clientBuildStartedAt: 0,
+  clientBuildReturnFocus: null,
   inviteRefreshTimer: null,
   inviteRefreshBusy: false,
   inviteSnapshot: '',
@@ -420,11 +421,11 @@ function ensureClientBuildDialog() {
   overlay.id = 'clientBuildOverlay';
   overlay.className = 'client-build-overlay';
   overlay.innerHTML = `
-    <div class="client-build-dialog" role="dialog" aria-modal="true" aria-labelledby="clientBuildTitle">
+    <div id="clientBuildDialog" class="client-build-dialog" role="dialog" aria-modal="true" aria-labelledby="clientBuildTitle" tabindex="-1">
       <div class="client-build-ring"><span></span></div>
       <h2 id="clientBuildTitle">正在生成工具箱 EXE</h2>
-      <p id="clientBuildText">正在准备编译环境...</p>
-      <div class="client-build-meter"><i id="clientBuildMeter"></i></div>
+      <p id="clientBuildText" aria-live="polite">正在准备编译环境...</p>
+      <div class="client-build-meter" role="progressbar" aria-label="客户端生成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="12"><i id="clientBuildMeter"></i></div>
       <div class="client-build-meta">
         <span id="clientBuildElapsed">已用时 00:00</span>
         <span id="clientBuildHint">首次生成通常需要 10-60 秒</span>
@@ -434,11 +435,28 @@ function ensureClientBuildDialog() {
   `;
   document.body.appendChild(overlay);
   $('clientBuildClose').onclick = () => closeClientBuildDialog();
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !$('clientBuildClose').hidden) {
+      event.preventDefault();
+      closeClientBuildDialog();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const close = $('clientBuildClose');
+    if (!close.hidden) {
+      event.preventDefault();
+      close.focus();
+    } else {
+      event.preventDefault();
+      $('clientBuildDialog').focus();
+    }
+  });
   return overlay;
 }
 
 function openClientBuildDialog(message = '正在编译客户端，请稍等...') {
   const overlay = ensureClientBuildDialog();
+  state.clientBuildReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   state.clientBuildStartedAt = Date.now();
   overlay.classList.remove('done', 'error');
   overlay.classList.add('show');
@@ -446,13 +464,17 @@ function openClientBuildDialog(message = '正在编译客户端，请稍等...')
   $('clientBuildText').textContent = message;
   $('clientBuildHint').textContent = '首次生成通常需要 10-60 秒，缓存命中会更快';
   $('clientBuildMeter').style.width = '12%';
+  document.querySelector('.client-build-meter')?.setAttribute('aria-valuenow', '12');
   $('clientBuildClose').hidden = true;
+  $('clientBuildDialog').setAttribute('aria-busy', 'true');
+  $('clientBuildDialog').focus();
   window.clearInterval(state.clientBuildTimer);
   state.clientBuildTimer = window.setInterval(() => {
     const elapsed = Date.now() - state.clientBuildStartedAt;
     $('clientBuildElapsed').textContent = `已用时 ${formatElapsed(elapsed)}`;
     const pct = Math.min(88, 12 + Math.floor(elapsed / 900));
     $('clientBuildMeter').style.width = `${pct}%`;
+    document.querySelector('.client-build-meter')?.setAttribute('aria-valuenow', String(pct));
   }, 1000);
 }
 
@@ -466,13 +488,18 @@ function updateClientBuildDialog(type, message) {
     $('clientBuildText').textContent = message || '下载已开始。';
     $('clientBuildHint').textContent = '同配置下次会直接走缓存';
     $('clientBuildMeter').style.width = '100%';
+    document.querySelector('.client-build-meter')?.setAttribute('aria-valuenow', '100');
+    $('clientBuildDialog').setAttribute('aria-busy', 'false');
   } else if (type === 'error') {
     window.clearInterval(state.clientBuildTimer);
     $('clientBuildTitle').textContent = '生成失败';
     $('clientBuildText').textContent = message || '请检查登录状态或服务器编译环境。';
     $('clientBuildHint').textContent = '刷新重新登录后可再次尝试';
     $('clientBuildMeter').style.width = '100%';
+    document.querySelector('.client-build-meter')?.setAttribute('aria-valuetext', '生成失败');
     $('clientBuildClose').hidden = false;
+    $('clientBuildDialog').setAttribute('aria-busy', 'false');
+    $('clientBuildClose').focus();
   } else {
     $('clientBuildText').textContent = message;
   }
@@ -482,6 +509,11 @@ function closeClientBuildDialog() {
   window.clearInterval(state.clientBuildTimer);
   const overlay = $('clientBuildOverlay');
   if (overlay) overlay.classList.remove('show', 'done', 'error');
+  const returnFocus = state.clientBuildReturnFocus;
+  state.clientBuildReturnFocus = null;
+  if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+    returnFocus.focus();
+  }
 }
 
 function ensureCloudResolverParseDialog() {
@@ -2108,28 +2140,29 @@ function renderApp() {
 }
 
 function normalizeAdminTheme(value) {
-  return String(value || '').toLowerCase() === 'light' ? 'light' : 'dark';
+  const theme = String(value || '').toLowerCase();
+  return ['light', 'dark', 'dayblue'].includes(theme) ? theme : 'light';
 }
 
 function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) {
   const mode = normalizeAdminTheme(theme);
-  const light = mode === 'light';
   document.body.classList.remove('theme-dark', 'theme-light', 'theme-dayblue');
-  document.body.classList.add(light ? 'theme-light' : 'theme-dark');
+  document.body.classList.add(`theme-${mode}`);
   const toggle = $('adminThemeToggle');
   const text = $('adminThemeToggleText');
-  const icon = toggle?.querySelector('.theme-toggle-icon');
+  const themeLabels = { light: '青绿', dark: '夜间', dayblue: '日间蓝' };
+  const nextTheme = { light: '夜间主题', dark: '日间蓝主题', dayblue: '青绿主题' };
   if (toggle) {
-    toggle.setAttribute('aria-pressed', light ? 'true' : 'false');
-    toggle.title = light ? '切换深色主题' : '切换浅色主题';
+    toggle.setAttribute('aria-pressed', mode === 'dark' ? 'true' : 'false');
+    toggle.title = `当前：${themeLabels[mode]}；点击切换至${nextTheme[mode]}`;
+    toggle.setAttribute('aria-label', `当前主题：${themeLabels[mode]}。${toggle.title}`);
   }
-  if (text) text.textContent = light ? '浅色' : '深色';
-  if (icon) icon.textContent = light ? '☀' : '☾';
+  if (text) text.textContent = themeLabels[mode];
 }
 
 function toggleAdminTheme() {
   const current = normalizeAdminTheme(localStorage.getItem(ADMIN_THEME_STORAGE_KEY));
-  const next = current === 'light' ? 'dark' : 'light';
+  const next = { light: 'dark', dark: 'dayblue', dayblue: 'light' }[current];
   localStorage.setItem(ADMIN_THEME_STORAGE_KEY, next);
   applyAdminTheme(next);
 }
@@ -3199,6 +3232,7 @@ function renderSystemSettings() {
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
   renderPayGatewayCards();
   renderClientVariantSettings();
+  renderEsportsAudioModuleSettings();
   renderOrders();
   renderBuiltinFunctions();
   renderMenuIcons();
@@ -3429,10 +3463,49 @@ async function loadClientVariants() {
   });
   if (!state.system) state.system = {};
   state.system.clientVariants = clientVariants;
+  state.system.esportsAudioModule = result.esportsAudioModule || {};
 }
 
 function variantSettings(variant) {
   return state.system?.clientVariants?.[variant.id] || {};
+}
+
+function renderEsportsAudioModuleSettings() {
+  const module = state.system?.esportsAudioModule || {};
+  if ($('esportsAudioEnabled')) $('esportsAudioEnabled').checked = module.enabled === true;
+  if ($('esportsAudioDisplayName')) $('esportsAudioDisplayName').value = module.displayName || '调音师工具箱电竞音频版';
+  if ($('esportsAudioVersion')) $('esportsAudioVersion').value = module.version || '';
+  if ($('esportsAudioDownloadUrl')) $('esportsAudioDownloadUrl').value = module.downloadUrl || '';
+  if ($('esportsAudioBackupUrl')) $('esportsAudioBackupUrl').value = module.backupUrl || '';
+  if ($('esportsAudioFileName')) $('esportsAudioFileName').value = module.fileName || '';
+  if ($('esportsAudioSha256')) $('esportsAudioSha256').value = module.sha256 || '';
+  if ($('esportsAudioMinimumSystem')) $('esportsAudioMinimumSystem').value = module.minimumSystem || 'Windows 10 22H2 x64';
+  if ($('esportsAudioRequiresAdmin')) $('esportsAudioRequiresAdmin').checked = module.requiresAdmin === true;
+  if ($('esportsAudioAdminPrompt')) $('esportsAudioAdminPrompt').value = module.adminPrompt || '';
+  if ($('esportsAudioUpdateNotes')) $('esportsAudioUpdateNotes').value = module.updateNotes || '';
+}
+
+async function saveEsportsAudioModule() {
+  const value = (id) => $(id)?.value.trim() || '';
+  const module = {
+    enabled: $('esportsAudioEnabled')?.checked === true,
+    displayName: value('esportsAudioDisplayName'),
+    version: value('esportsAudioVersion'),
+    platform: 'windows-x64',
+    downloadUrl: value('esportsAudioDownloadUrl'),
+    backupUrl: value('esportsAudioBackupUrl'),
+    fileName: value('esportsAudioFileName'),
+    sha256: value('esportsAudioSha256'),
+    minimumSystem: value('esportsAudioMinimumSystem'),
+    requiresAdmin: $('esportsAudioRequiresAdmin')?.checked === true,
+    adminPrompt: value('esportsAudioAdminPrompt'),
+    updateNotes: value('esportsAudioUpdateNotes')
+  };
+  state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ esportsAudioModule: module }) });
+  await loadClientVariants();
+  renderSystemSettings();
+  renderClientVariants();
+  setStatus('调音师工具箱电竞音频版模块配置已保存。');
 }
 
 function renderClientVariantSettings() {
@@ -3845,7 +3918,7 @@ function renderClientVariants() {
   const grid = $('clientVariantGrid');
   if (!grid) return;
   const editing = isTemplateMode();
-  grid.innerHTML = CLIENT_VARIANTS.map((variant) => {
+  const cards = CLIENT_VARIANTS.map((variant) => {
     const config = variantSettings(variant);
     const cover = config.coverMode !== 'default' && config.coverUrl ? `<div class="client-preview custom-client-cover"><img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}"></div>` : clientPreviewMarkup(variant.preview);
     return `
@@ -3864,9 +3937,42 @@ function renderClientVariants() {
       </div>
     </article>
   `; }).join('');
+  const module = state.system?.esportsAudioModule || {};
+  const moduleCard = module.enabled === true ? `
+    <article class="client-variant-card esports-audio-module-card" data-client-module="esports-audio">
+      <div class="client-preview esports-audio-module-preview"><strong>电竞音频</strong><span>React + Tauri 独立桌面模块</span></div>
+      <div class="client-variant-info">
+        <div><strong>${escapeHtml(module.displayName || '调音师工具箱电竞音频版')}</strong><span>Windows x64 · ${escapeHtml(module.version || '未标版本')}</span></div>
+        <p>保留完整独立桌面界面及原生功能。最低系统：${escapeHtml(module.minimumSystem || 'Windows 10 22H2 x64')}。${escapeHtml(module.adminPrompt || '')}</p>
+        ${module.updateNotes ? `<p>${escapeHtml(module.updateNotes)}</p>` : ''}
+        <div class="button-pair">
+          <button type="button" data-action="download-esports-audio" data-url="${escapeAttr(module.downloadUrl || '')}" data-file-name="${escapeAttr(module.fileName || '')}">下载安装器 EXE</button>
+          ${module.backupUrl ? `<button type="button" data-action="download-esports-audio" data-url="${escapeAttr(module.backupUrl)}" data-file-name="${escapeAttr(module.fileName || '')}">备用下载</button>` : ''}
+        </div>
+      </div>
+    </article>` : '';
+  grid.innerHTML = cards + moduleCard;
   grid.querySelectorAll('[data-action="download-client-variant"]').forEach((button) => {
     button.onclick = () => downloadClient('', button.dataset.variant || 'original').catch((error) => setStatus(error.message, true));
   });
+  grid.querySelectorAll('[data-action="download-esports-audio"]').forEach((button) => {
+    button.onclick = () => openEsportsAudioPackage(button.dataset.url || '', button.dataset.fileName || '').catch((error) => setStatus(error.message, true));
+  });
+}
+
+async function openEsportsAudioPackage(url, fileName) {
+  let parsed;
+  try { parsed = new URL(url, window.location.href); } catch { throw new Error('电竞音频版下载地址无效。'); }
+  if (parsed.protocol !== 'https:') throw new Error('电竞音频版模块包只允许使用 HTTPS 下载地址。');
+  const link = document.createElement('a');
+  link.href = parsed.href;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  if (fileName) link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setStatus('已打开调音师工具箱电竞音频版安装器 EXE 下载。');
 }
 
 function renderOrders() {
@@ -7516,9 +7622,10 @@ function ensureAnnouncementDetailModal() {
   overlay.id = 'announcementDetailOverlay';
   overlay.className = 'modal-overlay';
   overlay.hidden = true;
-  overlay.innerHTML = `<div class="modal-card announcement-detail-card" role="dialog" aria-modal="true"><div class="panel-head"><h2>更新公告</h2><button type="button" data-close>关闭</button></div><div id="announcementDetailBody"></div></div>`;
+  overlay.innerHTML = `<div class="modal-card announcement-detail-card" role="dialog" aria-modal="true" aria-labelledby="announcementDetailTitle" tabindex="-1"><div class="panel-head"><div><h2 id="announcementDetailTitle">更新公告</h2><p>公告详情</p></div><button type="button" data-close aria-label="关闭公告详情">关闭</button></div><div id="announcementDetailBody"></div></div>`;
   document.body.appendChild(overlay);
-  overlay.querySelector('[data-close]').onclick = () => { overlay.hidden = true; };
+  wireAnnouncementDialog(overlay, '[data-close]');
+  overlay.querySelector('[data-close]').onclick = () => closeAnnouncementDialog(overlay);
   return overlay;
 }
 
@@ -7527,8 +7634,44 @@ async function openAnnouncementDetail(id) {
   if (!item) return;
   const overlay = ensureAnnouncementDetailModal();
   $('announcementDetailBody').innerHTML = `<div class="announcement-detail-head"><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.importance)}</span><span>${escapeHtml(item.version || '无版本号')}</span></div><h2>${escapeHtml(item.title)}</h2><small>${escapeHtml(formatDateTime(item.publish_time || item.updated_time))} · ${escapeHtml(item.author || '')}</small><p class="announcement-summary">${escapeHtml(item.summary || '')}</p><div class="announcement-content">${safeAnnouncementMarkdown(item.content)}</div>`;
-  overlay.hidden = false;
+  openAnnouncementDialog(overlay, '[data-close]');
   if (!item.read) await markAdminAnnouncementRead(id);
+}
+
+function wireAnnouncementDialog(overlay, initialFocusSelector) {
+  if (overlay._announcementDialogWired) return;
+  overlay._announcementDialogWired = true;
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAnnouncementDialog(overlay);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const dialog = overlay.querySelector('[role="dialog"]');
+    const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+    if (!focusable.length) { event.preventDefault(); dialog.focus(); return; }
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  });
+  overlay._announcementInitialFocus = initialFocusSelector;
+}
+
+function openAnnouncementDialog(overlay, initialFocusSelector = '[data-close]') {
+  overlay._announcementReturnFocus = document.activeElement;
+  overlay.hidden = false;
+  requestAnimationFrame(() => overlay.querySelector(initialFocusSelector)?.focus());
+}
+
+function closeAnnouncementDialog(overlay) {
+  overlay.hidden = true;
+  const returnFocus = overlay._announcementReturnFocus;
+  if (returnFocus?.isConnected && typeof returnFocus.focus === 'function') returnFocus.focus();
 }
 
 function applyAnnouncementFormat(prefix, suffix = prefix) {
@@ -7545,17 +7688,19 @@ function ensureAnnouncementEditor() {
   overlay.id = 'announcementEditorOverlay';
   overlay.className = 'modal-overlay';
   overlay.hidden = true;
-  overlay.innerHTML = `<div class="modal-card announcement-editor-card" role="dialog" aria-modal="true"><div class="panel-head"><h2 id="announcementEditorTitle">新建公告</h2><button type="button" data-close>关闭</button></div><div class="announcement-editor-grid">
-    <label>公告标题<input id="announcementTitleInput" maxlength="160"></label><label>版本号<input id="announcementVersionInput" maxlength="80"></label>
+  overlay.innerHTML = `<div class="modal-card announcement-editor-card" role="dialog" aria-modal="true" aria-labelledby="announcementEditorTitle" tabindex="-1"><div class="announcement-editor-head"><div class="panel-head"><div><h2 id="announcementEditorTitle">新建公告</h2><p>填写公告信息、编写更新内容并检查预览</p></div><button type="button" data-close aria-label="关闭公告编辑器">关闭</button></div></div><div class="announcement-editor-scroll"><section class="announcement-editor-fields" aria-label="公告基本信息">
+    <label class="announcement-title-field">公告标题<input id="announcementTitleInput" maxlength="160" autocomplete="off"></label><label>版本号<input id="announcementVersionInput" maxlength="80" autocomplete="off"></label>
     <label>公告类型<select id="announcementTypeInput">${['功能更新','问题修复','系统通知','重要公告','维护公告'].map((x) => `<option>${x}</option>`).join('')}</select></label><label>重要程度<select id="announcementImportanceInput"><option>普通</option><option>重要</option><option>紧急</option></select></label>
-    <label class="wide">简短摘要<textarea id="announcementSummaryInput" rows="2" maxlength="500"></textarea></label>
-    <label class="toggle-line"><input id="announcementPopupInput" type="checkbox" checked> 有新公告时登录后自动弹窗（每位用户仅一次）</label><p class="announcement-popup-hint">勾选后，用户下次登录会看到所有未读更新；已展示公告仍可在公告列表中查看。</p>
+    <label class="announcement-summary-field">简短摘要<textarea id="announcementSummaryInput" rows="2" maxlength="500"></textarea></label>
+    <label class="toggle-line announcement-popup-toggle"><input id="announcementPopupInput" type="checkbox" checked> 登录后自动弹出（每位用户仅一次）</label><p class="announcement-popup-hint">已展示的公告仍可在公告列表中查看。</p>
     <label>发布时间<input id="announcementPublishTimeInput" type="datetime-local"></label><label>过期时间<input id="announcementExpireTimeInput" type="datetime-local"></label>
-    <div class="wide announcement-editor-tools"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button><button type="button" class="announcement-color-red" data-format="color-red">红色重点</button><button type="button" class="announcement-color-orange" data-format="color-orange">橙色重点</button><button type="button" class="announcement-color-green" data-format="color-green">绿色重点</button><button type="button" class="announcement-color-blue" data-format="color-blue">蓝色重点</button><button type="button" class="announcement-color-highlight" data-format="color-highlight">黄色高亮</button></div>
-    <label class="wide">更新内容<textarea id="announcementContentInput" rows="12"></textarea></label><div class="wide"><strong>预览</strong><div id="announcementPreview" class="announcement-content announcement-preview"></div></div>
-  </div><div class="button-pair"><button id="announcementSaveDraftBtn" type="button">保存草稿</button><button id="announcementPublishBtn" type="button">发布公告</button></div></div>`;
+  </section><section class="announcement-editor-workspace" aria-label="公告正文编辑与预览"><div class="announcement-editor-compose"><div class="announcement-editor-section-head"><label for="announcementContentInput">更新内容</label><span>支持 Markdown 格式</span></div>
+    <div class="announcement-editor-tools" role="toolbar" aria-label="正文格式工具"><button type="button" data-format="heading">小标题</button><button type="button" data-format="bold" aria-label="加粗"><b>B</b></button><button type="button" data-format="ordered">有序列表</button><button type="button" data-format="unordered">无序列表</button><button type="button" data-format="link">链接</button><button type="button" class="announcement-color-red" data-format="color-red">红色重点</button><button type="button" class="announcement-color-orange" data-format="color-orange">橙色重点</button><button type="button" class="announcement-color-green" data-format="color-green">绿色重点</button><button type="button" class="announcement-color-blue" data-format="color-blue">蓝色重点</button><button type="button" class="announcement-color-highlight" data-format="color-highlight">文字高亮</button></div>
+    <textarea id="announcementContentInput" rows="16" aria-label="更新公告正文" placeholder="写下本次更新内容"></textarea></div><div class="announcement-editor-preview-wrap"><div class="announcement-editor-section-head"><strong>预览</strong><span>发布后的显示效果</span></div><div id="announcementPreview" class="announcement-content announcement-preview" role="region" aria-label="公告预览"></div></div>
+  </section></div><div class="announcement-editor-footer"><span>发布前请检查标题、版本和正文内容</span><div class="button-pair"><button id="announcementSaveDraftBtn" type="button">保存草稿</button><button id="announcementPublishBtn" type="button">发布公告</button></div></div></div>`;
   document.body.appendChild(overlay);
-  overlay.querySelector('[data-close]').onclick = () => { overlay.hidden = true; };
+  wireAnnouncementDialog(overlay, '#announcementTitleInput');
+  overlay.querySelector('[data-close]').onclick = () => closeAnnouncementDialog(overlay);
   $('announcementContentInput').oninput = updateAnnouncementPreview;
   overlay.querySelectorAll('[data-format]').forEach((button) => { button.onclick = () => {
     const type = button.dataset.format;
@@ -7595,7 +7740,7 @@ function openAnnouncementEditor(item = null) {
   $('announcementPublishTimeInput').value = localDateTimeValue(item?.publish_time);
   $('announcementExpireTimeInput').value = localDateTimeValue(item?.expire_time);
   $('announcementContentInput').value = item?.content || '';
-  updateAnnouncementPreview(); overlay.hidden = false;
+  updateAnnouncementPreview(); openAnnouncementDialog(overlay, '#announcementTitleInput');
 }
 
 function updateAnnouncementPreview() { $('announcementPreview').innerHTML = safeAnnouncementMarkdown($('announcementContentInput').value); }
@@ -7612,7 +7757,7 @@ async function saveAdminAnnouncement(publish) {
   if (id && current?.status === 'published') payload.renotify = window.confirm('是否将本次修改作为新通知，再次提醒所有管理员？');
   const saved = id ? await api(`/api/admin/announcements/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }) : await api('/api/admin/announcements', { method: 'POST', body: JSON.stringify(payload) });
   if (publish && saved.status !== 'published') await api(`/api/admin/announcements/${encodeURIComponent(saved.id)}/publish`, { method: 'POST', body: JSON.stringify({ publish_time: payload.publish_time }) });
-  overlay.hidden = true; await refreshAdminAnnouncements(); showToast(publish ? '公告已发布。' : '公告已保存。', 'success');
+  closeAnnouncementDialog(overlay); await refreshAdminAnnouncements(); showToast(publish ? '公告已发布。' : '公告已保存。', 'success');
 }
 
 async function announcementAction(id, action) {
@@ -7652,9 +7797,10 @@ function announcementCanAppearInPopupHistory(item) {
 function ensureAdminAnnouncementPopup() {
   let overlay = $('adminAnnouncementPopup'); if (overlay) return overlay;
   overlay = document.createElement('div'); overlay.id = 'adminAnnouncementPopup'; overlay.className = 'modal-overlay'; overlay.hidden = true;
-  overlay.innerHTML = `<div class="modal-card announcement-popup-card" role="dialog" aria-modal="true" aria-labelledby="announcementPopupTitle"><div class="panel-head"><div><h2 id="announcementPopupTitle">版本更新公告</h2><small id="announcementPopupSummary"></small></div><button id="announcementPopupClose" type="button" aria-label="关闭">关闭</button></div><div id="announcementPopupBody"></div><div class="announcement-popup-actions"><span>公告弹出后自动记为已读，以后仍可在“更新公告”中查看。</span><button id="announcementPopupRead" type="button">我知道了</button></div></div>`;
+  overlay.innerHTML = `<div class="modal-card announcement-popup-card" role="dialog" aria-modal="true" aria-labelledby="announcementPopupTitle" tabindex="-1"><div class="announcement-popup-head"><div class="panel-head"><div><h2 id="announcementPopupTitle">版本更新公告</h2><p id="announcementPopupSummary"></p></div><button id="announcementPopupClose" type="button" aria-label="关闭公告">关闭</button></div></div><div id="announcementPopupBody"></div><div class="announcement-popup-actions"><span>公告弹出后自动记为已读，之后仍可在“更新公告”中查看。</span><button id="announcementPopupRead" type="button">我知道了</button></div></div>`;
   document.body.appendChild(overlay);
-  const closePopup = () => { overlay.hidden = true; };
+  wireAnnouncementDialog(overlay, '#announcementPopupRead');
+  const closePopup = () => closeAnnouncementDialog(overlay);
   $('announcementPopupClose').onclick = closePopup;
   $('announcementPopupRead').onclick = closePopup;
   return overlay;
@@ -7677,7 +7823,7 @@ function renderAdminAnnouncementPopup() {
       </div>
     </article>`;
   }).join('')}</div>`;
-  overlay.hidden = false;
+  openAnnouncementDialog(overlay, '#announcementPopupRead');
 }
 
 async function markAdminAnnouncementPopupShown() {
@@ -7941,6 +8087,7 @@ if ($('clearCloudResolverDiagnosticsBtn')) $('clearCloudResolverDiagnosticsBtn')
 if ($('addBuiltinFunctionBtn')) $('addBuiltinFunctionBtn').onclick = addBuiltinFunctionRow;
 if ($('saveBuiltinFunctionsBtn')) $('saveBuiltinFunctionsBtn').onclick = () => saveBuiltinFunctions().catch((error) => setStatus(error.message, true));
 if ($('saveClientVariantsBtn')) $('saveClientVariantsBtn').onclick = () => saveClientVariants().catch((error) => setStatus(error.message, true));
+if ($('saveEsportsAudioModuleBtn')) $('saveEsportsAudioModuleBtn').onclick = () => saveEsportsAudioModule().catch((error) => setStatus(error.message, true));
 if ($('uploadMenuIconFolderBtn')) $('uploadMenuIconFolderBtn').onclick = () => uploadMenuIconFolder().catch((error) => setStatus(error.message, true));
 if ($('saveMenuIconsBtn')) $('saveMenuIconsBtn').onclick = () => saveMenuIcons().catch((error) => setStatus(error.message, true));
 if ($('addIconPicker')) initButtonIconPicker(document, $('addIcon'), $('addIcon'));

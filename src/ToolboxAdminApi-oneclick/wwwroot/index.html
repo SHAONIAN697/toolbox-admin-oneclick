@@ -7,7 +7,7 @@
   <meta name="author" content="少年科技工作室">
   <meta name="copyright" content="Copyright © 2026 少年科技工作室">
   <title>工具箱后台 | 少年科技工作室</title>
-  <link rel="stylesheet" href="/styles.css?v=2026102901">
+  <link rel="stylesheet" href="/styles.css?v=2026102905">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -98,9 +98,9 @@
           <div id="noticeList" class="notice-list"></div>
         </div>
       </div>
-      <button id="adminThemeToggle" class="theme-toggle" type="button" aria-pressed="false">
-        <span class="theme-toggle-icon" aria-hidden="true">☾</span>
-        <span id="adminThemeToggleText">深色</span>
+      <button id="adminThemeToggle" class="theme-toggle" type="button" aria-pressed="false" title="切换日间蓝主题">
+        <svg class="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg>
+        <span id="adminThemeToggleText">青绿</span>
       </button>
       <div class="user-chip" id="currentUserLabel"></div>
       <button id="agentRechargeBtn" class="agent-only" type="button" hidden>充值余额</button>
@@ -472,6 +472,26 @@
         </div>
         <p class="note">设置对接页中各款工具箱的名称、介绍与封面。封面可使用默认预览、上传到服务器或填写图床地址。</p>
         <div id="clientVariantSettings" class="variant-settings-grid"></div>
+      </div>
+      <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1" id="esportsAudioModulePanel" hidden>
+        <div class="panel-head">
+          <h2>调音师工具箱电竞音频版</h2>
+          <button id="saveEsportsAudioModuleBtn" type="button">保存模块版本</button>
+        </div>
+        <p class="note">作为独立 Windows x64 安装器 EXE 分发，不进入 C# 客户端模板。客户端仅在有效账号配置同步后显示“电竞音频”入口；地址仅接受 HTTPS，并填写安装器 EXE 的 SHA256。</p>
+        <div class="form-grid compact">
+          <label class="toggle-line">版本状态<span><input id="esportsAudioEnabled" type="checkbox"> 启用并向已授权客户端显示</span></label>
+          <label>显示名称<input id="esportsAudioDisplayName" maxlength="80"></label>
+          <label>版本号<input id="esportsAudioVersion" maxlength="40" placeholder="例如：2.2.4"></label>
+          <label>Windows x64 安装器地址<input id="esportsAudioDownloadUrl" placeholder="https://.../调音师工具箱电竞音频版-2.2.4-windows-x64-installer.exe"></label>
+          <label>备用下载地址<input id="esportsAudioBackupUrl" placeholder="https://...备用 EXE 地址"></label>
+          <label>安装包文件名<input id="esportsAudioFileName" maxlength="160"></label>
+          <label class="wide">SHA256<input id="esportsAudioSha256" spellcheck="false" placeholder="64 位十六进制 SHA256"></label>
+          <label>最低系统要求<input id="esportsAudioMinimumSystem" maxlength="120"></label>
+          <label class="toggle-line">启动权限<span><input id="esportsAudioRequiresAdmin" type="checkbox"> 整体启动必须管理员（通常保持关闭）</span></label>
+          <label class="wide">权限提示<textarea id="esportsAudioAdminPrompt" rows="2" maxlength="500"></textarea></label>
+          <label class="wide">更新说明<textarea id="esportsAudioUpdateNotes" rows="3" maxlength="2000"></textarea></label>
+        </div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
