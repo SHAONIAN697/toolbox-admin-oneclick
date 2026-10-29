@@ -20,6 +20,10 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         self.assertIn("private const int MaxSegmentedDownloadConnections = 32;", self.source)
         self.assertIn("return MaxSegmentedDownloadConnections;", self.source)
 
+    def test_array_any_imports_linq_extensions(self):
+        self.assertIn("using System.Linq;", self.source)
+        self.assertIn("segments.Any(", self.source)
+
     def test_range_workers_use_the_original_url_like_the_legacy_downloader(self):
         method_start = self.source.index("private HttpWebResponse OpenDownloadResponse(")
         method_end = self.source.index("private static HttpWebRequest CreateDownloadHttpRequest(", method_start)

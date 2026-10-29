@@ -8,6 +8,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -249,6 +250,8 @@ namespace ToolboxClient
         private readonly object pausedDownloadsFileLock = new object();
         private readonly object launchDownloadedFileLock = new object();
         private readonly Dictionary<string, Panel> activeDownloadRows = new Dictionary<string, Panel>();
+        private readonly Dictionary<string, PackageDownloadGroup> packageDownloadGroups = new Dictionary<string, PackageDownloadGroup>(StringComparer.OrdinalIgnoreCase);
+        private readonly object packageDownloadGroupsLock = new object();
         private readonly List<Vst76InlineDownloadProgress> vst76InlineDownloadProgress = new List<Vst76InlineDownloadProgress>();
         private bool pausedDownloadsRestored = false;
         private const int DefaultMaxParallelDownloads = 5;
@@ -10414,6 +10417,7 @@ namespace ToolboxClient
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
             if (!ConfirmButtonGuard(AsDict(Get(entry.Item, "guard")), entry.Name)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
+            if (action == "download" && String.Equals(GetText(entry.Item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase) && StartPackageDownload(entry.Item, entry.Name)) return;
             RunAction(
                 action,
                 GetTarget(entry.Item, action),
@@ -10431,6 +10435,10 @@ namespace ToolboxClient
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
             if (!ConfirmButtonGuard(AsDict(Get(item, "guard")), info.Name)) return;
+            if (info.Action == "download" && String.Equals(GetText(item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase))
+            {
+                if (StartPackageDownload(item, info.Name)) return;
+            }
             RunAction(
                 info.Action,
                 info.Target,
@@ -11470,6 +11478,11 @@ namespace ToolboxClient
 
         private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey = "")
         {
+            DownloadFile(url, displayName, backupUrl, backupPageUrl, customDirectory, deleteOnExit, downloadKey, "", false);
+        }
+
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary)
+        {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
             if (String.IsNullOrWhiteSpace(downloadKey)) downloadKey = BuildDownloadKey("", originalUrl, backupUrl, backupPageUrl, displayName);
@@ -11479,15 +11492,17 @@ namespace ToolboxClient
                 : PortalText("正在解析下载地址...", "Preparing download...");
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey, string packageGroupId, bool packagePrimary)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
             result.DisplayName = displayName ?? "";
             result.DownloadKey = downloadKey ?? "";
+            result.PackageGroupId = packageGroupId ?? "";
+            result.PackagePrimary = packagePrimary;
             result.CustomDirectory = customDirectory;
             result.DeleteOnExit = deleteOnExit;
             result.BackupUrl = (backupUrl ?? "").Trim();
@@ -11546,6 +11561,7 @@ namespace ToolboxClient
             if (result == null) return;
             if (result.Error != null)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask existingErrorTask = FindActiveDownloadByKey(result.DownloadKey);
                 if (existingErrorTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingErrorTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(existingErrorTask)) return;
@@ -11561,6 +11577,7 @@ namespace ToolboxClient
             DownloadRequest download = result.Download;
             if (download == null)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask existingNullTask = FindActiveDownloadByKey(result.DownloadKey);
                 if (existingNullTask == null && String.IsNullOrWhiteSpace(result.DownloadKey)) existingNullTask = FindActiveDownloadByName(result.DisplayName, "");
                 if (ResumeMatchedDownloadTask(existingNullTask)) return;
@@ -11570,6 +11587,7 @@ namespace ToolboxClient
             }
             if (download.BrowserOnly)
             {
+                CompletePackageDownloadMember(result.PackageGroupId, "", false);
                 DownloadTask browserOnlyTask = FindActiveDownload(result.OriginalUrl, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownload(download.Url, "");
                 if (browserOnlyTask == null) browserOnlyTask = FindActiveDownloadByKey(result.DownloadKey);
@@ -11593,8 +11611,8 @@ namespace ToolboxClient
             if (existingRecord != null && !String.IsNullOrWhiteSpace(existingRecord.SavedPath) && File.Exists(existingRecord.SavedPath))
             {
                 ResetVst76InlineDownloadProgress(result.DownloadKey, result.DisplayName, "");
-                string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath);
-                status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath);
+                if (!String.IsNullOrWhiteSpace(result.PackageGroupId)) CompletePackageDownloadMember(result.PackageGroupId, existingRecord.SavedPath, true);
+                else { string launchStatus = LaunchDownloadedFile(existingRecord.SavedPath); status.Text = launchStatus + "：" + Path.GetFileName(existingRecord.SavedPath); }
                 FillDownloadRecords();
                 return;
             }
@@ -11611,6 +11629,8 @@ namespace ToolboxClient
             DownloadTask task = new DownloadTask(download.Url, fileName, path, result.OriginalUrl);
             task.DisplayName = result.DisplayName;
             task.DownloadKey = result.DownloadKey;
+            task.PackageGroupId = result.PackageGroupId;
+            task.PackagePrimary = result.PackagePrimary;
             task.CustomDownloadDirectory = result.CustomDirectory;
             task.DeleteOnExit = result.DeleteOnExit;
             task.BrowserUrl = download.BrowserUrl;
@@ -13064,6 +13084,7 @@ namespace ToolboxClient
 
             if (cancelled)
             {
+                CompletePackageDownloadMember(task.PackageGroupId, task.Path, false);
                 ResetVst76InlineDownloadProgress(task);
                 CleanupSegmentedPart(task);
                 status.Text = PortalText("下载已取消：", "Download canceled: ") + task.FileName;
@@ -13080,10 +13101,13 @@ namespace ToolboxClient
                 task.Received = task.Total > 0 ? task.Total : Math.Max(1, task.Received);
                 task.StateText = PortalText("下载完成", "Complete");
                 UpdateActiveDownloadTask(task);
-                string launchStatus = AutoRunDownloadsValue(LoadClientSettings())
-                    ? LaunchDownloadedFile(task.Path)
-                    : "已下载";
-                status.Text = launchStatus + "：" + task.FileName;
+                string launchStatus = "已下载";
+                if (!String.IsNullOrWhiteSpace(task.PackageGroupId)) CompletePackageDownloadMember(task.PackageGroupId, task.Path, true);
+                else
+                {
+                    launchStatus = AutoRunDownloadsValue(LoadClientSettings()) ? LaunchDownloadedFile(task.Path) : "已下载";
+                    status.Text = launchStatus + "：" + task.FileName;
+                }
                 AddDownloadRecord(task.FileName, task.OriginalUrl, task.Path, launchStatus, "", task.DeleteOnExit);
                 RemoveActiveDownload(task);
                 FillDownloadRecords();
@@ -13092,6 +13116,7 @@ namespace ToolboxClient
             }
 
             CleanupSegmentedPart(task);
+            CompletePackageDownloadMember(task.PackageGroupId, task.Path, false);
             ResetVst76InlineDownloadProgress(task);
             // Keep interrupted partial downloads in the queue so they survive restart and can resume.
             if (!task.UsingBackup && !task.CancelRequested && task.Received > 0 && File.Exists(task.Path))
@@ -13119,6 +13144,30 @@ namespace ToolboxClient
             RemoveActiveDownload(task);
             FillDownloadRecords();
             StartQueuedDownloads();
+        }
+
+        private void CompletePackageDownloadMember(string packageId, string path, bool success)
+        {
+            if (String.IsNullOrWhiteSpace(packageId)) return;
+            PackageDownloadGroup group = null;
+            bool launch = false;
+            lock (packageDownloadGroupsLock)
+            {
+                if (!packageDownloadGroups.TryGetValue(packageId, out group)) return;
+                if (success && String.IsNullOrWhiteSpace(group.PrimaryPath) && String.Equals(Path.GetFileName(path), group.PrimaryName, StringComparison.OrdinalIgnoreCase)) group.PrimaryPath = path;
+                if (!success) group.Failed = true;
+                group.Completed++;
+                if (group.Completed >= group.Remaining)
+                {
+                    packageDownloadGroups.Remove(packageId);
+                    launch = !group.Failed && !String.IsNullOrWhiteSpace(group.PrimaryPath) && AutoRunDownloadsValue(LoadClientSettings());
+                }
+            }
+            if (launch && File.Exists(group.PrimaryPath))
+            {
+                string launchStatus = LaunchDownloadedFile(group.PrimaryPath);
+                status.Text = launchStatus + "：" + group.DisplayName;
+            }
         }
 
         private void CleanupSegmentedPart(DownloadTask task)
@@ -19828,6 +19877,19 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public string DownloadKey = "";
+            public string PackageGroupId = "";
+            public bool PackagePrimary;
+        }
+
+        private sealed class PackageDownloadGroup
+        {
+            public int Remaining;
+            public int Completed;
+            public bool Failed;
+            public string Directory = "";
+            public string PrimaryName = "";
+            public string PrimaryPath = "";
+            public string DisplayName = "";
         }
 
         private sealed class CommandRunResult
@@ -19891,6 +19953,8 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public string DownloadKey = "";
+            public string PackageGroupId = "";
+            public bool PackagePrimary;
             public bool UsingBackup;
             public readonly CookieContainer Cookies = new CookieContainer();
             public readonly ManualResetEvent PauseEvent = new ManualResetEvent(true);
