@@ -2080,10 +2080,7 @@ def _agent_code_quote(app, store, user, body):
                  if row.get("id") == request["planId"] and row.get("enabled", True)), None)
     if not plan:
         raise ValueError("套餐不存在或已停用。")
-    try:
-        unit_price = float(plan.get("agentWholesalePrice") or 0)
-    except (TypeError, ValueError):
-        raise ValueError("套餐代理拿货价配置无效。")
+    unit_price = _effective_agent_price(plan)
     if not math.isfinite(unit_price) or unit_price <= 0:
         raise ValueError("该套餐尚未设置有效的代理拿货价，请联系总管理员配置。")
     unit_price = round(unit_price, 2)
@@ -2356,10 +2353,11 @@ def route(handler, app, path, method, auth):
                 _save(app, store)
             return handler.send_json({"entitlement": entitlement, "allowed": bool(entitlement), "role": user.get("role")})
         if path == "/api/cloud-resolver/plans" and method == "GET":
-            plans = [dict(row) for row in sorted(store["plans"], key=lambda x: (int(x.get("sortOrder", 0)), x.get("createdAt", ""))) if row.get("enabled", True)]
+            plans = [dict(row) for row in sorted(store["plans"], key=_plan_sort_key) if row.get("enabled", True)]
             if not app.is_agent(user) and not is_super:
                 for plan in plans:
-                    plan.pop("agentWholesalePrice", None)
+                    for key in ("agentWholesalePrice", "agentPromoPrice", "agentPromoExpiresAt"):
+                        plan.pop(key, None)
             return handler.send_json({"plans": plans})
         if path == "/api/cloud-resolver/payment-channels" and method == "GET":
             return handler.send_json({"channels": app.public_payment_channels(app.read_system_settings())})
@@ -2397,7 +2395,7 @@ def route(handler, app, path, method, auth):
             plan = next((x for x in store["plans"] if x.get("id") == body.get("planId") and x.get("enabled", True)), None)
             if not plan:
                 return handler.send_json({"error": "套餐不存在或已停用。"}, 400)
-            amount = float(plan.get("memberPrice") or 0)
+            amount = _effective_member_price(plan)
             action = "cloud_resolver_plan_purchase"
             settings = app.read_system_settings()
             payment_channel = str(body.get("paymentChannel") or "").strip()
@@ -2421,7 +2419,12 @@ def route(handler, app, path, method, auth):
                              and x.get("status") == "pending" and (x.get("request") or {}).get("planId") == plan["id"]), None)
             if existing:
                 expiry = _order_expiry(app, existing)
-                if expiry > _now():
+                try:
+                    parsed_amount = float(existing.get("amount") or 0)
+                    existing_amount = round(parsed_amount, 2) if math.isfinite(parsed_amount) else -1
+                except (TypeError, ValueError):
+                    existing_amount = -1
+                if expiry > _now() and existing_amount == amount:
                     # Reuse the still-valid order. Rebuild its payment URL when
                     # an older record did not persist one or the user selected
                     # another configured payment channel.
@@ -3040,11 +3043,16 @@ def route(handler, app, path, method, auth):
                 for row in rows: row["status"] = "revoked"; row["revokedAt"] = _iso(_now())
                 _save(app, store); _audit(app, user, handler, "entitlement_revoke", grant.group(1), {"count": len(rows)})
                 return handler.send_json({"ok": True, "revoked": len(rows)})
-            if path == "/api/admin/cloud-resolver/plans" and method == "GET": return handler.send_json({"plans": store["plans"]})
+            if path == "/api/admin/cloud-resolver/plans" and method == "GET":
+                return handler.send_json({"plans": sorted(store["plans"], key=_plan_sort_key)})
             if path == "/api/admin/cloud-resolver/plans" and method == "POST":
                 body = handler.read_body()
                 body.setdefault("dailyParseLimit", store["settings"].get("dailyParseLimit", -1))
-                plan = _normalize_plan(app, body); store["plans"].append(plan); _save(app, store); _audit(app, user, handler, "plan_create", plan["id"], {"name": plan["name"]}); return handler.send_json(plan, 201)
+                try:
+                    plan = _normalize_plan(app, body)
+                except (TypeError, ValueError, OverflowError) as error:
+                    return handler.send_json({"error": str(error)}, 400)
+                store["plans"].append(plan); _save(app, store); _audit(app, user, handler, "plan_create", plan["id"], {"name": plan["name"]}); return handler.send_json(plan, 201)
             plan_match = re.fullmatch(r"/api/admin/cloud-resolver/plans/([^/]+)", path)
             if plan_match and method in ("PATCH", "DELETE"):
                 plan = next((x for x in store["plans"] if x.get("id") == plan_match.group(1)), None)
@@ -3054,8 +3062,49 @@ def route(handler, app, path, method, auth):
                     return handler.send_json(plan)
                 body = handler.read_body()
                 allowed = [x for x in body.get("allowedProviders", plan.get("allowedProviders", [])) if x in PROVIDERS]
-                for key in ("name", "description", "memberPrice", "agentWholesalePrice", "durationDays", "parseQuota", "trafficQuota", "dailyParseLimit", "maxFileSize", "sortOrder", "enabled"):
-                    if key in body: plan[key] = body[key]
+                if "name" in body:
+                    name = str(body.get("name") or "").strip()[:80]
+                    if not name:
+                        return handler.send_json({"error": "套餐名称不能为空。"}, 400)
+                    plan["name"] = name
+                if "description" in body: plan["description"] = str(body.get("description") or "")[:500]
+                try:
+                    for key, minimum, maximum in (
+                        ("durationDays", 1, 36500), ("parseQuota", -1, None),
+                        ("trafficQuota", -1, None), ("dailyParseLimit", -1, None),
+                        ("maxFileSize", 0, None),
+                    ):
+                        if key in body:
+                            value = int(body.get(key) or 0)
+                            plan[key] = max(minimum, min(maximum, value) if maximum is not None else value)
+                except (TypeError, ValueError):
+                    return handler.send_json({"error": "套餐额度和有效期必须是有效整数。"}, 400)
+                if "enabled" in body: plan["enabled"] = body.get("enabled") is not False
+                for key in ("memberPrice", "promoPrice", "agentWholesalePrice", "agentPromoPrice"):
+                    if key in body:
+                        try:
+                            plan[key] = _normalize_plan_price(body.get(key))
+                        except ValueError:
+                            return handler.send_json({"error": "套餐价格必须是有效数字。"}, 400)
+                if "sortOrder" in body:
+                    try:
+                        plan["sortOrder"] = int(body.get("sortOrder") or 0)
+                    except (TypeError, ValueError):
+                        return handler.send_json({"error": "排序 ID 必须是整数。"}, 400)
+                for expiry_key in ("promoExpiresAt", "agentPromoExpiresAt"):
+                    if expiry_key not in body:
+                        continue
+                    try:
+                        expiry = _parse_time(body.get(expiry_key)) if body.get(expiry_key) else None
+                    except (TypeError, ValueError, OverflowError):
+                        return handler.send_json({"error": "活动截止时间无效。"}, 400)
+                    plan[expiry_key] = _iso(expiry) if expiry else ""
+                for price_key, expiry_key in (("promoPrice", "promoExpiresAt"), ("agentPromoPrice", "agentPromoExpiresAt")):
+                    price = _normalize_plan_price(plan.get(price_key))
+                    base_key = "memberPrice" if price_key == "promoPrice" else "agentWholesalePrice"
+                    base = _normalize_plan_price(plan.get(base_key))
+                    if price > 0 and price < base and not plan.get(expiry_key):
+                        return handler.send_json({"error": "启用活动价时必须设置活动截止时间。"}, 400)
                 if "allowedProviders" in body: plan["allowedProviders"] = allowed
                 plan["updatedAt"] = _iso(_now()); _save(app, store); _audit(app, user, handler, "plan_update", plan["id"], {"fields": sorted(body.keys())})
                 return handler.send_json(plan)
@@ -3203,13 +3252,93 @@ def fulfill_order(app, order, external_trade_no=""):
     return entitlement
 
 
+def _plan_sort_key(plan):
+    try:
+        sort_order = int(plan.get("sortOrder") or 0)
+    except (TypeError, ValueError):
+        sort_order = 0
+    return sort_order, str(plan.get("createdAt") or "")
+
+
+def _effective_member_price(plan):
+    try:
+        member_price = _normalize_plan_price(plan.get("memberPrice"))
+    except (TypeError, ValueError):
+        member_price = 0
+    try:
+        promo_price = _normalize_plan_price(plan.get("promoPrice"))
+    except (TypeError, ValueError):
+        promo_price = 0
+    if _plan_promo_active(plan, "promoExpiresAt", allow_missing=True) and 0 < promo_price < member_price:
+        return round(promo_price, 2)
+    return round(member_price, 2)
+
+
+def _effective_agent_price(plan):
+    try:
+        base_price = _normalize_plan_price(plan.get("agentWholesalePrice"))
+    except (TypeError, ValueError):
+        base_price = 0
+    try:
+        promo_price = _normalize_plan_price(plan.get("agentPromoPrice"))
+    except (TypeError, ValueError):
+        promo_price = 0
+    if _plan_promo_active(plan, "agentPromoExpiresAt", allow_missing=True) and 0 < promo_price < base_price:
+        return round(promo_price, 2)
+    return round(base_price, 2)
+
+
+def _plan_promo_active(plan, expiry_key, now=None, allow_missing=False):
+    expires_at = str(plan.get(expiry_key) or "").strip()
+    if not expires_at:
+        return allow_missing
+    try:
+        return _parse_time(expires_at) > (now or _now())
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _normalize_plan_price(value):
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError("套餐价格必须是有效数字。")
+    if not math.isfinite(amount):
+        raise ValueError("套餐价格必须是有效数字。")
+    return round(max(0, amount), 2)
+
+
 def _normalize_plan(app, body):
     name = str(body.get("name") or "").strip()[:80]
     if not name: raise ValueError("套餐名称不能为空。")
     allowed = [x for x in body.get("allowedProviders", list(PROVIDERS)) if x in PROVIDERS]
+    member_price = _normalize_plan_price(body.get("memberPrice"))
+    promo_price = _normalize_plan_price(body.get("promoPrice"))
+    agent_price = _normalize_plan_price(body.get("agentWholesalePrice"))
+    agent_promo_price = _normalize_plan_price(body.get("agentPromoPrice"))
+    promo_expiry = _normalize_plan_expiry(body.get("promoExpiresAt"))
+    agent_promo_expiry = _normalize_plan_expiry(body.get("agentPromoExpiresAt"))
+    if 0 < promo_price < member_price and not promo_expiry:
+        raise ValueError("启用活动价时必须设置活动截止时间。")
+    if 0 < agent_promo_price < agent_price and not agent_promo_expiry:
+        raise ValueError("启用活动价时必须设置活动截止时间。")
     return {"id": app.new_id("crplan"), "name": name, "description": str(body.get("description") or "")[:500],
-            "memberPrice": max(0, float(body.get("memberPrice") or 0)), "agentWholesalePrice": max(0, float(body.get("agentWholesalePrice") or 0)),
+            "memberPrice": member_price,
+            "promoPrice": promo_price,
+            "agentWholesalePrice": agent_price,
+            "agentPromoPrice": agent_promo_price,
+            "promoExpiresAt": promo_expiry,
+            "agentPromoExpiresAt": agent_promo_expiry,
             "durationDays": max(1, min(36500, int(body.get("durationDays") or 30))), "parseQuota": max(-1, int(body.get("parseQuota", -1))),
             "trafficQuota": max(-1, int(body.get("trafficQuota", -1))), "dailyParseLimit": max(-1, int(body.get("dailyParseLimit", 20))),
             "maxFileSize": max(0, int(body.get("maxFileSize") or 0)), "allowedProviders": allowed, "enabled": body.get("enabled", True) is not False,
             "sortOrder": int(body.get("sortOrder") or 0), "createdAt": _iso(_now())}
+
+
+def _normalize_plan_expiry(value):
+    if not value:
+        return ""
+    try:
+        return _iso(_parse_time(value))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("活动截止时间格式不正确。")

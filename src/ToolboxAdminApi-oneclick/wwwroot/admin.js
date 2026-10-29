@@ -47,7 +47,9 @@ const state = {
   cloudResolverParseActive: false,
   cloudOrderSelectedIds: new Set(),
   cloudResolverAdminSelectedOrderIds: new Set(),
-  cloudUserEntitlements: {}
+  cloudUserEntitlements: {},
+  cloudResolverPromoExpiredKeys: new Set(),
+  editingCloudPlanId: ''
 };
 
 function applyDesktopTokenFromUrl() {
@@ -1011,15 +1013,108 @@ function cloudErrorMessage(error) {
   return CLOUD_ERROR_MESSAGES[code] || raw;
 }
 
+function localDateTimeValue(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function isoDateTimeValue(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function cloudPromoExpiryForSave(priceId, basePriceId, expiryId, label) {
+  const promo = Number($(priceId).value || 0);
+  const base = Number($(basePriceId).value || 0);
+  if (!(promo > 0 && promo < base)) return '';
+  const expiresAt = isoDateTimeValue($(expiryId).value);
+  if (!expiresAt || new Date(expiresAt).getTime() <= Date.now()) throw new Error(`${label}需要设置一个未来的截止时间。`);
+  return expiresAt;
+}
+
+function planPromoStatus(plan, priceKey, expiryKey, baseKey) {
+  const promo = Number(plan[priceKey] || 0);
+  const base = Number(plan[baseKey] || 0);
+  if (!(promo > 0 && promo < base)) return null;
+  if (!plan[expiryKey]) return { active: true, missingDeadline: true, label: '未设置截止时间' };
+  const timestamp = Date.parse(plan[expiryKey]);
+  if (!Number.isFinite(timestamp)) return { active: false, invalidDeadline: true, label: '截止时间无效' };
+  const active = timestamp > Date.now();
+  const deadline = new Date(timestamp).toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+  return { active, expired: !active, deadline, label: active ? `截止时间：${deadline}` : '活动已结束' };
+}
+
+function planPromoLabel(plan, priceKey, expiryKey, baseKey) {
+  return planPromoStatus(plan, priceKey, expiryKey, baseKey)?.label || '';
+}
+
 function cloudPlanCards(plans, mode = 'purchase') {
   const channels = state.cloudResolver.paymentChannels || [];
   return (plans || []).length ? plans.map((plan) => {
-    const price = Number(plan.memberPrice || 0).toFixed(2);
-    const payment = Number(plan.memberPrice || 0) > 0
-      ? (channels.length ? `<label class="cloud-payment-select">支付方式<select data-cloud-payment="${escapeAttr(plan.id)}" data-cloud-payment-mode="${escapeAttr(mode)}">${channels.map((channel) => `<option value="${escapeAttr(channel.key)}|${escapeAttr(channel.paymentType || '')}">${escapeHtml(channel.label)}</option>`).join('')}</select></label>` : '<small class="note">管理员尚未配置在线支付，请联系管理员。</small>')
-      : '';
-    return `<article class="resolver-plan-card"><h3>${escapeHtml(plan.name || '网盘套餐')}</h3><p>${escapeHtml(plan.description || '')}</p><strong>¥${price}</strong><span>${Number(plan.durationDays || 0)} 天 · ${Number(plan.parseQuota) < 0 ? '解析不限' : `${Number(plan.parseQuota || 0)} 次解析`}</span>${payment}<button type="button" data-cloud-buy="${escapeAttr(plan.id)}" data-cloud-buy-mode="${escapeAttr(mode)}" ${Number(plan.memberPrice || 0) > 0 && !channels.length ? 'disabled' : ''}>${mode === 'renew' ? '续费套餐' : '购买套餐'}</button></article>`;
+    const memberPrice = Number(plan.memberPrice || 0);
+    const promoPrice = Number(plan.promoPrice || 0);
+    const memberPromoStatus = planPromoStatus(plan, 'promoPrice', 'promoExpiresAt', 'memberPrice');
+    const agentPromoStatus = planPromoStatus(plan, 'agentPromoPrice', 'agentPromoExpiresAt', 'agentWholesalePrice');
+    const memberPromoLabel = memberPromoStatus?.label || '';
+    const agentPromoLabel = agentPromoStatus?.label || '';
+    const memberPromoActive = memberPromoStatus?.active === true;
+    const agentPromoActive = agentPromoStatus?.active === true;
+    const hasPromo = mode !== 'agent' && memberPromoActive;
+    const effectivePrice = hasPromo ? promoPrice : memberPrice;
+    const agentPrice = agentPromoActive ? Number(plan.agentPromoPrice || 0) : Number(plan.agentWholesalePrice || 0);
+    const price = Number((mode === 'agent' ? agentPrice : effectivePrice) || 0).toFixed(2);
+    const days = Number(plan.durationDays || 0);
+    const quota = Number(plan.parseQuota);
+    const paid = Number(price) > 0;
+    const unavailable = mode === 'agent' ? !paid : paid && !channels.length;
+    const priceNote = hasPromo
+      ? `<span class="resolver-plan-price-note"><span>会员活动价</span><small>${escapeHtml(memberPromoLabel)}</small><del>原价 ¥${memberPrice.toFixed(2)}</del></span>`
+      : mode === 'agent' && agentPromoActive
+        ? `<span class="resolver-plan-price-note"><span>代理活动价</span><small>${escapeHtml(agentPromoLabel)}</small><del>原价 ¥${Number(plan.agentWholesalePrice || 0).toFixed(2)}</del></span>`
+        : mode === 'agent' && agentPromoStatus
+          ? `<span class="resolver-plan-price-note"><small class="cloud-plan-promo-expired">${escapeHtml(agentPromoLabel)}</small></span>`
+          : memberPromoStatus && !memberPromoActive
+            ? `<span class="resolver-plan-price-note"><small class="cloud-plan-promo-expired">${escapeHtml(memberPromoLabel)}</small></span>`
+      : '<span>人民币 / 套</span>';
+    const unavailableTitle = mode === 'agent' && !paid ? '管理员尚未配置代理拿货价' : '管理员尚未配置可用支付通道';
+    return `<article class="resolver-plan-card"><div class="resolver-plan-heading"><h3>${escapeHtml(plan.name || '网盘套餐')}</h3>${plan.description ? `<p>${escapeHtml(plan.description)}</p>` : ''}</div><div class="resolver-plan-price"><strong>¥${price}</strong>${priceNote}</div><dl class="resolver-plan-benefits"><div><dt>有效期</dt><dd>${days.toLocaleString('zh-CN')} 天</dd></div><div><dt>解析额度</dt><dd>${quota < 0 ? '不限' : `${quota.toLocaleString('zh-CN')} 次`}</dd></div>${Number(plan.dailyParseLimit) ? `<div><dt>每日额度</dt><dd>${Number(plan.dailyParseLimit) < 0 ? '不限' : `${Number(plan.dailyParseLimit).toLocaleString('zh-CN')} 次`}</dd></div>` : ''}${Number(plan.trafficQuota) ? `<div><dt>下载流量</dt><dd>${Number(plan.trafficQuota) < 0 ? '不限' : `${Number(plan.trafficQuota).toLocaleString('zh-CN')} MB`}</dd></div>` : ''}</dl><button type="button" class="resolver-plan-buy" data-cloud-buy="${escapeAttr(plan.id)}" data-cloud-buy-mode="${escapeAttr(mode)}" ${unavailable ? `disabled title="${unavailableTitle}"` : ''}>${unavailable ? '暂不可购买' : mode === 'renew' ? '选择续费方式' : paid ? '立即购买' : '免费开通'}</button></article>`;
   }).join('') : '<p class="empty-cell">暂无可用套餐，请联系管理员配置。</p>';
+}
+
+function renderAdminCloudPlanRows(plans) {
+  return (plans || []).map((plan) => {
+    const memberPrice = Number(plan.memberPrice || 0);
+    const promoPrice = Number(plan.promoPrice || 0);
+    const memberPromo = planPromoStatus(plan, 'promoPrice', 'promoExpiresAt', 'memberPrice');
+    const agentPromo = planPromoStatus(plan, 'agentPromoPrice', 'agentPromoExpiresAt', 'agentWholesalePrice');
+    const memberNoteClass = memberPromo?.active ? 'cloud-plan-pricing-note' : 'cloud-plan-promo-expired';
+    const agentNoteClass = agentPromo?.active ? 'cloud-plan-pricing-note' : 'cloud-plan-promo-expired';
+    const pricing = `<strong>¥${memberPrice.toFixed(2)}</strong>${memberPromo ? `<small class="${memberNoteClass}">会员活动价 ¥${promoPrice.toFixed(2)} · ${escapeHtml(memberPromo.label)}</small>` : ''}`;
+    const agentPricing = `<strong>¥${Number(plan.agentWholesalePrice || 0).toFixed(2)}</strong>${agentPromo ? `<small class="${agentNoteClass}">代理活动价 ¥${Number(plan.agentPromoPrice || 0).toFixed(2)} · ${escapeHtml(agentPromo.label)}</small>` : ''}`;
+    return `<tr><td>${escapeHtml(plan.name)}</td><td>${pricing}</td><td>${agentPricing}</td><td>${Number(plan.sortOrder || 0)}</td><td>${Number(plan.durationDays || 0)} 天</td><td>${Number(plan.parseQuota) < 0 ? '不限' : Number(plan.parseQuota || 0)}</td><td>${plan.enabled === false ? '停用' : '启用'}</td><td><button type="button" data-cloud-plan-edit="${escapeAttr(plan.id)}">编辑</button> <button type="button" data-cloud-plan-disable="${escapeAttr(plan.id)}" ${plan.enabled === false ? 'disabled' : ''}>${plan.enabled === false ? '已停用' : '停用'}</button></td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="empty-cell">暂无套餐</td></tr>';
+}
+
+function publicPaymentMethod(channel) {
+  const type = String(channel.paymentType || '').toLowerCase();
+  return type === 'wxpay' ? { key: 'wechat', label: '微信支付', mark: '微' }
+    : type === 'alipay' ? { key: 'alipay', label: '支付宝', mark: '支' }
+      : { key: 'other', label: '在线支付', mark: '付' };
+}
+
+function renderAgentPlanCards(plans) {
+  const host = $('cloudResolverAgentPlanCards');
+  if (!host) return;
+  const previous = host.scrollTop;
+  host.innerHTML = cloudPlanCards(plans, 'agent');
+  host.scrollTop = previous;
 }
 
 async function loadCloudResolver() {
@@ -1183,6 +1278,7 @@ function renderCloudAgentPanel() {
   if (!isAgent()) return;
   const feature = state.cloudResolver || {};
   const plans = feature.plans || [];
+  renderAgentPlanCards(plans);
   const codeRows = $('cloudResolverAgentCodeRows');
   const codes = feature.agentCodes || [];
   const members = (state.users || []).filter((user) => user.parentAgentId === state.currentUser?.id && user.active !== false);
@@ -1192,6 +1288,7 @@ function renderCloudAgentPanel() {
     planSelect.innerHTML = plans.map((plan) => `<option value="${escapeAttr(plan.id)}">${escapeHtml(plan.name || '网盘套餐')}</option>`).join('') || '<option value="">暂无可用套餐</option>';
     if (plans.some((plan) => plan.id === selectedPlanId)) planSelect.value = selectedPlanId;
     renderAgentCloudCodePrice();
+    renderAgentPlanCards(plans);
   }
   const codeSelect = $('cloudResolverAgentCodeSelect');
   const userSelect = $('cloudResolverAgentUserSelect');
@@ -1219,7 +1316,11 @@ function renderAgentCloudCodePrice() {
   const label = $('cloudResolverAgentCodePrice');
   const selectedId = $('cloudResolverAgentCodePlan')?.value;
   const plan = (state.cloudResolver?.plans || []).find((item) => item.id === selectedId);
-  if (label) label.textContent = plan ? `代理拿货价：¥${Number(plan.agentWholesalePrice || 0).toFixed(2)} / 张` : '请选择套餐查看拿货价';
+  if (label) {
+    const active = plan && planPromoStatus(plan, 'agentPromoPrice', 'agentPromoExpiresAt', 'agentWholesalePrice');
+    const price = active?.active ? Number(plan.agentPromoPrice || 0) : Number(plan?.agentWholesalePrice || 0);
+    label.textContent = plan ? `代理拿货价：¥${price.toFixed(2)} / 张${active ? `（${active.label}）` : ''}` : '请选择套餐查看拿货价';
+  }
 }
 
 async function sellCloudAgentCode() {
@@ -1291,7 +1392,7 @@ function renderCloudResolver() {
   const adminPlans = $('cloudResolverPlanRows');
   if (adminPlans) adminPlans.innerHTML = (feature.adminPlans || []).map((plan) => `<tr><td>${escapeHtml(plan.name)}</td><td>¥${Number(plan.memberPrice || 0).toFixed(2)}</td><td>${Number(plan.durationDays || 0)} 天</td><td>${Number(plan.parseQuota) < 0 ? '不限' : Number(plan.parseQuota || 0)}</td><td>${plan.enabled === false ? '停用' : '启用'}</td><td><button type="button" data-cloud-plan-disable="${escapeAttr(plan.id)}">${plan.enabled === false ? '已停用' : '停用'}</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty-cell">暂无套餐</td></tr>';
   const systemPlans = $('cloudResolverSystemPlanRows');
-  if (systemPlans) systemPlans.innerHTML = (feature.adminPlans || []).map((plan) => `<tr><td>${escapeHtml(plan.name)}</td><td>¥${Number(plan.memberPrice || 0).toFixed(2)}</td><td>${Number(plan.durationDays || 0)} 天</td><td>${Number(plan.parseQuota) < 0 ? '不限' : Number(plan.parseQuota || 0)}</td><td>${plan.enabled === false ? '停用' : '启用'}</td><td><button type="button" data-cloud-plan-disable="${escapeAttr(plan.id)}">${plan.enabled === false ? '已停用' : '停用'}</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty-cell">暂无套餐</td></tr>';
+  if (systemPlans) systemPlans.innerHTML = renderAdminCloudPlanRows(feature.adminPlans || []);
   const codePlan = $('cloudResolverCodePlan');
   if (codePlan) codePlan.innerHTML = (feature.adminPlans || []).filter((plan) => plan.enabled !== false).map((plan) => `<option value="${escapeAttr(plan.id)}">${escapeHtml(plan.name)}</option>`).join('');
   const codeRows = $('cloudResolverCodeRows');
@@ -1416,6 +1517,22 @@ async function loadAndRenderCloudResolver() {
 }
 setInterval(() => {
   const feature = state.cloudResolver || {};
+  const plans = [...(feature.plans || []), ...(feature.adminPlans || [])];
+  const newlyExpired = plans.some((plan) => {
+    const memberPromo = planPromoStatus(plan, 'promoPrice', 'promoExpiresAt', 'memberPrice');
+    const agentPromo = planPromoStatus(plan, 'agentPromoPrice', 'agentPromoExpiresAt', 'agentWholesalePrice');
+    const keys = [
+      memberPromo?.expired ? `${plan.id}:member` : '',
+      agentPromo?.expired ? `${plan.id}:agent` : '',
+    ].filter(Boolean);
+    const changed = keys.some((key) => !state.cloudResolverPromoExpiredKeys.has(key));
+    keys.forEach((key) => state.cloudResolverPromoExpiredKeys.add(key));
+    return changed;
+  });
+  if (newlyExpired) {
+    renderCloudResolver();
+    renderCloudAgentPanel();
+  }
   const orders = [...(feature.orders || []), ...(feature.agentCodeOrders || [])];
   if (!orders.length) return;
   orders.forEach((order) => {
@@ -1451,9 +1568,19 @@ setInterval(() => {
 async function buyCloudPlan(planId, renew = false) {
   const plan = (state.cloudResolver.plans || []).find((item) => item.id === planId);
   if (!plan) throw new Error('套餐不存在。');
-  const selected = [...document.querySelectorAll('[data-cloud-payment]')].find((node) => node.dataset.cloudPayment === planId && node.dataset.cloudPaymentMode === (renew ? 'renew' : 'purchase'));
-  const paymentValue = selected?.value || '';
-  const [paymentChannel = '', paymentType = ''] = paymentValue.split('|');
+  const memberPrice = Number(plan.memberPrice || 0);
+  const promoPrice = Number(plan.promoPrice || 0);
+  const promoLabel = planPromoLabel(plan, 'promoPrice', 'promoExpiresAt', 'memberPrice');
+  const amount = promoLabel && promoLabel !== '活动已结束' && promoPrice > 0 && promoPrice < memberPrice ? promoPrice : memberPrice;
+  let paymentChannel = '';
+  let paymentType = '';
+  if (amount > 0) {
+    const quote = { total: amount, price: amount, balance: state.currentUser?.balance || 0, currency: state.inviteCurrency || 'CNY', request: { count: 1 }, channels: state.cloudResolver.paymentChannels || [], balanceEnough: false };
+    const choice = await showInvitePaymentDialog(quote, { title: renew ? '选择续费方式' : '选择支付方式', itemName: plan.name || '套餐', quantitySuffix: '套', hideBalance: true });
+    if (!choice) return;
+    paymentChannel = choice.paymentChannel;
+    paymentType = choice.paymentType;
+  }
   const result = await api('/api/cloud-resolver/orders', { method: 'POST', body: JSON.stringify({ planId, paymentChannel, paymentType, renew }) });
   if (result.paymentUrl) { window.location.href = result.paymentUrl; return; }
   await loadAndRenderCloudResolver();
@@ -1478,16 +1605,33 @@ async function redeemCloudCode(inputId) {
 async function createCloudPlan() {
   const payload = {
     name: $('cloudResolverSystemPlanName').value.trim(), memberPrice: Number($('cloudResolverSystemPlanPrice').value || 0),
-    agentWholesalePrice: Number($('cloudResolverSystemPlanAgentPrice').value || 0), durationDays: Number($('cloudResolverSystemPlanDays').value || 30),
+    promoPrice: Number($('cloudResolverSystemPlanPromoPrice').value || 0), promoExpiresAt: cloudPromoExpiryForSave('cloudResolverSystemPlanPromoPrice', 'cloudResolverSystemPlanPrice', 'cloudResolverSystemPlanPromoExpiresAt', '会员活动价'),
+    agentWholesalePrice: Number($('cloudResolverSystemPlanAgentPrice').value || 0), agentPromoPrice: Number($('cloudResolverSystemPlanAgentPromoPrice').value || 0), agentPromoExpiresAt: cloudPromoExpiryForSave('cloudResolverSystemPlanAgentPromoPrice', 'cloudResolverSystemPlanAgentPrice', 'cloudResolverSystemPlanAgentPromoExpiresAt', '代理活动价'), sortOrder: Number($('cloudResolverSystemPlanSortOrder').value || 0), durationDays: Number($('cloudResolverSystemPlanDays').value || 30),
     parseQuota: Number($('cloudResolverSystemPlanQuota').value || -1),
-    trafficQuota: Number($('cloudResolverSystemPlanTraffic').value || -1), allowedProviders: ['mock', 'tianyi', 'lanzou', '123pan', 'xiaofeiji', 'weiyun']
+    trafficQuota: Number($('cloudResolverSystemPlanTraffic').value || -1)
   };
   const dailyValue = $('cloudResolverSystemPlanDaily').value.trim();
   if (dailyValue) payload.dailyParseLimit = Number(dailyValue);
-  const result = await api('/api/admin/cloud-resolver/plans', { method: 'POST', body: JSON.stringify(payload) });
-  $('cloudResolverSystemPlanName').value = '';
+  const editingId = state.editingCloudPlanId;
+  if (!editingId) payload.allowedProviders = ['mock', 'tianyi', 'lanzou', '123pan', 'xiaofeiji', 'weiyun'];
+  const result = editingId ? await api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(editingId), { method: 'PATCH', body: JSON.stringify(payload) }) : await api('/api/admin/cloud-resolver/plans', { method: 'POST', body: JSON.stringify(payload) });
+  resetCloudPlanEditor();
   await loadAndRenderCloudResolver();
-  showToast(`套餐“${result.name}”已创建。`, 'success');
+  showToast(`套餐“${result.name}”已${editingId ? '保存' : '创建'}。`, 'success');
+}
+function resetCloudPlanEditor() {
+  state.editingCloudPlanId = '';
+  $('cloudResolverPlanEditorTitle').textContent = '网盘授权套餐';
+  $('cloudResolverSystemCreatePlanBtn').textContent = '创建套餐';
+  $('cloudResolverSystemCancelPlanBtn').hidden = true;
+  ['Name','Price','PromoPrice','PromoExpiresAt','AgentPrice','AgentPromoPrice','AgentPromoExpiresAt','SortOrder','Days','Quota','Daily','Traffic'].forEach((key) => { const el = $('cloudResolverSystemPlan' + key); if (el) el.value = key === 'Days' ? '30' : key === 'Quota' ? '20' : key === 'Traffic' ? '-1' : key === 'Name' || key === 'Daily' || key === 'PromoExpiresAt' || key === 'AgentPromoExpiresAt' ? '' : '0'; });
+}
+function editCloudPlan(planId) {
+  const plan = (state.cloudResolver.adminPlans || []).find((item) => item.id === planId); if (!plan) return;
+  state.editingCloudPlanId = plan.id;
+  $('cloudResolverPlanEditorTitle').textContent = `编辑套餐：${plan.name || ''}`;
+  $('cloudResolverSystemCreatePlanBtn').textContent = '保存修改'; $('cloudResolverSystemCancelPlanBtn').hidden = false;
+  $('cloudResolverSystemPlanName').value = plan.name || ''; $('cloudResolverSystemPlanPrice').value = Number(plan.memberPrice || 0); $('cloudResolverSystemPlanPromoPrice').value = Number(plan.promoPrice || 0); $('cloudResolverSystemPlanPromoExpiresAt').value = localDateTimeValue(plan.promoExpiresAt); $('cloudResolverSystemPlanAgentPrice').value = Number(plan.agentWholesalePrice || 0); $('cloudResolverSystemPlanAgentPromoPrice').value = Number(plan.agentPromoPrice || 0); $('cloudResolverSystemPlanAgentPromoExpiresAt').value = localDateTimeValue(plan.agentPromoExpiresAt); $('cloudResolverSystemPlanSortOrder').value = Number(plan.sortOrder || 0); $('cloudResolverSystemPlanDays').value = Number(plan.durationDays || 30); $('cloudResolverSystemPlanQuota').value = Number(plan.parseQuota ?? 20); $('cloudResolverSystemPlanDaily').value = plan.dailyParseLimit == null ? '' : Number(plan.dailyParseLimit); $('cloudResolverSystemPlanTraffic').value = Number(plan.trafficQuota ?? -1);
 }
 async function generateCloudCodes() {
   const planId = $('cloudResolverCodePlan').value;
@@ -5920,6 +6064,10 @@ function closeInvitePaymentDialog(choice = null) {
   const overlay = $('invitePaymentOverlay');
   if (!overlay) return;
   overlay.hidden = true;
+  (overlay._background || []).forEach(([node, inert]) => { node.inert = inert; });
+  overlay._background = [];
+  document.body.style.overflow = overlay._overflow || '';
+  if (overlay._returnFocus?.isConnected) overlay._returnFocus.focus();
   if (overlay._resolve) {
     overlay._resolve(choice);
     overlay._resolve = null;
@@ -5940,7 +6088,9 @@ function ensureInvitePaymentDialog() {
         <button id="closeInvitePaymentBtn" type="button" aria-label="关闭">×</button>
       </div>
       <div id="invitePaymentSummary" class="invite-payment-summary"></div>
-      <div id="invitePaymentActions" class="invite-payment-actions"></div>
+      <fieldset class="payment-methods-fieldset"><legend>支付方式</legend><div id="invitePaymentActions" class="invite-payment-actions payment-method-grid" role="radiogroup" aria-label="支付方式"></div></fieldset>
+      <p id="invitePaymentHint" class="invite-pay-note" role="status"></p>
+      <div class="payment-dialog-footer"><button id="cancelInvitePaymentBtn" type="button">取消</button><button id="confirmInvitePaymentBtn" type="button" class="payment-confirm" disabled>确认支付</button></div>
     </div>
   `;
   document.body.appendChild(overlay);
@@ -5948,11 +6098,32 @@ function ensureInvitePaymentDialog() {
     if (event.target === overlay) closeInvitePaymentDialog();
   };
   $('closeInvitePaymentBtn').onclick = () => closeInvitePaymentDialog();
+  $('cancelInvitePaymentBtn').onclick = () => closeInvitePaymentDialog();
+  overlay.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeInvitePaymentDialog(); }
+    if (event.key !== 'Tab') return;
+    const nodes = [...overlay.querySelectorAll('button:not(:disabled), [tabindex="0"]')].filter((node) => node.getClientRects().length);
+    const first = nodes[0]; const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  });
   return overlay;
+}
+
+function paymentMethodButton(channel, onSelect, suffix = '') {
+  const method = publicPaymentMethod(channel);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `payment-method payment-method-${method.key}`;
+  button.setAttribute('aria-label', method.label + suffix);
+  button.innerHTML = `<span class="payment-method-mark" aria-hidden="true">${method.mark}</span><span class="payment-method-copy"><strong>${method.label}${escapeHtml(suffix)}</strong><small>在线支付</small></span><span class="payment-method-check" aria-hidden="true">✓</span>`;
+  button.onclick = () => onSelect(button);
+  return button;
 }
 
 function showInvitePaymentDialog(quote, options = {}) {
   const overlay = ensureInvitePaymentDialog();
+  if (!overlay.hidden) return Promise.resolve(null);
   const title = options.title || '邀请码付款';
   const itemName = options.itemName || '单个价格';
   const quantitySuffix = options.quantitySuffix || '个';
@@ -5962,38 +6133,67 @@ function showInvitePaymentDialog(quote, options = {}) {
   const canPayBalance = quote.balanceEnough === true;
   $('invitePaymentSummary').innerHTML = `
     <div class="invite-pay-grid">
-      <div><span>账户余额</span><strong>${escapeHtml(formatMoney(quote.balance, currency))}</strong></div>
-      <div><span>本次需付</span><strong>${escapeHtml(formatMoney(quote.total, currency))}</strong></div>
+      <div class="payment-total"><span>本次需付</span><strong>${escapeHtml(formatMoney(quote.total, currency))}</strong></div>
+      ${options.hideBalance ? '' : `<div><span>账户余额</span><strong>${escapeHtml(formatMoney(quote.balance, currency))}</strong></div>`}
       <div><span>${escapeHtml(itemName)}</span><strong>${escapeHtml(formatMoney(quote.price, currency))}</strong></div>
       <div><span>生成数量</span><strong>${Number(quote.request?.count || 1)} ${escapeHtml(quantitySuffix)}</strong></div>
     </div>
-    <p class="invite-pay-note">请选择余额或已启用的支付宝、微信支付接口。</p>
   `;
   const actions = $('invitePaymentActions');
   actions.innerHTML = '';
-  const balanceBtn = document.createElement('button');
-  balanceBtn.type = 'button';
-  balanceBtn.textContent = canPayBalance ? '余额支付' : '余额不足';
-  balanceBtn.disabled = !canPayBalance;
-  balanceBtn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'balance' });
-  actions.appendChild(balanceBtn);
-
-  channels.forEach((channel) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = `${channel.label || channel.key}，立即支付`;
-    btn.onclick = () => closeInvitePaymentDialog({ paymentMethod: 'interface', paymentChannel: channel.key, paymentType: channel.paymentType || '' });
-    actions.appendChild(btn);
-  });
-
-  if (!channels.length) {
-    const tip = document.createElement('p');
-    tip.className = 'invite-pay-note';
-    tip.textContent = '当前未配置可用的支付宝或微信支付接口。';
-    actions.appendChild(tip);
+  const confirmButton = $('confirmInvitePaymentBtn');
+  confirmButton.disabled = true;
+  confirmButton.textContent = `确认支付 ${formatMoney(quote.total, currency)}`;
+  let choice = null;
+  const select = (button, value) => {
+    choice = value;
+    actions.querySelectorAll('[role="radio"]').forEach((node) => {
+      const active = node === button;
+      node.setAttribute('aria-checked', String(active));
+      node.tabIndex = active ? 0 : -1;
+    });
+    confirmButton.disabled = false;
+  };
+  const addMethod = (button, value) => {
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', 'false');
+    button.tabIndex = -1;
+    button.onclick = () => select(button, value);
+    actions.appendChild(button);
+  };
+  if (!options.hideBalance) {
+    const balanceBtn = paymentMethodButton({}, () => {});
+    balanceBtn.className = 'payment-method payment-method-balance';
+    balanceBtn.setAttribute('aria-label', canPayBalance ? '余额支付' : '余额支付，余额不足');
+    balanceBtn.innerHTML = `<span class="payment-method-mark" aria-hidden="true">余</span><span class="payment-method-copy"><strong>余额支付</strong><small>${canPayBalance ? '直接扣除账户余额' : '余额不足'}</small></span><span class="payment-method-check" aria-hidden="true">✓</span>`;
+    balanceBtn.disabled = !canPayBalance;
+    addMethod(balanceBtn, { paymentMethod: 'balance' });
   }
-
+  const methodCounts = {};
+  channels.forEach((channel) => {
+    const key = publicPaymentMethod(channel).key;
+    const count = (methodCounts[key] || 0) + 1; methodCounts[key] = count;
+    const btn = paymentMethodButton(channel, () => {}, count > 1 ? `（通道 ${count}）` : '');
+    addMethod(btn, { paymentMethod: 'interface', paymentChannel: channel.key, paymentType: channel.paymentType || '' });
+  });
+  const enabled = [...actions.querySelectorAll('button:not(:disabled)')];
+  if (enabled.length) enabled[0].tabIndex = 0;
+  actions.onkeydown = (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = enabled.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? enabled.length - 1 : (current + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + enabled.length) % enabled.length;
+    enabled[next]?.click(); enabled[next]?.focus();
+  };
+  $('invitePaymentHint').textContent = !enabled.length ? '暂无可用支付方式，请联系管理员。' : !channels.length ? '在线支付暂不可用，可使用账户余额支付。' : '选择支付方式后确认，在线支付将前往付款页面。';
+  confirmButton.onclick = () => { if (choice) { confirmButton.disabled = true; closeInvitePaymentDialog(choice); } };
+  overlay._returnFocus = document.activeElement;
+  overlay._overflow = document.body.style.overflow;
+  overlay._background = [...document.body.children].filter((node) => node !== overlay && !['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)).map((node) => [node, node.inert]);
+  overlay._background.forEach(([node]) => { node.inert = true; });
+  document.body.style.overflow = 'hidden';
   overlay.hidden = false;
+  (enabled[0] || $('closeInvitePaymentBtn')).focus();
   return new Promise((resolve) => {
     overlay._resolve = resolve;
   });
@@ -6087,10 +6287,7 @@ async function loadBalanceRechargeChannels() {
     $('balanceRechargeAfter').textContent = formatMoney(Number(quote.balance || 0) + Number(quote.amount || 0), quote.currency);
     actions.innerHTML = '';
     (quote.channels || []).forEach((channel) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = `${channel.label || channel.key}，充值 ${formatMoney(quote.amount, quote.currency)}`;
-      button.onclick = () => submitBalanceRecharge(quote, channel);
+      const button = paymentMethodButton(channel, () => submitBalanceRecharge(quote, channel));
       actions.appendChild(button);
     });
     if (!(quote.channels || []).length) {
@@ -6103,6 +6300,16 @@ async function loadBalanceRechargeChannels() {
     $('balanceRechargeMessage').textContent = error.message || '读取支付方式失败。';
     if (loadButton) loadButton.disabled = false;
   }
+}
+
+let paymentFlowPending = false;
+async function runPaymentFlow(button, action) {
+  if (paymentFlowPending) return;
+  paymentFlowPending = true;
+  const wasDisabled = button?.disabled;
+  if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+  try { return await action(); }
+  finally { paymentFlowPending = false; if (button?.isConnected) { button.disabled = !!wasDisabled; button.removeAttribute('aria-busy'); } }
 }
 
 async function submitBalanceRecharge(quote, channel) {
@@ -7956,7 +8163,7 @@ $('addAgentLevelBtn').onclick = () => {
   renderAgentLevelRows();
   renderNewUserAgentLevel();
 };
-$('createInviteBtn').onclick = () => createInvite().catch((error) => setStatus(error.message, true));
+$('createInviteBtn').onclick = (event) => runPaymentFlow(event.currentTarget, createInvite).catch((error) => setStatus(error.message, true));
 if ($('agentRechargeBtn')) $('agentRechargeBtn').onclick = openBalanceRechargeDialog;
 if ($('downloadCurrentClientBtn')) {
   $('downloadCurrentClientBtn').onclick = () => downloadClient().catch((error) => setStatus(error.message, true));
@@ -8027,17 +8234,27 @@ document.addEventListener('change', (event) => {
 });
 if ($('cloudResolverAgentSellBtn')) $('cloudResolverAgentSellBtn').onclick = () => sellCloudAgentCode().catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverAgentRefreshBtn')) $('cloudResolverAgentRefreshBtn').onclick = () => loadAndRenderCloudResolver().catch((error) => setStatus(cloudErrorMessage(error), true));
-if ($('cloudResolverAgentGenerateCodesBtn')) $('cloudResolverAgentGenerateCodesBtn').onclick = () => generateAgentCloudCodes().catch((error) => setStatus(cloudErrorMessage(error), true));
+if ($('cloudResolverAgentGenerateCodesBtn')) $('cloudResolverAgentGenerateCodesBtn').onclick = (event) => runPaymentFlow(event.currentTarget, generateAgentCloudCodes).catch((error) => setStatus(cloudErrorMessage(error), true));
 if ($('cloudResolverAgentCodePlan')) $('cloudResolverAgentCodePlan').onchange = renderAgentCloudCodePrice;
 document.addEventListener('click', (event) => {
   const buy = event.target.closest('[data-cloud-buy]');
-  if (buy) buyCloudPlan(buy.dataset.cloudBuy, buy.dataset.cloudBuyMode === 'renew').catch((error) => setStatus(cloudErrorMessage(error), true));
+  if (buy) runPaymentFlow(buy, async () => {
+    if (buy.dataset.cloudBuyMode === 'agent') {
+      $('cloudResolverAgentCodePlan').value = buy.dataset.cloudBuy;
+      renderAgentCloudCodePrice();
+      await generateAgentCloudCodes();
+    } else await buyCloudPlan(buy.dataset.cloudBuy, buy.dataset.cloudBuyMode === 'renew');
+  }).catch((error) => setStatus(cloudErrorMessage(error), true));
   const agentOrder = event.target.closest('[data-agent-cloud-continue-order]');
   if (agentOrder) {
     const order = (state.cloudResolver.agentCodeOrders || []).find((item) => item.id === agentOrder.dataset.agentCloudContinueOrder);
     if (order?.paymentUrl) window.location.href = order.paymentUrl;
     else showToast('该订单暂时没有可用支付地址，请重新生成。', 'error');
   }
+  const editPlan = event.target.closest('[data-cloud-plan-edit]');
+  if (editPlan) editCloudPlan(editPlan.dataset.cloudPlanEdit);
+  const cancelPlanEdit = event.target.closest('#cloudResolverSystemCancelPlanBtn');
+  if (cancelPlanEdit) resetCloudPlanEditor();
   const disable = event.target.closest('[data-cloud-plan-disable]');
   if (disable && disable.textContent !== '已停用') api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(disable.dataset.cloudPlanDisable), { method: 'DELETE' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
   const cloudCopy = event.target.closest('[data-cloud-copy-code]');

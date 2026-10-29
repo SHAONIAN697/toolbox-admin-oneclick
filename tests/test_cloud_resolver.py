@@ -593,6 +593,148 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(all(str(row.get("action", "")).startswith("cloud_resolver_") for row in logs["items"]))
 
+    def test_plan_promo_price_is_applied_to_member_order_and_agent_price_stays_private(self):
+        status, plan = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "限时套餐", "memberPrice": 20, "promoPrice": 12.5,
+            "agentWholesalePrice": 8, "agentPromoPrice": 6.5, "sortOrder": 4, "durationDays": 30,
+            "promoExpiresAt": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            "agentPromoExpiresAt": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "allowedProviders": ["mock"],
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual(plan["promoPrice"], 12.5)
+        self.assertEqual(plan["agentWholesalePrice"], 8)
+        self.assertEqual(plan["agentPromoPrice"], 6.5)
+        self.assertEqual(plan["sortOrder"], 4)
+
+        status, public = self.call("alice", "/api/cloud-resolver/plans", "GET")
+        self.assertEqual(status, 200)
+        self.assertEqual(public["plans"][0]["promoPrice"], 12.5)
+        self.assertNotIn("agentWholesalePrice", public["plans"][0])
+        self.assertNotIn("agentPromoPrice", public["plans"][0])
+        self.assertNotIn("agentPromoExpiresAt", public["plans"][0])
+
+        with patch.object(APP, "public_payment_channels", return_value=[
+            {"key": "easypay", "paymentType": "alipay", "label": "支付宝"},
+        ]), patch.object(APP, "build_payment_url", return_value="https://pay.example/fixture"):
+            status, result = self.call("alice", "/api/cloud-resolver/orders", "POST", {
+                "planId": plan["id"], "paymentChannel": "easypay", "paymentType": "alipay",
+            })
+        self.assertEqual(status, 201)
+        order = next(row for row in APP.read_orders()["orders"] if row["id"] == result["order"]["id"])
+        self.assertEqual(order["amount"], 12.5)
+
+        status, updated = self.call("admin", f"/api/admin/cloud-resolver/plans/{plan['id']}", "PATCH", {
+            "promoPrice": 0, "sortOrder": 2, "agentWholesalePrice": 7.5,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["promoPrice"], 0)
+        self.assertEqual(updated["sortOrder"], 2)
+        self.assertEqual(updated["agentWholesalePrice"], 7.5)
+
+        with patch.object(APP, "public_payment_channels", return_value=[
+            {"key": "easypay", "paymentType": "alipay", "label": "支付宝"},
+        ]), patch.object(APP, "build_payment_url", return_value="https://pay.example/fixture"):
+            status, repriced = self.call("alice", "/api/cloud-resolver/orders", "POST", {
+                "planId": plan["id"], "paymentChannel": "easypay", "paymentType": "alipay",
+            })
+        self.assertEqual(status, 201)
+        self.assertNotEqual(repriced["order"]["id"], order["id"])
+        self.assertEqual(repriced["order"]["amount"], 20)
+
+    def test_plan_promo_price_order_amount_falls_back_for_invalid_promo_and_legacy_plan(self):
+        self.assertEqual(RESOLVER._effective_member_price({"memberPrice": 9}), 9)
+        status, plan = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "无效活动价回退", "memberPrice": 11, "promoPrice": 18,
+            "allowedProviders": ["mock"],
+        })
+        self.assertEqual(status, 201)
+        with patch.object(APP, "public_payment_channels", return_value=[
+            {"key": "easypay", "paymentType": "alipay", "label": "支付宝"},
+        ]), patch.object(APP, "build_payment_url", return_value="https://pay.example/fixture"):
+            status, result = self.call("alice", "/api/cloud-resolver/orders", "POST", {
+                "planId": plan["id"], "paymentChannel": "easypay", "paymentType": "alipay",
+            })
+        self.assertEqual(status, 201)
+        order = next(row for row in APP.read_orders()["orders"] if row["id"] == result["order"]["id"])
+        self.assertEqual(order["amount"], 11)
+
+    def test_member_and_agent_promo_prices_expire_independently(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        plan = {"memberPrice": 20, "promoPrice": 12, "promoExpiresAt": future,
+                "agentWholesalePrice": 8, "agentPromoPrice": 5, "agentPromoExpiresAt": past}
+        self.assertEqual(RESOLVER._effective_member_price(plan), 12)
+        self.assertEqual(RESOLVER._effective_agent_price(plan), 8)
+        plan["promoExpiresAt"] = past
+        plan["agentPromoExpiresAt"] = future
+        self.assertEqual(RESOLVER._effective_member_price(plan), 20)
+        self.assertEqual(RESOLVER._effective_agent_price(plan), 5)
+
+    def test_plan_create_and_update_require_deadline_for_active_promo_prices(self):
+        status, error = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "缺少会员截止", "memberPrice": 20, "promoPrice": 12,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("活动截止时间", error["error"])
+        status, error = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "缺少代理截止", "agentWholesalePrice": 10, "agentPromoPrice": 8,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("活动截止时间", error["error"])
+        status, plan = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+            "name": "套餐", "memberPrice": 20, "agentWholesalePrice": 10,
+        })
+        self.assertEqual(status, 201)
+        status, error = self.call("admin", f"/api/admin/cloud-resolver/plans/{plan['id']}", "PATCH", {
+            "agentPromoPrice": 8,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("活动截止时间", error["error"])
+
+    def test_agent_quote_uses_active_agent_promo_then_restores_wholesale_price(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        plan = self.create_agent_code_plan(price=10)
+        status, updated = self.call("admin", f"/api/admin/cloud-resolver/plans/{plan['id']}", "PATCH", {
+            "agentPromoPrice": 6, "agentPromoExpiresAt": future,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["agentPromoPrice"], 6)
+        status, quote = self.call("agent", "/api/agent/cloud-resolver/codes/quote", "POST", {
+            "planId": plan["id"], "count": 2,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(quote["price"], 6)
+        self.assertEqual(quote["total"], 12)
+        status, updated = self.call("admin", f"/api/admin/cloud-resolver/plans/{plan['id']}", "PATCH", {
+            "agentPromoExpiresAt": past,
+        })
+        self.assertEqual(status, 200)
+        status, quote = self.call("agent", "/api/agent/cloud-resolver/codes/quote", "POST", {
+            "planId": plan["id"], "count": 2,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(quote["price"], 10)
+        self.assertEqual(quote["total"], 20)
+
+    def test_admin_plan_list_uses_sort_order_and_rejects_invalid_sort_id(self):
+        created = []
+        for name, sort_order in (("较后", 5), ("较前", 1)):
+            status, plan = self.call("admin", "/api/admin/cloud-resolver/plans", "POST", {
+                "name": name, "sortOrder": sort_order,
+            })
+            self.assertEqual(status, 201)
+            created.append(plan)
+        status, listing = self.call("admin", "/api/admin/cloud-resolver/plans", "GET")
+        self.assertEqual(status, 200)
+        self.assertLessEqual(listing["plans"].index(created[1]), listing["plans"].index(created[0]))
+        status, response = self.call("admin", f"/api/admin/cloud-resolver/plans/{created[0]['id']}", "PATCH", {
+            "sortOrder": "first",
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("排序 ID", response["error"])
+
     def test_agent_inventory_does_not_grant_use_and_sold_code_is_redeemed_by_member(self):
         with self.assertRaises(PermissionError):
             self.call("agent", "/api/cloud-resolver/parse", "POST", {"url": "mock://fixture/x", "provider": "mock"})
