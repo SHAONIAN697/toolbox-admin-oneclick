@@ -1,4 +1,5 @@
-﻿param(
+﻿# Copyright (c) 2026 少年科技工作室. All rights reserved.
+param(
   [string]$Url = "http://localhost:5088/",
   [string]$AdminToken = $env:TOOLBOX_ADMIN_TOKEN
 )

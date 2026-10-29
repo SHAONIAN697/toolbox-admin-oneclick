@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+// Copyright (c) 2026 少年科技工作室. All rights reserved.
 using System.Drawing;
 using System.IO;
 using System.Net;

@@ -1,10 +1,13 @@
 <!doctype html>
+<!-- Copyright (c) 2026 少年科技工作室. All rights reserved. -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>工具箱后台</title>
-  <link rel="stylesheet" href="/styles.css?v=2026102301">
+  <meta name="author" content="少年科技工作室">
+  <meta name="copyright" content="Copyright © 2026 少年科技工作室">
+  <title>工具箱后台 | 少年科技工作室</title>
+  <link rel="stylesheet" href="/styles.css?v=2026102901">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -37,15 +40,16 @@
         <button id="resetPasswordBtn" type="button">重置密码</button>
       </div>
       <div class="login-error" id="loginError"></div>
+      <p class="login-credit">© 2026 少年科技工作室 · 保留所有权利</p>
     </div>
   </section>
 
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">Y</div>
+      <div class="brand-mark">少</div>
       <div>
         <strong>工具箱后台</strong>
-        <span>配置中心</span>
+        <span>少年科技工作室 · 配置中心</span>
       </div>
     </div>
     <nav>
@@ -650,7 +654,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026102302"></script>
+  <script src="/admin.js?v=2026102901"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

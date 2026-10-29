@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 少年科技工作室. All rights reserved.
 import hashlib
 import hmac
 import base64
@@ -67,6 +68,7 @@ ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
+PROJECT_PUBLISHER = "少年科技工作室"
 STUDIO_OVERVIEW_PAGE_ID = "system_overview"
 
 CLOUD_RESOLVER_IMPORT_ERROR = ""
@@ -5690,6 +5692,11 @@ def start_client_build_job(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     return public_client_build_job(job_id)
 
 
+def exe_metadata_value(value):
+    text = str(value or "").strip()
+    return "" if PROJECT_PUBLISHER in text else text
+
+
 def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     variant = normalize_client_variant(variant)
     if not CLIENT_TEMPLATE.exists():
@@ -5711,8 +5718,8 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     exe_title = app_config.get("exe_title") or app_config.get("title") or "Toolbox"
     exe_description = app_config.get("exe_description") or app_config.get("subtitle") or exe_title
     exe_product = app_config.get("exe_product") or app_config.get("title") or exe_title
-    exe_company = app_config.get("exe_company") or ""
-    exe_copyright = app_config.get("exe_copyright") or ""
+    exe_company = exe_metadata_value(app_config.get("exe_company"))
+    exe_copyright = exe_metadata_value(app_config.get("exe_copyright"))
     exe_version = assembly_version(app_config.get("exe_version") or app_config.get("version") or "1.0.0.0")
     variant_label = client_variant_info(variant).get("label") or "工具箱"
     file_name = client_exe_filename(user, variant=variant)
@@ -5794,8 +5801,8 @@ def make_admin_desktop_exe(base_url):
     exe_title = app_config.get("admin_desktop_title") or app_config.get("admin_title") or DEFAULT_ADMIN_TITLE
     exe_description = app_config.get("admin_desktop_description") or "工具箱后台桌面登录器"
     exe_product = app_config.get("admin_desktop_product") or exe_title
-    exe_company = app_config.get("exe_company") or ""
-    exe_copyright = app_config.get("exe_copyright") or ""
+    exe_company = exe_metadata_value(app_config.get("exe_company"))
+    exe_copyright = exe_metadata_value(app_config.get("exe_copyright"))
     exe_version = assembly_version(app_config.get("admin_desktop_version") or app_config.get("exe_version") or app_config.get("version") or "1.0.0.0")
     file_name = admin_desktop_exe_filename()
     source = source.replace('"__ADMIN_URL__"', csharp_literal(base_url))

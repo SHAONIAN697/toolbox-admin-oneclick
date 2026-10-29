@@ -1,4 +1,5 @@
-﻿const state = {
+﻿// Copyright (c) 2026 少年科技工作室. All rights reserved.
+const state = {
   token: localStorage.getItem('toolbox_session_token') || '',
   currentUser: null,
   targetUser: null,
@@ -2101,8 +2102,8 @@ function renderApp() {
   $('appExeTitle').value = app.exe_title || app.title || '';
   $('appExeDescription').value = app.exe_description || app.subtitle || '';
   $('appExeProduct').value = app.exe_product || app.title || '';
-  $('appExeCompany').value = app.exe_company || '';
-  $('appExeCopyright').value = app.exe_copyright || '';
+  $('appExeCompany').value = cleanExeMetadata(app.exe_company);
+  $('appExeCopyright').value = cleanExeMetadata(app.exe_copyright);
   $('appExeVersion').value = app.exe_version || app.version || '1.0.0.0';
 }
 
@@ -2574,14 +2575,19 @@ function ensureExeMetaFields() {
     ['appExeDescription', 'EXE 介绍', '属性里的说明/介绍'],
     ['appExeProduct', 'EXE 产品名称', '属性里的产品名称'],
     ['appExeVersion', 'EXE 文件版本', '例如：1.0.0.0'],
-    ['appExeCompany', 'EXE 公司名称', '可留空'],
-    ['appExeCopyright', 'EXE 版权', '例如：Copyright © 2026']
+    ['appExeCompany', 'EXE 公司名称', '可留空；不要填写工作室署名'],
+    ['appExeCopyright', 'EXE 版权', '可留空；不要填写工作室署名']
   ];
   fields.forEach(([id, labelText, placeholder]) => {
     const label = document.createElement('label');
     label.innerHTML = `${labelText}<input id="${id}" placeholder="${placeholder}">`;
     grid.appendChild(label);
   });
+}
+
+function cleanExeMetadata(value) {
+  const text = String(value || '').trim();
+  return text.includes('少年科技工作室') ? '' : text;
 }
 
 function ensureExeIconField() {
@@ -5384,8 +5390,8 @@ async function saveAppExeSettings() {
     exe_title: $('appExeTitle')?.value.trim() || '',
     exe_description: $('appExeDescription')?.value.trim() || '',
     exe_product: $('appExeProduct')?.value.trim() || '',
-    exe_company: $('appExeCompany')?.value.trim() || '',
-    exe_copyright: $('appExeCopyright')?.value.trim() || '',
+    exe_company: cleanExeMetadata($('appExeCompany')?.value),
+    exe_copyright: cleanExeMetadata($('appExeCopyright')?.value),
     exe_version: $('appExeVersion')?.value.trim() || ''
   }, 'EXE 属性已保存。');
 }

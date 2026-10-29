@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 少年科技工作室. All rights reserved.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

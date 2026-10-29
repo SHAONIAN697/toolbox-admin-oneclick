@@ -1,4 +1,5 @@
 (function () {
+  // Copyright (c) 2026 少年科技工作室. All rights reserved.
   var TEXT = {
     building: '\u6b63\u5728\u751f\u6210...',
     buildingStatus: '\u6b63\u5728\u751f\u6210\u540e\u53f0\u7ba1\u7406 EXE...',

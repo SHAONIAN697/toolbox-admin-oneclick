@@ -1,4 +1,5 @@
 """Personal cloud-share resource management and Provider adapters."""
+# Copyright (c) 2026 少年科技工作室. All rights reserved.
 import hashlib
 import base64
 from concurrent.futures import ThreadPoolExecutor

@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 少年科技工作室. All rights reserved. */
 :root {
   color-scheme: dark;
   --bg: #111416;
@@ -126,6 +127,13 @@ body {
   margin: 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.login-panel .login-credit {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .login-tabs {
