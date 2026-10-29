@@ -7,11 +7,21 @@
   <meta name="author" content="少年科技工作室">
   <meta name="copyright" content="Copyright © 2026 少年科技工作室">
   <title>工具箱后台 | 少年科技工作室</title>
-  <link rel="stylesheet" href="/styles.css?v=2026102911">
+  <link rel="stylesheet" href="/styles.css?v=2026102913">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
     <div class="login-panel">
+      <aside class="login-context" aria-label="工具箱后台信息">
+        <div class="login-context-topline">
+          <div class="login-product-mark" aria-hidden="true">调</div>
+          <button id="loginThemeToggle" class="login-theme-toggle" type="button" aria-pressed="false" title="切换主题"><svg class="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg><span id="loginThemeToggleText">青绿</span></button>
+        </div>
+        <div class="login-context-copy"><p class="login-context-kicker">调音师工具箱</p><h2>把配置、资源与发布放在同一张工作台。</h2><p>登录后继续管理按钮、网盘资源、套餐与更新公告。</p></div>
+        <div class="login-context-list" aria-label="后台工作范围"><div><strong>配置</strong><span>按钮与基础信息</span></div><div><strong>资源</strong><span>套餐、订单与网盘解析</span></div><div><strong>发布</strong><span>公告与客户端生成</span></div></div>
+        <p class="login-context-foot">工作台入口 · 仅限授权账号</p>
+      </aside>
+      <div class="login-form-panel">
       <h1 id="loginTitle">工具箱后台登录</h1>
       <p id="loginHint" hidden></p>
       <div class="login-tabs">
@@ -41,6 +51,7 @@
       </div>
       <div class="login-error" id="loginError"></div>
       <p class="login-credit">© 2026 少年科技工作室 · 保留所有权利</p>
+      </div>
     </div>
   </section>
 
@@ -675,7 +686,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026102911"></script>
+  <script src="/admin.js?v=2026102913"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

@@ -2293,7 +2293,9 @@ function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) 
   document.body.classList.remove('theme-dark', 'theme-light', 'theme-dayblue');
   document.body.classList.add(`theme-${mode}`);
   const toggle = $('adminThemeToggle');
+  const loginToggle = $('loginThemeToggle');
   const text = $('adminThemeToggleText');
+  const loginText = $('loginThemeToggleText');
   const themeLabels = { light: '青绿', dark: '夜间', dayblue: '日间蓝' };
   const nextTheme = { light: '夜间主题', dark: '日间蓝主题', dayblue: '青绿主题' };
   if (toggle) {
@@ -2302,6 +2304,12 @@ function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) 
     toggle.setAttribute('aria-label', `当前主题：${themeLabels[mode]}。${toggle.title}`);
   }
   if (text) text.textContent = themeLabels[mode];
+  if (loginToggle) {
+    loginToggle.setAttribute('aria-pressed', mode === 'dark' ? 'true' : 'false');
+    loginToggle.title = `当前：${themeLabels[mode]}；点击切换至${nextTheme[mode]}`;
+    loginToggle.setAttribute('aria-label', `当前主题：${themeLabels[mode]}。${loginToggle.title}`);
+  }
+  if (loginText) loginText.textContent = themeLabels[mode];
 }
 
 function toggleAdminTheme() {
@@ -8113,6 +8121,7 @@ $('registerInviteCode').addEventListener('keydown', (event) => {
 });
 $('logoutBtn').onclick = () => logout();
 if ($('adminThemeToggle')) $('adminThemeToggle').onclick = () => toggleAdminTheme();
+if ($('loginThemeToggle')) $('loginThemeToggle').onclick = () => toggleAdminTheme();
 $('targetUserSelect').onchange = async () => {
   state.templateMode = false;
   state.targetUserId = $('targetUserSelect').value;
