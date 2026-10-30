@@ -1,8 +1,58 @@
 ﻿# 工具箱后台一键版
 
-这是一个面向 Windows 工具箱客户端的网页管理后台和一键部署项目。管理员可以集中管理客户端品牌、页面、分组、按钮、软件下载、系统工具、用户账号、邀请码、通知及更新配置，并按用户生成专属 EXE 客户端。
+<p align="center">
+  <strong>Windows 工具箱客户端的网页管理后台与一键部署项目</strong><br>
+  集中管理内容、用户与版本配置，按用户生成专属客户端；更新服务端时保留现有业务数据。
+</p>
 
-项目适合软件资源分发、装机维护、音频工作站工具包、企业内部工具集合和客户专属工具平台。客户端通过服务端配置同步内容，修改按钮、页面和资源时无需重新开发整个界面。
+<p align="center">
+  <a href="https://github.com/SHAONIAN697/toolbox-admin-oneclick"><img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-SHAONIAN697%2Ftoolbox--admin--oneclick-181717?logo=github"></a>
+  <a href="docs/更新日志.md"><img alt="更新日志" src="https://img.shields.io/badge/文档-更新日志-2f855a"></a>
+  <a href="COPYRIGHT.md"><img alt="项目来源" src="https://img.shields.io/badge/项目说明-来源与版权-3978c5"></a>
+</p>
+
+适用于软件资源分发、装机维护、音频工作站工具包、企业内部工具集合及客户专属工具平台。客户端内容由服务端配置驱动，日常调整页面、按钮和资源无需重新开发客户端界面。
+
+## 快速部署
+
+以下命令适用于首次部署和已部署实例更新。下载管理脚本时依次尝试 **1 个主链接和 3 个备用链接**；只有下载成功且文件非空后才会安装运行。
+
+| 顺序 | 链接 |
+| --- | --- |
+| 主链接 | [GitHub Raw](https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh) |
+| 备用链接 1 | [ghfast.top](https://ghfast.top/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh) |
+| 备用链接 2 | [gh-proxy.org](https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh) |
+| 备用链接 3 | [jsDelivr CDN](https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh) |
+
+```bash
+URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh"
+TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"
+DOWNLOADED=0
+
+for MIRROR in \
+  "$URL" \
+  "https://ghfast.top/$URL" \
+  "https://gh-proxy.org/$URL" \
+  "https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh"
+do
+  if curl -fsSL --retry 0 --connect-timeout 5 --max-time 20 "$MIRROR" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then
+    DOWNLOADED=1
+    break
+  fi
+done
+
+if [ "$DOWNLOADED" = 1 ]; then
+  sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh &&
+    rm -f "$TMP_SCRIPT" &&
+    sudo bash /tmp/toolbox-admin.sh
+else
+  rm -f "$TMP_SCRIPT"
+  echo "所有下载线路均失败，请稍后重试。" >&2
+  exit 1
+fi
+```
+
+下载并运行后，可在服务器任意目录输入 `toolbox-admin` 再次打开管理脚本。
 
 ## 项目能力
 
@@ -104,17 +154,9 @@
 
 客户端会把同一按钮下的全部文件保存到 `Toolbox/<安装包文件夹名称>/`。文件名由客户端自动识别，后台不需要重复填写。
 
-## 一键管理脚本
+## 管理脚本说明
 
-首次下载或重新下载最新版管理脚本，统一使用以下命令：
-
-```bash
-URL="https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh"; TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; for MIRROR in "https://ghfast.top/$URL" "$URL"; do curl -fsSL --retry 3 --connect-timeout 12 --max-time 60 "$MIRROR" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT" && break; done; test -s "$TMP_SCRIPT" && sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh
-```
-
-下载完成后，以后在服务器任意目录输入 `toolbox-admin` 即可进入管理脚本。需要重新下载管理脚本时，再执行一次上面的命令即可。
-
-选择安装或更新后，脚本会询问是否使用 GitHub 代理。直接回车也会自动尝试 `ghfast.top` 和 GitHub 直连；需要指定加速时可填写 `https://ghfast.top/`。
+重新下载或首次运行管理脚本，请使用上方“快速部署”中的命令。脚本启动后会显示交互菜单；选择安装或更新时，可按提示指定 GitHub 代理地址，也可直接回车使用自动下载线路。
 
 > 更新服务端程序后，请在后台重新生成并下载工具箱 EXE。
 
