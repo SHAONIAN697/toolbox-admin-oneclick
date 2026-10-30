@@ -5669,7 +5669,9 @@ async function saveAppUpdateSettings() {
   const original = updateVariants.original || {};
   await saveAppPatch({
     update_variants: updateVariants,
-    version: original.version || state.config?.app?.version || '',
+    // The global version belongs to 基础信息. Saving update-entry settings must
+    // not overwrite it with the original variant's update target version.
+    version: $('appVersion')?.value.trim() || state.config?.app?.version || '',
     update_url: original.url || '',
     update_title: original.title || '工具箱更新',
     update_button: original.button || '下载最新版',
