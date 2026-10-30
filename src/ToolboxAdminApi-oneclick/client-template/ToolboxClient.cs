@@ -437,6 +437,7 @@ namespace ToolboxClient
             {
                 startupRenderTimer.Stop();
                 ApplyInitialEmbeddedConfig();
+                if (!IsDisposed && !Disposing) EnforceEmbeddedUpdatePolicy();
                 if (configApplied) HideStartupOverlay();
             };
             startupNetworkTimer = new System.Windows.Forms.Timer { Interval = 200 };
@@ -2533,7 +2534,11 @@ namespace ToolboxClient
                 {
                     lastSyncText = "配置无变化 " + DateTime.Now.ToString("HH:mm:ss");
                     statusMessage = lastSyncText;
-                    BeginInvoke(new Action(delegate { status.Text = statusMessage; }));
+                    BeginInvoke(new Action(delegate
+                    {
+                        EnforceUpdatePolicy(AsDict(Get(config, "app")));
+                        if (!IsDisposed && status != null && !status.IsDisposed) status.Text = statusMessage;
+                    }));
                     return;
                 }
                 json = NormalizeConfigJson(downloaded);
@@ -11430,6 +11435,22 @@ namespace ToolboxClient
             if (!blocked) return false;
             BeginInvoke(new Action(delegate { Close(); Application.Exit(); }));
             return true;
+        }
+
+        private void EnforceEmbeddedUpdatePolicy()
+        {
+            string embedded = ReadUsableConfigText(ReadEmbeddedConfig());
+            if (String.IsNullOrWhiteSpace(embedded)) return;
+            try
+            {
+                Dictionary<string, object> embeddedConfig = AsDict(serializer.DeserializeObject(embedded));
+                Dictionary<string, object> embeddedApp = AsDict(Get(embeddedConfig, "app"));
+                if (EnforceUpdatePolicy(embeddedApp)) return;
+            }
+            catch
+            {
+                // A malformed build snapshot must not interrupt normal startup.
+            }
         }
 
         private static Dictionary<string, object> UpdatePolicyForCurrentVariant(Dictionary<string, object> app)
