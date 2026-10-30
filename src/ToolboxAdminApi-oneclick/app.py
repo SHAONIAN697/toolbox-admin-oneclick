@@ -5791,9 +5791,10 @@ def make_client_exe(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
     source = source.replace('"__EMBEDDED_CONFIG_JSON__"', csharp_literal(embedded_config_json))
     source = source.replace('"__CLIENT_VARIANT__"', csharp_literal(variant))
     source = source.replace('"__CLIENT_VARIANT_LABEL__"', csharp_literal(variant_label))
-    update_variants = app_config.get("update_variants") if isinstance(app_config.get("update_variants"), dict) else {}
-    variant_update = update_variants.get(variant) if isinstance(update_variants.get(variant), dict) else {}
-    client_app_version = variant_update.get("version") or app_config.get("version") or "1.0"
+    # The embedded value is the version currently installed in this EXE.
+    # A variant's update entry version is the remote target version and must
+    # never be embedded as the current version, or forced updates are skipped.
+    client_app_version = app_config.get("version") or "1.0"
     source = source.replace('"__CLIENT_APP_VERSION__"', csharp_literal(client_app_version))
     source = source.replace('"__BUILD_ID__"', csharp_literal(build_id))
     source = source.replace('"__BUILD_STAMP__"', csharp_literal(build_stamp))
