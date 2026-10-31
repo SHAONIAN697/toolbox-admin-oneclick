@@ -24,16 +24,45 @@ class SegmentedDownloadTemplateTests(unittest.TestCase):
         self.assertIn("using System.Linq;", self.source)
         self.assertIn("segments.Any(", self.source)
 
-    def test_range_workers_use_the_original_url_like_the_legacy_downloader(self):
+    def test_range_workers_reuse_task_resolved_url_instead_of_reparsing_entrypoint(self):
         method_start = self.source.index("private HttpWebResponse OpenDownloadResponse(")
         method_end = self.source.index("private static HttpWebRequest CreateDownloadHttpRequest(", method_start)
         method = self.source[method_start:method_end]
 
-        loop = "for (int redirect = 0; redirect < 8; redirect++)"
-        request = "HttpWebRequest request = CreateDownloadHttpRequest(task, current"
-        self.assertIn("string current = url;", method)
-        self.assertNotIn("current = task.LastResolvedUrl;", method)
-        self.assertLess(method.index(loop), method.index(request))
+        self.assertIn("string current = GetTaskDownloadUrl(task, url);", method)
+        self.assertIn("current = RefreshTaskDownloadUrl(task, current, location);", method)
+        self.assertIn("private static string GetTaskDownloadUrl", self.source)
+        self.assertIn("private static string RefreshTaskDownloadUrl", self.source)
+
+    def test_segment_workers_pass_the_task_resolved_url_and_validate_range(self):
+        segment_start = self.source.index("private void DownloadSegmentRange(")
+        segment_end = self.source.index("private List<DownloadSegment> CreateDownloadSegments(", segment_start)
+        segment = self.source[segment_start:segment_end]
+        self.assertIn("OpenDownloadResponse(task, GetTaskDownloadUrl(task)", segment)
+        self.assertIn("ValidateContentRange(response, rangeStart, segment.End, task.Total);", segment)
+
+    def test_redirect_refresh_is_single_flight_and_does_not_persist_credentials(self):
+        refresh_start = self.source.index("private static string RefreshTaskDownloadUrl")
+        refresh_end = self.source.index("private static void ValidateContentRange", refresh_start)
+        refresh = self.source[refresh_start:refresh_end]
+        self.assertIn("lock (task.RedirectLock)", refresh)
+        self.assertIn("task.LastResolvedUrl = next;", refresh)
+        self.assertIn("RedirectLock", self.source)
+        self.assertNotIn("Console.WriteLine(next)", refresh)
+
+    def test_segmented_path_never_silently_falls_back_to_single_connection(self):
+        attempt_start = self.source.index("private void DownloadFileAttempt(")
+        attempt_end = self.source.index("private bool TryCreateSegmentedDownloadPlan(", attempt_start)
+        attempt = self.source[attempt_start:attempt_end]
+        self.assertIn("服务器不支持 Range 分片下载，无法使用32线程下载。", attempt)
+        self.assertNotIn("DownloadFileSingleConnection(task", attempt)
+
+    def test_403_and_429_stop_retry_loop(self):
+        worker_start = self.source.index("private void DownloadFileWorker(")
+        worker_end = self.source.index("private bool TrySwitchToBackupDownload(", worker_start)
+        worker = self.source[worker_start:worker_end]
+        self.assertIn("IsDownloadRetryStopFailure(ex)", worker)
+        self.assertIn("服务器拒绝或限流，已停止自动重试", worker)
 
     def test_direct_link_probe_keeps_range_timeout_long_enough_for_cdn(self):
         probe_start = self.source.index("private RemoteDownloadInfo ProbeRemoteDownloadInfo(")

@@ -12358,6 +12358,12 @@ namespace ToolboxClient
                             }
                         }
                         if (ex is OperationCanceledException || task.CancelRequested) break;
+                        if (IsDownloadRetryStopFailure(ex))
+                        {
+                            task.StateText = "服务器拒绝或限流，已停止自动重试";
+                            QueueDownloadTaskRowUpdate(task);
+                            break;
+                        }
                         if (String.IsNullOrWhiteSpace(task.BackupUrl) && !String.IsNullOrWhiteSpace(task.BackupPageUrl)) break;
                         if (attempt >= MaxDownloadAttemptsPerUrl)
                         {
@@ -12701,13 +12707,14 @@ namespace ToolboxClient
                 long rangeStart = segment.Start + received;
                 try
                 {
-                    using (HttpWebResponse response = OpenDownloadResponse(task, task.Url, true, rangeStart, segment.End, out request))
+                    using (HttpWebResponse response = OpenDownloadResponse(task, GetTaskDownloadUrl(task), true, rangeStart, segment.End, out request))
                     {
                         EnsureDownloadResponseIsFile(response);
                         if (response.StatusCode != HttpStatusCode.PartialContent)
                         {
                             throw new InvalidOperationException("服务器没有按 Range 返回分片内容。");
                         }
+                        ValidateContentRange(response, rangeStart, segment.End, task.Total);
                         using (Stream input = response.GetResponseStream())
                         using (FileStream output = new FileStream(partPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
                         {
@@ -12881,10 +12888,12 @@ namespace ToolboxClient
                     info.SupportsRanges = response.StatusCode == HttpStatusCode.PartialContent || HeaderSaysAcceptRanges(response);
                     info.TotalLength = ParseContentRangeTotal(response.Headers["Content-Range"]);
                     if (info.TotalLength <= 0 && response.StatusCode != HttpStatusCode.PartialContent) info.TotalLength = response.ContentLength;
+                    if (response.ResponseUri != null) task.LastResolvedUrl = response.ResponseUri.AbsoluteUri;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                if (IsDownloadRetryStopFailure(ex)) throw;
             }
             return info;
         }
@@ -12927,8 +12936,7 @@ namespace ToolboxClient
                 string location = response.Headers["Location"];
                 response.Close();
                 if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
-                current = ResolveRedirectUrl(current, location);
-                if (task != null) task.LastResolvedUrl = current;
+                current = RefreshTaskDownloadUrl(task, current, location);
             }
             throw new InvalidOperationException("下载地址重定向次数过多。");
         }
@@ -12936,7 +12944,7 @@ namespace ToolboxClient
         private HttpWebResponse OpenDownloadResponse(DownloadTask task, string url, bool useRange, long rangeStart, long rangeEnd, out HttpWebRequest activeRequest)
         {
             activeRequest = null;
-            string current = url;
+            string current = GetTaskDownloadUrl(task, url);
             for (int redirect = 0; redirect < 8; redirect++)
             {
                 HttpWebRequest request = CreateDownloadHttpRequest(task, current, 45000, 120000);
@@ -12955,8 +12963,7 @@ namespace ToolboxClient
                     response.Close();
                     task.UntrackRequest(request);
                     if (String.IsNullOrWhiteSpace(location)) throw new InvalidOperationException("下载地址重定向无效。");
-                    current = ResolveRedirectUrl(current, location);
-                    task.LastResolvedUrl = current;
+                    current = RefreshTaskDownloadUrl(task, current, location);
                 }
                 catch (WebException ex)
                 {
@@ -12981,6 +12988,46 @@ namespace ToolboxClient
         private static HttpWebRequest CreateDownloadHttpRequest(string url, int timeout, int readWriteTimeout)
         {
             return CreateDownloadHttpRequest(null, url, timeout, readWriteTimeout);
+        }
+
+        private static string GetTaskDownloadUrl(DownloadTask task, string fallback = "")
+        {
+            if (task != null && !String.IsNullOrWhiteSpace(task.LastResolvedUrl)) return task.LastResolvedUrl;
+            return fallback;
+        }
+
+        private static string RefreshTaskDownloadUrl(DownloadTask task, string current, string location)
+        {
+            string next = ResolveRedirectUrl(current, location);
+            if (String.Equals(next, current, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("下载地址重定向形成循环。");
+            if (task == null) return next;
+            lock (task.RedirectLock)
+            {
+                if (!String.IsNullOrWhiteSpace(task.LastResolvedUrl) &&
+                    !String.Equals(task.LastResolvedUrl, current, StringComparison.OrdinalIgnoreCase))
+                {
+                    return task.LastResolvedUrl;
+                }
+                task.LastResolvedUrl = next;
+                return next;
+            }
+        }
+
+        private static void ValidateContentRange(HttpWebResponse response, long expectedStart, long expectedEnd, long expectedTotal)
+        {
+            string value = response == null ? "" : response.Headers["Content-Range"];
+            if (String.IsNullOrWhiteSpace(value)) throw new InvalidOperationException("分片响应缺少 Content-Range。");
+            string[] parts = value.Split(new[] { ' ', '-', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            long start, end, total;
+            if (parts.Length < 4 || !Int64.TryParse(parts[1], out start) || !Int64.TryParse(parts[2], out end) || !Int64.TryParse(parts[3], out total) ||
+                start != expectedStart || end != expectedEnd || (expectedTotal > 0 && total != expectedTotal))
+            {
+                throw new InvalidOperationException("分片响应 Content-Range 与请求区间不匹配。");
+            }
+            long expectedLength = expectedEnd - expectedStart + 1;
+            if (response.ContentLength >= 0 && response.ContentLength != expectedLength)
+                throw new InvalidOperationException("分片响应长度与 Content-Range 不匹配。");
         }
 
         private static HttpWebRequest CreateDownloadHttpRequest(DownloadTask task, string url, int timeout, int readWriteTimeout)
@@ -13070,6 +13117,18 @@ namespace ToolboxClient
         {
             int code = (int)status;
             return code == 200 || code == 400 || code == 403 || code == 404 || code == 405 || code == 416;
+        }
+
+        private static bool IsDownloadRetryStopFailure(Exception ex)
+        {
+            WebException web = ex as WebException;
+            HttpWebResponse response = web == null ? null : web.Response as HttpWebResponse;
+            if (response != null && (response.StatusCode == HttpStatusCode.Forbidden || (int)response.StatusCode == 429)) return true;
+            string message = ex == null ? "" : (ex.Message ?? "");
+            return message.IndexOf("(403)", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("(429)", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("限流", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("拒绝", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool ShouldFallbackToSingleConnection(Exception ex)
@@ -19989,6 +20048,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public volatile string PartPath = "";
             public volatile string LastResolvedUrl = "";
             public volatile string Referer = "";
+            public readonly object RedirectLock = new object();
             public volatile bool RestoredPaused;
             public int WorkerRunning;
             public long Received;
