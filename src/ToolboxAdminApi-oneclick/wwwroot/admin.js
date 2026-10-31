@@ -1056,6 +1056,7 @@ function planPromoLabel(plan, priceKey, expiryKey, baseKey) {
 }
 
 function cloudPlanCards(plans, mode = 'purchase') {
+  if (mode !== 'agent' && isAgent()) mode = 'agent';
   const channels = state.cloudResolver.paymentChannels || [];
   return (plans || []).length ? plans.map((plan) => {
     const memberPrice = Number(plan.memberPrice || 0);
@@ -1098,7 +1099,7 @@ function renderAdminCloudPlanRows(plans) {
     const agentNoteClass = agentPromo?.active ? 'cloud-plan-pricing-note' : 'cloud-plan-promo-expired';
     const pricing = `<strong>¥${memberPrice.toFixed(2)}</strong>${memberPromo ? `<small class="${memberNoteClass}">会员活动价 ¥${promoPrice.toFixed(2)} · ${escapeHtml(memberPromo.label)}</small>` : ''}`;
     const agentPricing = `<strong>¥${Number(plan.agentWholesalePrice || 0).toFixed(2)}</strong>${agentPromo ? `<small class="${agentNoteClass}">代理活动价 ¥${Number(plan.agentPromoPrice || 0).toFixed(2)} · ${escapeHtml(agentPromo.label)}</small>` : ''}`;
-    return `<tr><td>${escapeHtml(plan.name)}</td><td>${pricing}</td><td>${agentPricing}</td><td>${Number(plan.sortOrder || 0)}</td><td>${Number(plan.durationDays || 0)} 天</td><td>${Number(plan.parseQuota) < 0 ? '不限' : Number(plan.parseQuota || 0)}</td><td>${plan.enabled === false ? '停用' : '启用'}</td><td><button type="button" data-cloud-plan-edit="${escapeAttr(plan.id)}">编辑</button> <button type="button" data-cloud-plan-disable="${escapeAttr(plan.id)}" ${plan.enabled === false ? 'disabled' : ''}>${plan.enabled === false ? '已停用' : '停用'}</button></td></tr>`;
+    return `<tr><td>${escapeHtml(plan.name)}</td><td>${pricing}</td><td>${agentPricing}</td><td>${Number(plan.sortOrder || 0)}</td><td>${Number(plan.durationDays || 0)} 天</td><td>${Number(plan.parseQuota) < 0 ? '不限' : Number(plan.parseQuota || 0)}</td><td>${plan.enabled === false ? '停用' : '启用'}</td><td><button type="button" data-cloud-plan-edit="${escapeAttr(plan.id)}">编辑</button> <button type="button" data-cloud-plan-disable="${escapeAttr(plan.id)}" ${plan.enabled === false ? 'disabled' : ''}>${plan.enabled === false ? '已停用' : '停用'}</button>${plan.enabled === false ? ` <button type="button" class="danger" data-cloud-plan-delete="${escapeAttr(plan.id)}">删除</button>` : ''}</td></tr>`;
   }).join('') || '<tr><td colspan="8" class="empty-cell">暂无套餐</td></tr>';
 }
 
@@ -1603,8 +1604,9 @@ async function redeemCloudCode(inputId) {
   showToast('激活码兑换成功。', 'success');
 }
 async function createCloudPlan() {
+  if (!$('cloudResolverSystemPlanDescription')) $('cloudResolverSystemPlanName')?.insertAdjacentHTML('afterend', '<label class="wide">套餐备注/使用说明<textarea id="cloudResolverSystemPlanDescription" maxlength="500" rows="2" placeholder="前台套餐卡片中显示的使用说明"></textarea></label>');
   const payload = {
-    name: $('cloudResolverSystemPlanName').value.trim(), memberPrice: Number($('cloudResolverSystemPlanPrice').value || 0),
+    name: $('cloudResolverSystemPlanName').value.trim(), description: $('cloudResolverSystemPlanDescription').value.trim(), memberPrice: Number($('cloudResolverSystemPlanPrice').value || 0),
     promoPrice: Number($('cloudResolverSystemPlanPromoPrice').value || 0), promoExpiresAt: cloudPromoExpiryForSave('cloudResolverSystemPlanPromoPrice', 'cloudResolverSystemPlanPrice', 'cloudResolverSystemPlanPromoExpiresAt', '会员活动价'),
     agentWholesalePrice: Number($('cloudResolverSystemPlanAgentPrice').value || 0), agentPromoPrice: Number($('cloudResolverSystemPlanAgentPromoPrice').value || 0), agentPromoExpiresAt: cloudPromoExpiryForSave('cloudResolverSystemPlanAgentPromoPrice', 'cloudResolverSystemPlanAgentPrice', 'cloudResolverSystemPlanAgentPromoExpiresAt', '代理活动价'), sortOrder: Number($('cloudResolverSystemPlanSortOrder').value || 0), durationDays: Number($('cloudResolverSystemPlanDays').value || 30),
     parseQuota: Number($('cloudResolverSystemPlanQuota').value || -1),
@@ -1621,13 +1623,16 @@ async function createCloudPlan() {
 }
 function resetCloudPlanEditor() {
   state.editingCloudPlanId = '';
+  if (!$('cloudResolverSystemPlanDescription')) $('cloudResolverSystemPlanName')?.insertAdjacentHTML('afterend', '<label class="wide">套餐备注/使用说明<textarea id="cloudResolverSystemPlanDescription" maxlength="500" rows="2" placeholder="前台套餐卡片中显示的使用说明"></textarea></label>');
   $('cloudResolverPlanEditorTitle').textContent = '网盘授权套餐';
   $('cloudResolverSystemCreatePlanBtn').textContent = '创建套餐';
   $('cloudResolverSystemCancelPlanBtn').hidden = true;
-  ['Name','Price','PromoPrice','PromoExpiresAt','AgentPrice','AgentPromoPrice','AgentPromoExpiresAt','SortOrder','Days','Quota','Daily','Traffic'].forEach((key) => { const el = $('cloudResolverSystemPlan' + key); if (el) el.value = key === 'Days' ? '30' : key === 'Quota' ? '20' : key === 'Traffic' ? '-1' : key === 'Name' || key === 'Daily' || key === 'PromoExpiresAt' || key === 'AgentPromoExpiresAt' ? '' : '0'; });
+  ['Name','Description','Price','PromoPrice','PromoExpiresAt','AgentPrice','AgentPromoPrice','AgentPromoExpiresAt','SortOrder','Days','Quota','Daily','Traffic'].forEach((key) => { const el = $('cloudResolverSystemPlan' + key); if (el) el.value = key === 'Days' ? '30' : key === 'Quota' ? '20' : key === 'Traffic' ? '-1' : key === 'Name' || key === 'Description' || key === 'Daily' || key === 'PromoExpiresAt' || key === 'AgentPromoExpiresAt' ? '' : '0'; });
 }
 function editCloudPlan(planId) {
   const plan = (state.cloudResolver.adminPlans || []).find((item) => item.id === planId); if (!plan) return;
+  if (!$('cloudResolverSystemPlanDescription')) $('cloudResolverSystemPlanName')?.insertAdjacentHTML('afterend', '<label class="wide">套餐备注/使用说明<textarea id="cloudResolverSystemPlanDescription" maxlength="500" rows="2"></textarea></label>');
+  $('cloudResolverSystemPlanDescription').value = plan.description || '';
   state.editingCloudPlanId = plan.id;
   $('cloudResolverPlanEditorTitle').textContent = `编辑套餐：${plan.name || ''}`;
   $('cloudResolverSystemCreatePlanBtn').textContent = '保存修改'; $('cloudResolverSystemCancelPlanBtn').hidden = false;
@@ -8267,7 +8272,9 @@ document.addEventListener('click', (event) => {
   const cancelPlanEdit = event.target.closest('#cloudResolverSystemCancelPlanBtn');
   if (cancelPlanEdit) resetCloudPlanEditor();
   const disable = event.target.closest('[data-cloud-plan-disable]');
-  if (disable && disable.textContent !== '已停用') api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(disable.dataset.cloudPlanDisable), { method: 'DELETE' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
+  if (disable && disable.textContent !== '已停用') api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(disable.dataset.cloudPlanDisable), { method: 'PATCH', body: JSON.stringify({ enabled: false }) }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
+  const deletePlan = event.target.closest('[data-cloud-plan-delete]');
+  if (deletePlan && window.confirm('确认删除该已停用套餐吗？')) api('/api/admin/cloud-resolver/plans/' + encodeURIComponent(deletePlan.dataset.cloudPlanDelete), { method: 'DELETE' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
   const cloudCopy = event.target.closest('[data-cloud-copy-code]');
   if (cloudCopy && cloudCopy.dataset.cloudCopyCode) copyText(cloudCopy.dataset.cloudCopyCode).catch((error) => setStatus(error.message, true));
   const agentCodeCopy = event.target.closest('[data-cloud-copy-agent-code]');

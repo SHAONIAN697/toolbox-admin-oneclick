@@ -2395,7 +2395,7 @@ def route(handler, app, path, method, auth):
             plan = next((x for x in store["plans"] if x.get("id") == body.get("planId") and x.get("enabled", True)), None)
             if not plan:
                 return handler.send_json({"error": "套餐不存在或已停用。"}, 400)
-            amount = _effective_member_price(plan)
+            amount = _effective_agent_price(plan) if app.is_agent(user) and not is_super else _effective_member_price(plan)
             action = "cloud_resolver_plan_purchase"
             settings = app.read_system_settings()
             payment_channel = str(body.get("paymentChannel") or "").strip()
@@ -3058,8 +3058,11 @@ def route(handler, app, path, method, auth):
                 plan = next((x for x in store["plans"] if x.get("id") == plan_match.group(1)), None)
                 if not plan: return handler.send_json({"error": "套餐不存在。"}, 404)
                 if method == "DELETE":
-                    plan["enabled"] = False; plan["disabledAt"] = _iso(_now()); _save(app, store); _audit(app, user, handler, "plan_disable", plan["id"])
-                    return handler.send_json(plan)
+                    if plan.get("enabled", True):
+                        return handler.send_json({"error": "请先停用套餐后再删除。"}, 409)
+                    store["plans"] = [row for row in store["plans"] if row.get("id") != plan["id"]]
+                    _save(app, store); _audit(app, user, handler, "plan_delete", plan["id"])
+                    return handler.send_json({"ok": True, "id": plan["id"]})
                 body = handler.read_body()
                 allowed = [x for x in body.get("allowedProviders", plan.get("allowedProviders", [])) if x in PROVIDERS]
                 if "name" in body:
@@ -3080,6 +3083,7 @@ def route(handler, app, path, method, auth):
                 except (TypeError, ValueError):
                     return handler.send_json({"error": "套餐额度和有效期必须是有效整数。"}, 400)
                 if "enabled" in body: plan["enabled"] = body.get("enabled") is not False
+                if "description" in body: plan["description"] = str(body.get("description") or "")[:500]
                 for key in ("memberPrice", "promoPrice", "agentWholesalePrice", "agentPromoPrice"):
                     if key in body:
                         try:
