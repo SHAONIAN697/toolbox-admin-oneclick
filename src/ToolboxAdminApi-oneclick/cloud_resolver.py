@@ -2727,7 +2727,10 @@ def route(handler, app, path, method, auth):
                 return handler.send_json({"error": "DOWNLOAD_URL_UNAVAILABLE"}, 409)
             section = sections[section_index]; buttons = section.setdefault("buttons", []); results = []; config_changed = False
             for file in chosen:
-                name = _norm_name(file.get("name")); matches = [] if body.get("createNewButton") is True else [b for b in buttons if _norm_name(b.get("name")) == name]
+                original_name = _norm_name(file.get("name"))
+                custom_name = str((body.get("buttonNames") or {}).get(file["id"]) or "").strip()
+                name = (custom_name or original_name)[:120] if body.get("createNewButton") is True else original_name
+                matches = [] if body.get("createNewButton") is True else [b for b in buttons if _norm_name(b.get("name")) == original_name]
                 fallback_url = str(file.get("downloadUrl") or "")
                 # Legacy/mock providers may intentionally use their share URL;
                 # Feijipan is rejected above unless it has a real direct URL.

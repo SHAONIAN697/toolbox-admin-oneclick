@@ -1808,7 +1808,7 @@ function openCloudFilePicker(task) {
     overlay.querySelectorAll('[data-cloud-picker-select]').forEach((button) => button.onclick = () => { const all = (state.cloudPickerTask?.files || []).map((file) => file.id); const selected = new Set(state.cloudPickerSelection || []); if (button.dataset.cloudPickerSelect === 'all') all.forEach((id) => selected.add(id)); else if (button.dataset.cloudPickerSelect === 'none') all.forEach((id) => selected.delete(id)); else all.forEach((id) => selected.has(id) ? selected.delete(id) : selected.add(id)); state.cloudPickerSelection = [...selected]; renderCloudPickerRows(); });
     overlay.querySelector('#cloudFilePickerConfirm').onclick = () => commitCloudPicker().catch((error) => setStatus(cloudErrorMessage(error), true));
   }
-  state.cloudPickerTask = task; state.cloudPickerSelection = (task.files || []).filter((file) => file.type !== 'folder').map((file) => file.id); state.cloudPickerButtonTargets = {};
+  state.cloudPickerTask = task; state.cloudPickerSelection = (task.files || []).filter((file) => file.type !== 'folder').map((file) => file.id); state.cloudPickerButtonTargets = {}; state.cloudPickerButtonNames = {};
   const pageSelect = overlay.querySelector('#cloudFileTargetPage'); const pages = state.config?.pages || {}; const pageIds = Object.keys(pages);
   if (!pageIds.length) throw new Error('当前配置没有可用页面。');
   pageSelect.innerHTML = pageIds.map((id) => `<option value="${escapeAttr(id)}">${escapeHtml(pages[id].title || id)}</option>`).join('');
@@ -1829,10 +1829,13 @@ function renderCloudPickerRows() {
     const rememberedId = state.cloudPickerButtonTargets?.[file.id] || '';
     const preferredId = buttons.some((button) => String(button.id) === String(rememberedId)) ? rememberedId : (match?.id || '');
     if (preferredId) state.cloudPickerButtonTargets[file.id] = preferredId;
-    const options = mode === 'existing' ? `<select class="cloud-file-target-button" data-file-target="${escapeAttr(file.id)}"><option value="">选择已有按钮</option>${buttons.map((button) => `<option value="${escapeAttr(button.id)}"${String(button.id) === String(preferredId) ? ' selected' : ''}>${escapeHtml(button.name || '未命名按钮')}</option>`).join('')}</select>` : '';
-    return `<div class="cloud-file-row"><input type="checkbox" value="${escapeAttr(file.id)}"${selected.has(file.id) ? ' checked' : ''}><span><strong>${escapeHtml(file.name || '未命名文件')}</strong><small class="cloud-resolved-url" title="${escapeAttr(link)}">解析链接：${link ? `<a href="${escapeAttr(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a>` : '暂未返回直链'}</small>${options}</span><small>${file.type === 'folder' ? '文件夹' : (Number(file.size || 0) ? `${(Number(file.size) / 1048576).toFixed(2)} MB` : '大小未知')}</small></div>`;
+    const defaultName = String(file.name || '未命名文件');
+    const customName = state.cloudPickerButtonNames?.[file.id] ?? defaultName;
+    const options = mode === 'existing' ? `<select class="cloud-file-target-button" data-file-target="${escapeAttr(file.id)}"><option value="">选择已有按钮</option>${buttons.map((button) => `<option value="${escapeAttr(button.id)}"${String(button.id) === String(preferredId) ? ' selected' : ''}>${escapeHtml(button.name || '未命名按钮')}</option>`).join('')}</select>` : `<label class="cloud-file-name-editor">按钮名称<input type="text" maxlength="120" value="${escapeAttr(customName)}" data-file-name="${escapeAttr(file.id)}"></label>`;
+    return `<div class="cloud-file-row"><input type="checkbox" value="${escapeAttr(file.id)}"${selected.has(file.id) ? ' checked' : ''}><span><strong>${escapeHtml(defaultName)}</strong><small class="cloud-resolved-url" title="${escapeAttr(link)}">解析链接：${link ? `<a href="${escapeAttr(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a>` : '暂未返回直链'}</small>${options}</span><small>${file.type === 'folder' ? '文件夹' : (Number(file.size || 0) ? `${(Number(file.size) / 1048576).toFixed(2)} MB` : '大小未知')}</small></div>`;
   }).join('') || '<p class="empty-cell">没有符合条件的文件</p>';
   rows.querySelectorAll('[data-file-target]').forEach((select) => { select.onchange = () => { state.cloudPickerButtonTargets[select.dataset.fileTarget] = select.value; }; });
+  rows.querySelectorAll('[data-file-name]').forEach((input) => { input.oninput = () => { state.cloudPickerButtonNames[input.dataset.fileName] = input.value; }; });
   renderCloudPickerCount();
 }
 function renderCloudPickerCount() { const count = $('cloudFileSelectionCount'); if (count) count.textContent = `已选 ${new Set(state.cloudPickerSelection || []).size} 项`; }
@@ -1841,7 +1844,7 @@ async function commitCloudPicker() {
   const task = state.cloudPickerTask; const fileIds = [...new Set(state.cloudPickerSelection || [])]; if (!fileIds.length) throw new Error('请至少选择一个文件。');
   const scopeId = $('cloudFileTargetPage').value; const sectionIndex = Number($('cloudFileTargetSection').value || 0); const buttonTargets = {};
   if ($('cloudFileTargetMode')?.value === 'existing') { Object.assign(buttonTargets, state.cloudPickerButtonTargets || {}); const missing = fileIds.filter((id) => !buttonTargets[id]); if (missing.length) throw new Error('当前分组没有可用按钮，请选择新增按钮或先创建按钮。'); }
-  const assignment = {taskId:task.id,fileIds,scopeType:'page',scopeId,sectionIndex,buttonTargets,createNewButton:$('cloudFileTargetMode')?.value === 'create'};
+  const assignment = {taskId:task.id,fileIds,scopeType:'page',scopeId,sectionIndex,buttonTargets,buttonNames:state.cloudPickerButtonNames || {},createNewButton:$('cloudFileTargetMode')?.value === 'create'};
   const preview = await api('/api/cloud-resolver/assign/preview', {method:'POST',body:JSON.stringify(assignment)}); const ambiguous = (preview.preview || []).filter((item) => item.action === 'ambiguous');
   if (ambiguous.length) throw new Error('存在同名且无法确定的按钮：' + ambiguous.map((item) => item.name).join('、'));
   const needsTarget = (preview.preview || []).filter((item) => item.action === 'target_required' || item.action === 'target_not_found');

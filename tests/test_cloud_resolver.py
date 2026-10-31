@@ -550,6 +550,38 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(config["pages"]["p1"]["sections"][0]["buttons"][0]["id"], existing["id"])
         self.assertEqual(config["pages"]["p1"]["sections"][0]["buttons"][0]["backup_urls"], ["mock://fixture/share-1"])
 
+    def test_new_button_uses_per_file_custom_name_and_blank_falls_back(self):
+        self.grant("alice")
+        APP.write_config({"pages": {"p1": {"title": "个人页", "sections": [{"title": "下载", "buttons": []}]}}, "toolbox_tabs": []}, "alice")
+        task = self.parse("alice", name="原始.exe")
+        request = {"taskId": task["id"], "fileIds": [task["files"][0]["id"]], "scopeType": "page", "scopeId": "p1", "sectionIndex": 0,
+                   "createNewButton": True, "buttonNames": {task["files"][0]["id"]: "自定义显示名"}}
+        status, result = self.call("alice", "/api/cloud-resolver/assign/commit", "POST", request)
+        self.assertEqual(status, 200)
+        saved = APP.read_config("alice")["pages"]["p1"]["sections"][0]["buttons"]
+        self.assertEqual(saved[0]["name"], "自定义显示名")
+
+        task = self.parse("alice", name="默认.bin")
+        request["taskId"] = task["id"]
+        request["fileIds"] = [task["files"][0]["id"]]
+        request["buttonNames"] = {task["files"][0]["id"]: "   "}
+        status, result = self.call("alice", "/api/cloud-resolver/assign/commit", "POST", request)
+        self.assertEqual(status, 200)
+        saved = APP.read_config("alice")["pages"]["p1"]["sections"][0]["buttons"]
+        self.assertEqual(saved[-1]["name"], "默认.bin")
+
+    def test_existing_button_ignores_custom_name(self):
+        self.grant("alice")
+        existing = APP.new_button({"name": "已有按钮", "action": "download", "target": "https://old.example/main.exe"})
+        APP.write_config({"pages": {"p1": {"title": "个人页", "sections": [{"title": "下载", "buttons": [existing]}]}}, "toolbox_tabs": []}, "alice")
+        task = self.parse("alice", name="new-mirror.exe")
+        request = {"taskId": task["id"], "fileIds": [task["files"][0]["id"]], "scopeType": "page", "scopeId": "p1", "sectionIndex": 0,
+                   "buttonTargets": {task["files"][0]["id"]: existing["id"]}, "buttonNames": {task["files"][0]["id"]: "不要改名"}}
+        status, result = self.call("alice", "/api/cloud-resolver/assign/commit", "POST", request)
+        self.assertEqual(status, 200)
+        saved = APP.read_config("alice")["pages"]["p1"]["sections"][0]["buttons"]
+        self.assertEqual(saved[0]["name"], "已有按钮")
+
     def test_selected_existing_button_accepts_differently_named_parse_result_as_backup(self):
         self.grant("alice")
         existing = APP.new_button({"name": "我的下载入口", "action": "download", "target": "https://old.example/main.exe"})
