@@ -15,7 +15,7 @@
 
 ## 快速部署
 
-以下命令适用于首次部署和已部署实例更新。每条命令只使用对应的一条下载线路；请先复制主链接命令，失败时再单独复制任意备用链接命令。每个代码框右上角都有独立的复制按钮。
+以下命令适用于首次部署和已部署实例更新。主链接命令先尝试 GitHub Raw，连接失败或超时后会自动依次切换到 3 个备用线路；也可以单独复制任意备用链接命令。每个代码框右上角都有独立的复制按钮。
 
 | 顺序 | 链接 |
 | --- | --- |
@@ -24,28 +24,28 @@
 | 备用链接 2 | [gh-proxy.org](https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh) |
 | 备用链接 3 | [jsDelivr CDN](https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh) |
 
-**主链接命令**
+**主链接命令（自动故障切换）**
 
 ```bash
-TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 5 --max-time 20 "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试备用链接。" >&2; exit 1; fi
+TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; DOWNLOADED=0; for URL in "https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" "https://ghfast.top/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" "https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh"; do echo "尝试下载：$URL"; if curl -fsSL --retry 0 --connect-timeout 8 --max-time 45 "$URL" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then DOWNLOADED=1; break; fi; done; if [ "$DOWNLOADED" = 1 ]; then if sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh; then rm -f "$TMP_SCRIPT"; sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "安装管理脚本失败，请检查 sudo 权限和磁盘空间。" >&2; exit 1; fi; else rm -f "$TMP_SCRIPT"; echo "主线路和备用线路均下载失败，请检查服务器网络后重试。" >&2; exit 1; fi
 ```
 
 **备用链接 1：ghfast.top**
 
 ```bash
-TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 5 --max-time 20 "https://ghfast.top/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
+TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 10 --max-time 60 "https://ghfast.top/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
 ```
 
 **备用链接 2：gh-proxy.org**
 
 ```bash
-TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 5 --max-time 20 "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
+TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 10 --max-time 60 "https://gh-proxy.org/https://raw.githubusercontent.com/SHAONIAN697/toolbox-admin-oneclick/main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
 ```
 
 **备用链接 3：jsDelivr CDN**
 
 ```bash
-TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 5 --max-time 20 "https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
+TMP_SCRIPT="/tmp/toolbox-admin.sh.$$"; if curl -fsSL --retry 0 --connect-timeout 10 --max-time 60 "https://cdn.jsdelivr.net/gh/SHAONIAN697/toolbox-admin-oneclick@main/script/toolbox-admin.sh" -o "$TMP_SCRIPT" && test -s "$TMP_SCRIPT"; then sudo install -m 755 "$TMP_SCRIPT" /tmp/toolbox-admin.sh && rm -f "$TMP_SCRIPT" && sudo bash /tmp/toolbox-admin.sh; else rm -f "$TMP_SCRIPT"; echo "下载失败，请尝试其他备用链接。" >&2; exit 1; fi
 ```
 
 下载并运行后，可在服务器任意目录输入 `toolbox-admin` 再次打开管理脚本。
