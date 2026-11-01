@@ -174,6 +174,9 @@ class XingguiConfigTests(unittest.TestCase):
         self.assertIn('if (xingguiVariant) ApplyXingguiImages(app);', client)
         self.assertIn('GetText(app, "exe_icon_url", GetText(app, "exe_icon", ""))', client)
         self.assertIn('mime != "application/octet-stream"', client)
+        fetch_image = client[client.index('private static Image FetchXingguiImage('):client.index('private void QueueXingguiImage(')]
+        self.assertIn(".Split(new char[] { ';' }, StringSplitOptions.None)", fetch_image)
+        self.assertNotRegex(fetch_image, r'\.Split\(\s*[\'\"][^\'\"]+[\'\"]\s*,\s*StringSplitOptions\.')
         self.assertIn('QueueXingguiImage(url, 1400, 420', client)
         home = client[client.index('private void RenderXingguiHomePage()'):client.index('private RoundedPanel CreateXingguiHomePanel(')]
         self.assertIn('AnimatedBanner banner = new AnimatedBanner', home)

@@ -3122,7 +3122,7 @@ namespace ToolboxClient
                             url = next.AbsoluteUri;
                             continue;
                         }
-                        string mime = (response.ContentType ?? "").Split(';')[0].Trim().ToLowerInvariant();
+                        string mime = (response.ContentType ?? "").Split(new char[] { ';' }, StringSplitOptions.None)[0].Trim().ToLowerInvariant();
                         if (mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/bmp" &&
                             mime != "image/x-icon" && mime != "image/vnd.microsoft.icon" && mime != "application/octet-stream") return null;
                         if (response.ContentLength > limit) return null;
