@@ -70,6 +70,7 @@ DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
 PROJECT_PUBLISHER = "少年科技工作室"
 STUDIO_OVERVIEW_PAGE_ID = "system_overview"
+XINGGUI_HOME_PAGE_ID = "xinggui_home"
 
 CLOUD_RESOLVER_IMPORT_ERROR = ""
 try:
@@ -145,6 +146,64 @@ def ensure_studio_overview_page(config):
             first["buttons"] = []
             changed = True
     return changed
+
+
+def default_xinggui_home_page():
+    return {
+        "title": "星轨工具箱首页", "name": "星轨工具箱首页", "kind": "xinggui_home", "_xinggui_initialized": True,
+        "sections": [
+            {"id": "xinggui_left", "title": "远程连接", "buttons": []},
+            {"id": "xinggui_right", "title": "业务范围", "buttons": [
+                {"id": "xinggui_service_audio", "name": "直播音频设备咨询 · 声卡调试", "sort": 10, "action": "link", "target": "", "url": "", "enabled": True},
+                {"id": "xinggui_service_setup", "name": "直播方案配置 · 音频流程优化", "sort": 20, "action": "link", "target": "", "url": "", "enabled": True},
+                {"id": "xinggui_service_support", "name": "驱动与软件资源整理 · 设备维护", "sort": 30, "action": "link", "target": "", "url": "", "enabled": True},
+                {"id": "xinggui_service_contact", "name": "服务咨询 · 查看后台联系方式", "sort": 40, "action": "link", "target": "", "url": "", "enabled": True},
+            ]},
+        ],
+    }
+
+
+def ensure_xinggui_home_page(config):
+    if not isinstance(config, dict):
+        return False
+    pages = config.setdefault("pages", {})
+    if not isinstance(pages, dict):
+        config["pages"] = {}
+        pages = config["pages"]
+    if XINGGUI_HOME_PAGE_ID not in pages or not isinstance(pages.get(XINGGUI_HOME_PAGE_ID), dict):
+        page = default_xinggui_home_page()
+        pages[XINGGUI_HOME_PAGE_ID] = page
+        return True
+    page = pages[XINGGUI_HOME_PAGE_ID]
+    changed = False
+    # Older builds created the page shell without its default service buttons.
+    # Fill that one-time incomplete shape, then leave deliberate empty edits intact.
+    if page.get("_xinggui_initialized") is not True:
+        defaults = default_xinggui_home_page()["sections"]
+        if all(isinstance(section, dict) and not section.get("buttons") for section in (page.get("sections") or [])):
+            page["sections"] = json_clone(defaults)
+            changed = True
+        page["_xinggui_initialized"] = True
+        changed = True
+    if page.get("kind") != "xinggui_home":
+        page["kind"] = "xinggui_home"
+        changed = True
+    if not page.get("title"):
+        page["title"] = "首页"; changed = True
+    sections = page.get("sections")
+    if not isinstance(sections, list):
+        sections = []; page["sections"] = sections; changed = True
+    defaults = default_xinggui_home_page()["sections"]
+    for index, default_section in enumerate(defaults):
+        if index >= len(sections):
+            sections.append(json_clone(default_section)); changed = True; continue
+        if not isinstance(sections[index], dict):
+            sections[index] = json_clone(default_section); changed = True; continue
+        section = sections[index]
+        if not section.get("id"): section["id"] = default_section["id"]; changed = True
+        if not section.get("title"): section["title"] = default_section["title"]; changed = True
+        if not isinstance(section.get("buttons"), list): section["buttons"] = []; changed = True
+    return changed
 ADMIN_TOKEN = os.environ.get("TOOLBOX_ADMIN_TOKEN", "").strip()
 ADMIN_USERNAME = os.environ.get("TOOLBOX_ADMIN_USERNAME", "admin").strip() or "admin"
 SESSIONS = {}
@@ -173,7 +232,8 @@ RESET_CODE_REQUESTS = {}
 RESET_VERIFY_ATTEMPTS = {}
 RESET_CODE_COOLDOWN_SECONDS = 60
 DEFAULT_CLIENT_VARIANT = "original"
-CLIENT_VARIANT_ORDER = ("original", "studio", "tuner", "audio", "portal", "vst76")
+CLIENT_VARIANT_ORDER = ("original", "studio", "tuner", "audio", "portal", "vst76", "xinggui")
+XINGGUI_DEFAULT_COVER_URL = "/xinggui-version-cover.png"
 CLIENT_VARIANTS = {
     "original": {
         "id": "original",
@@ -208,6 +268,10 @@ CLIENT_VARIANTS = {
     "vst76": {
         "id": "vst76", "label": "调音师工具箱旗舰版", "file": "vst76", "badge": "对接中",
         "description": "按 VST615 工具箱复刻的旗舰版界面，软件目录、工具页和下载任务继续使用后台共享能力。",
+    },
+    "xinggui": {
+        "id": "xinggui", "label": "星轨工具箱", "file": "xinggui", "badge": "全新版本",
+        "description": "深色导航与首页横幅布局，密码验证、工具入口和下载继续使用现有后台配置。",
     },
 }
 
@@ -1031,10 +1095,13 @@ def audit_change_rows(before, after, field_labels, keys=None):
     return rows
 
 
+IMAGE_URL_APP_FIELDS = ("logo_url", "icon_url", "exe_icon_url", "home_banner_url")
+
 APP_AUDIT_FIELDS = {
     "title": "工具箱名称", "subtitle": "副标题", "version": "版本号", "theme": "默认主题",
     "theme_count": "主题数量", "allow_client_theme": "允许客户端切换主题",
     "default_view_mode": "默认显示方式", "logo_text": "Logo 文字", "icon": "程序图标",
+    "logo_url": "Logo 链接", "icon_url": "图标链接", "exe_icon_url": "EXE 图标链接", "home_banner_url": "首页横幅链接",
     "exe_icon": "EXE 图标", "window_width": "窗口宽度", "window_height": "窗口高度",
     "admin_title": "后台标题", "login_hint": "登录提示", "button_content_layout": "按钮内容布局",
     "button_content_layout_rules": "按钮布局规则",
@@ -1494,6 +1561,10 @@ def default_config():
             "subtitle": "",
             "version": "V1.0",
             "logo_text": "Y",
+            "logo_url": "",
+            "icon_url": "",
+            "exe_icon_url": "",
+            "home_banner_url": "",
             "icon": DEFAULT_APP_ICON,
             "admin_title": DEFAULT_ADMIN_TITLE,
             "login_hint": "",
@@ -1524,7 +1595,7 @@ def default_config():
         "page_lock_groups": {},
         "sidebar": [],
         "toolbox_tabs": [],
-        "pages": {},
+        "pages": {XINGGUI_HOME_PAGE_ID: default_xinggui_home_page()},
     }
 
 
@@ -1743,6 +1814,9 @@ def public_client_variants():
         for key in ("name", "badge", "description", "coverMode", "coverUrl"):
             if key in values:
                 item[key] = values[key]
+        if variant_id == "xinggui":
+            item["coverMode"] = "url"
+            item["coverUrl"] = normalize_https_image_url(values.get("coverUrl")) or XINGGUI_DEFAULT_COVER_URL
         item["downloadCount"] = counts.get(variant_id, 0)
         variants.append(item)
     return {"variants": variants, "esportsAudioModule": esports_audio_module_settings()}
@@ -1925,6 +1999,11 @@ def user_config_path(user_id):
 def ensure_config_defaults(config):
     app = config.setdefault("app", {})
     changed = False
+    for key in IMAGE_URL_APP_FIELDS:
+        value = normalize_https_image_url(app.get(key))
+        if app.get(key) != value:
+            app[key] = value
+            changed = True
     if not app.get("icon") and not app.get("icon_url") and not app.get("icon_path"):
         app["icon"] = DEFAULT_APP_ICON
         changed = True
@@ -1955,7 +2034,7 @@ def ensure_config_defaults(config):
         pages = []
         for page_id in source.get("pages") or []:
             value = str(page_id or "").strip()
-            if value and value not in pages:
+            if value and value not in pages and value not in (STUDIO_OVERVIEW_PAGE_ID, XINGGUI_HOME_PAGE_ID):
                 pages.append(value[:120])
         normalized_rules[layout_id] = {"enabled": source.get("enabled") is True, "pages": pages[:100]}
     if app.get("button_content_layout_rules") != normalized_rules:
@@ -1968,6 +2047,8 @@ def ensure_config_defaults(config):
     if normalize_page_lock_groups(config):
         changed = True
     if ensure_studio_overview_page(config):
+        changed = True
+    if ensure_xinggui_home_page(config):
         changed = True
     normalized_popup = normalize_popup_settings(config.get("popup") or {})
     if config.get("popup") != normalized_popup:
@@ -1992,6 +2073,23 @@ def read_config(user_id=""):
     if changed:
         write_json(path, config)
     return config
+
+
+def migrate_all_user_configs():
+    """Ensure existing users receive newly introduced per-user pages on server startup."""
+    migrated = 0
+    for user in (read_users().get("users") or []):
+        user_id = str((user or {}).get("id") or "").strip()
+        if not user_id:
+            continue
+        before = user_config_path(user_id).stat().st_mtime_ns if user_config_path(user_id).exists() else 0
+        read_config(user_id)
+        after = user_config_path(user_id).stat().st_mtime_ns if user_config_path(user_id).exists() else 0
+        if after != before:
+            migrated += 1
+    # Keep the new-user template in sync as well, without touching user-specific buttons.
+    read_user_template_config()
+    return migrated
 
 
 def write_config(config, user_id=""):
@@ -2784,6 +2882,8 @@ def apply_app_patch(config, patch):
             app[key] = normalize_button_content_layout(value)
         elif key == "button_content_layout_rules" and isinstance(value, dict):
             app[key] = value
+        elif key in IMAGE_URL_APP_FIELDS:
+            app[key] = normalize_https_image_url(value)
         else:
             app[key] = value
     ensure_config_defaults(config)
@@ -3082,6 +3182,24 @@ def http_url(value):
     return text if text.lower().startswith(("http://", "https://")) else ""
 
 
+def normalize_https_image_url(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 2048 or "\\" in text or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return ""
+    if re.search(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", text, re.I):
+        return ""
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return ""
+        parsed.port
+    except (TypeError, ValueError):
+        return ""
+    return text
+
+
 def popup_image_url(value):
     text = str(value or "").strip()
     return text if text.lower().startswith(("http://", "https://")) else ""
@@ -3247,6 +3365,12 @@ def read_system_settings():
             pay[selected_key].setdefault("enabled", True)
     if "popup" in data:
         data.pop("popup", None)
+        changed = True
+    variants = data.setdefault("clientVariants", {})
+    xinggui = variants.setdefault("xinggui", {})
+    if not str(xinggui.get("coverUrl") or "").strip():
+        xinggui["coverMode"] = "url"
+        xinggui["coverUrl"] = XINGGUI_DEFAULT_COVER_URL
         changed = True
     integrity = data.setdefault("integrity", {})
     if len(str(integrity.get("secret") or "").strip()) < 32:
@@ -3636,7 +3760,10 @@ def write_system_settings(body):
                 cover_url = str(values.get("coverUrl") or "").strip()
                 if mode not in ("default", "upload", "url"):
                     mode = "default"
-                if mode == "url" and not http_url(cover_url):
+                if variant_id == "xinggui":
+                    mode = "url"
+                    cover_url = normalize_https_image_url(cover_url)
+                elif mode == "url" and not http_url(cover_url):
                     cover_url = ""
                 if mode == "upload" and not cover_url.startswith("/uploads/variant-covers/"):
                     cover_url = ""
@@ -5118,6 +5245,39 @@ def new_button(body):
     else:
         item["url"] = target
     return item
+
+
+def apply_xinggui_home_patch(config, body):
+    ensure_xinggui_home_page(config)
+    page = config["pages"][XINGGUI_HOME_PAGE_ID]
+    previous_buttons = {button.get("id"): button for section in page.get("sections") or []
+                        for button in section.get("buttons") or [] if isinstance(button, dict)}
+    sections = body.get("sections")
+    if not isinstance(sections, list) or len(sections) != 2:
+        raise ValueError("首页需要左侧、右侧两个按钮区域。")
+    normalized = []
+    section_titles = ("远程连接", "业务范围")
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict) or not isinstance(section.get("buttons"), list):
+            raise ValueError("按钮区域格式错误。")
+        buttons = []
+        for raw in section["buttons"]:
+            if not isinstance(raw, dict) or not str(raw.get("name") or "").strip():
+                raise ValueError("请填写按钮文字。")
+            if raw.get("action", "link") not in ("link", "download", "cmd", "script", "winget"):
+                raise ValueError("按钮动作无效。")
+            button = new_button(raw)
+            previous = previous_buttons.get(button["id"]) or {}
+            if previous.get("source_page_id"):
+                button["source_page_id"] = previous["source_page_id"]
+            buttons.append(button)
+        normalized.append({"id": ("xinggui_left", "xinggui_right")[index],
+                           "title": section_titles[index],
+                           "buttons": buttons})
+    page["sections"] = normalized
+    page["kind"] = "xinggui_home"
+    page["_xinggui_initialized"] = True
+    return page
 
 
 def button_sort_value(button):
@@ -6645,6 +6805,8 @@ class Handler(BaseHTTPRequestHandler):
             variant_id = str(body.get("variantId") or "").strip()
             if variant_id not in CLIENT_VARIANTS:
                 return self.send_json({"error": "工具箱版本不存在。"}, 400)
+            if variant_id == "xinggui":
+                return self.send_json({"error": "星轨工具箱封面请使用 HTTPS 图床链接。"}, 400)
             match = re.fullmatch(r"data:image/(png|jpeg|webp|gif|x-icon|vnd\.microsoft\.icon);base64,([A-Za-z0-9+/=\r\n]+)", str(body.get("dataUrl") or ""), re.I)
             if not match:
                 return self.send_json({"error": "仅支持 PNG、JPG、WEBP、GIF 或 ICO 图片。"}, 400)
@@ -7002,6 +7164,15 @@ class Handler(BaseHTTPRequestHandler):
             if details["changes"]:
                 audit_event("contact_settings_update", auth["user"], user_id, self, details)
             return self.send_json(cfg)
+        if path == "/api/admin/xinggui-home":
+            cfg = read_config(user_id)
+            if method == "GET":
+                return self.send_json(cfg["pages"][XINGGUI_HOME_PAGE_ID])
+            if method == "PATCH":
+                apply_xinggui_home_patch(cfg, self.read_body())
+                write_config_for_actor(cfg, user_id, auth["user"])
+                audit_event("xinggui_home_update", auth["user"], user_id, self, {"pageId": XINGGUI_HOME_PAGE_ID})
+                return self.send_json(cfg)
         if path == "/api/admin/buttons":
             cfg = read_config(user_id)
             if method == "GET":
@@ -7229,6 +7400,8 @@ if __name__ == "__main__":
         print(f"WARNING: cloud resolver module unavailable: {CLOUD_RESOLVER_IMPORT_ERROR or 'cloud_resolver.py not found'}", flush=True)
     ensure_admin_announcement_files()
     read_users()
+    migrated_pages = migrate_all_user_configs()
+    print(f"Xinggui home page migration complete: {migrated_pages} user configs updated.", flush=True)
     threading.Thread(target=run_client_build_cleanup_loop, daemon=True).start()
     host = os.environ.get("TOOLBOX_HOST", "127.0.0.1")
     port = int(os.environ.get("TOOLBOX_PORT", "5088"))

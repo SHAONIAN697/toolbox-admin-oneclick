@@ -7,7 +7,7 @@
   <meta name="author" content="少年科技工作室">
   <meta name="copyright" content="Copyright © 2026 少年科技工作室">
   <title>工具箱后台 | 少年科技工作室</title>
-  <link rel="stylesheet" href="/styles.css?v=2026102913">
+  <link rel="stylesheet" href="/styles.css?v=2026103101">
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -141,8 +141,12 @@
             </div>
             <div class="button-layout-status" id="buttonContentLayoutStatus" aria-live="polite"></div>
           </fieldset>
-          <label>Logo 链接<input id="appLogo"></label>
+          <label>Logo 文字<input id="appLogo"></label>
           <label>图标链接<input id="appIcon"></label>
+          <div class="wide image-url-field" data-image-url-field="home_banner_url">
+            <label for="appHomeBannerUrl">首页横幅链接</label><input id="appHomeBannerUrl" type="url" inputmode="url" placeholder="https://example.com/banner.webp">
+            <div class="image-url-actions"><button type="button" data-image-preview="appHomeBannerUrl">预览</button><button type="button" class="secondary-btn" data-image-clear="appHomeBannerUrl">清除</button><img alt="首页横幅预览" hidden></div>
+          </div>
           <label>登录页提示<input id="loginHintInput"></label>
           <label>窗口宽度<input id="appWidth" type="number"></label>
           <label>窗口高度<input id="appHeight" type="number"></label>
@@ -174,6 +178,11 @@
     </section>
 
     <section class="view" id="view-buttons">
+      <div class="panel button-manager-tabs">
+        <div class="panel-head">
+          <h2>按钮配置</h2>
+        </div>
+      </div>
       <div class="panel button-linkage-panel">
         <div class="panel-head">
           <h2>联动按钮选择</h2>
@@ -686,7 +695,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026102913"></script>
+  <script src="/admin.js?v=2026103101"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 少年科技工作室. All rights reserved.
+﻿// Copyright (c) 2026 少年科技工作室. All rights reserved.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -144,6 +144,9 @@ namespace ToolboxClient
         private Button topMostButton;
         private Button contactButton;
         private Button themeButton;
+        private Button xingguiPasswordButton;
+        private Button xingguiDownloadButton;
+        private RowStyle xingguiUtilityRowStyle;
         private ToolTip topToolTip;
         private System.Windows.Forms.Timer refreshTimer;
         private System.Windows.Forms.Timer statusClockTimer;
@@ -272,10 +275,18 @@ namespace ToolboxClient
         private string runtimeExecutableSha256 = "";
         private bool initialSizeApplied = false;
         private readonly bool studioVariant = Program.ClientVariant.Equals("studio", StringComparison.OrdinalIgnoreCase);
-        private readonly bool tunerVariant = Program.ClientVariant.Equals("tuner", StringComparison.OrdinalIgnoreCase);
+        private readonly bool tunerVariant = Program.ClientVariant.Equals("tuner", StringComparison.OrdinalIgnoreCase) || Program.ClientVariant.Equals("xinggui", StringComparison.OrdinalIgnoreCase);
         private readonly bool audioVariant = Program.ClientVariant.Equals("audio", StringComparison.OrdinalIgnoreCase);
         private readonly bool portalVariant = Program.ClientVariant.Equals("portal", StringComparison.OrdinalIgnoreCase);
         private readonly bool vst76Variant = Program.ClientVariant.Equals("vst76", StringComparison.OrdinalIgnoreCase);
+        private readonly bool xingguiVariant = Program.ClientVariant.Equals("xinggui", StringComparison.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Image> xingguiAssetCache = new Dictionary<string, Image>(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<Action<Image>>> xingguiAssetWaiters = new Dictionary<string, List<Action<Image>>>(StringComparer.Ordinal);
+        private readonly object xingguiAssetLock = new object();
+        private const string XingguiHomePageId = "xinggui_home";
+        private string xingguiBrandImageUrl = "";
+        private int xingguiLeftPage;
+        private int xingguiRightPage;
         private readonly Dictionary<string, Control> navButtons = new Dictionary<string, Control>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
         private readonly Dictionary<string, byte[]> softwareCatalogIconBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
@@ -318,6 +329,8 @@ namespace ToolboxClient
         private bool esportsAudioLaunchPending = false;
         private Size portalWindowRegionSize = Size.Empty;
         private int portalWindowRegionRadius = 0;
+        private Size toolboxWindowRegionSize = Size.Empty;
+        private int toolboxWindowRegionRadius = 0;
         private const int WsSysMenu = 0x00080000;
         private const int WsMinimizeBox = 0x00020000;
         private const string StudioRecordsListTag = "studio_records_list";
@@ -375,7 +388,7 @@ namespace ToolboxClient
         public ToolboxForm(string url)
         {
             configUrl = NormalizeConfigUrl(url);
-            Text = "工具箱";
+            Text = xingguiVariant ? "星轨工具箱" : "工具箱";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = true;
             MinimizeBox = true;
@@ -515,6 +528,12 @@ namespace ToolboxClient
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (runtimeIcon != null) runtimeIcon.Dispose();
+            lock (xingguiAssetLock)
+            {
+                foreach (Image image in xingguiAssetCache.Values) image.Dispose();
+                xingguiAssetCache.Clear();
+                xingguiAssetWaiters.Clear();
+            }
             if (refreshTimer != null)
             {
                 refreshTimer.Stop();
@@ -583,7 +602,9 @@ namespace ToolboxClient
             base.OnResize(e);
             if (WindowState == FormWindowState.Minimized) return;
             if (portalVariant) UpdatePortalWindowRegion();
-            if ((portalVariant || tunerVariant || studioVariant || audioVariant || vst76Variant) && IsHandleCreated && content != null && !content.IsDisposed)
+            else if ((tunerVariant || xingguiVariant) && FormBorderStyle == FormBorderStyle.None)
+                EnsureRoundedRegion(this, xingguiVariant ? 14 : 12, ref toolboxWindowRegionSize, ref toolboxWindowRegionRadius);
+            if ((portalVariant || tunerVariant || studioVariant || audioVariant || vst76Variant || xingguiVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
                 QueueContentResizeRender();
             }
@@ -646,7 +667,6 @@ namespace ToolboxClient
                 BuildPortalShell();
                 return;
             }
-
             TableLayoutPanel root = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1080,11 +1100,12 @@ namespace ToolboxClient
         private void BuildTunerShell()
         {
             ApplyTunerPalette();
+            if (xingguiVariant) ApplyXingguiPalette(true);
             FormBorderStyle = FormBorderStyle.None;
             BackColor = Bg;
             ForeColor = TextColor;
-            MinimumSize = vst76Variant ? new Size(1120, 680) : new Size(860, 560);
-            Size = vst76Variant ? new Size(1340, 760) : new Size(890, 635);
+            MinimumSize = vst76Variant ? new Size(1120, 680) : (xingguiVariant ? new Size(960, 640) : new Size(860, 560));
+            Size = vst76Variant ? new Size(1340, 760) : (xingguiVariant ? new Size(1200, 800) : new Size(890, 635));
 
             TableLayoutPanel root = new TableLayoutPanel
             {
@@ -1095,9 +1116,9 @@ namespace ToolboxClient
                 Padding = Padding.Empty,
                 BackColor = Bg
             };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, vst76Variant ? 190F : 200F));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, vst76Variant ? 190F : (xingguiVariant ? 150F : 200F)));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, vst76Variant ? 55F : 42F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, vst76Variant ? 55F : (xingguiVariant ? 40F : 42F)));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, vst76Variant ? 32F : 28F));
             Controls.Add(root);
@@ -1112,7 +1133,7 @@ namespace ToolboxClient
                 Dock = DockStyle.Left,
                 Width = vst76Variant ? 460 : 280,
                 Padding = new Padding(vst76Variant ? 58 : 14, 0, 0, 0),
-                Text = vst76Variant ? "调音师工具箱旗舰版" : "工具箱",
+                Text = vst76Variant ? "调音师工具箱旗舰版" : (xingguiVariant ? "星轨工具箱" : "工具箱"),
                 ForeColor = Color.FromArgb(15, 23, 42),
                 Font = new Font(Font.FontFamily, vst76Variant ? 11F : 9.5F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -1120,6 +1141,7 @@ namespace ToolboxClient
             appName.Tag = "tuner_chrome";
             appName.MouseDown += DragWindow;
             titleBar.Controls.Add(appName);
+            if (xingguiVariant) vst76TitleBrandLabel = appName;
             if (vst76Variant)
             {
                 vst76TitleBrandLabel = appName;
@@ -1131,7 +1153,7 @@ namespace ToolboxClient
             FlowLayoutPanel windowControls = new FlowLayoutPanel
             {
                 Dock = DockStyle.Right,
-                Width = vst76Variant ? 370 : 244,
+                Width = vst76Variant ? 370 : (xingguiVariant ? 116 : 244),
                 Height = 34,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -1174,6 +1196,16 @@ namespace ToolboxClient
             windowControls.Controls.Add(minButton);
             if (!vst76Variant) windowControls.Controls.Add(maxButton);
             windowControls.Controls.Add(closeButton);
+            if (xingguiVariant)
+            {
+                downloadTasksButton.Visible = false;
+                recordsButton.Visible = false;
+                topMostButton.Visible = false;
+                contactButton.Visible = false;
+                themeButton.Visible = false;
+                minButton.Margin = new Padding(0, 0, 2, 0);
+                maxButton.Visible = false;
+            }
 
             side = new Panel
             {
@@ -1187,15 +1219,16 @@ namespace ToolboxClient
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = vst76Variant ? 3 : 2,
+                RowCount = (vst76Variant || xingguiVariant) ? 3 : 2,
                 BackColor = SideBg
             };
             sideLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, vst76Variant ? 0F : 58F));
+            sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
             sideLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            if (vst76Variant)
+            if (vst76Variant || xingguiVariant)
             {
-                sideLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 90F));
+                xingguiUtilityRowStyle = xingguiVariant ? new RowStyle(SizeType.Absolute, 126F) : null;
+                sideLayout.RowStyles.Add(xingguiUtilityRowStyle ?? new RowStyle(SizeType.Absolute, 90F));
             }
             side.Controls.Add(sideLayout);
 
@@ -1207,7 +1240,7 @@ namespace ToolboxClient
                 BackColor = SideBg,
                 Padding = new Padding(4, 0, 0, 0)
             };
-            brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44F));
+            brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, xingguiVariant ? 38F : 44F));
             brandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
             brandPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
@@ -1216,8 +1249,8 @@ namespace ToolboxClient
             {
                 Dock = DockStyle.Fill,
                 ForeColor = TextColor,
-                Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
-                Padding = new Padding(7, 0, 0, 0),
+                Font = new Font(Font.FontFamily, xingguiVariant ? 8.5F : 9.5F, FontStyle.Bold),
+                Padding = new Padding(xingguiVariant ? 2 : 7, 0, 0, 0),
                 TextAlign = ContentAlignment.BottomLeft,
                 AutoEllipsis = true
             };
@@ -1226,7 +1259,7 @@ namespace ToolboxClient
                 Dock = DockStyle.Fill,
                 ForeColor = Color.FromArgb(148, 163, 184),
                 Font = new Font(Font.FontFamily, 8F, FontStyle.Regular),
-                Padding = new Padding(7, 0, 0, 0),
+                Padding = new Padding(xingguiVariant ? 2 : 7, 0, 0, 0),
                 TextAlign = ContentAlignment.TopLeft,
                 AutoEllipsis = true
             };
@@ -1249,17 +1282,18 @@ namespace ToolboxClient
                 Margin = Padding.Empty
             };
             nav.HorizontalScroll.Enabled = false;
-            if (vst76Variant)
+            if (vst76Variant || xingguiVariant)
             {
-                nav.Layout += delegate { FitVst76NavButtons(); };
-                nav.ControlAdded += delegate { FitVst76NavButtons(); };
+                nav.Layout += delegate { if (xingguiVariant) FitXingguiNavButtons(); else FitVst76NavButtons(); };
+                nav.ControlAdded += delegate { if (xingguiVariant) FitXingguiNavButtons(); else FitVst76NavButtons(); };
             }
             sideLayout.Controls.Add(nav, 0, 1);
 
-            if (vst76Variant)
+            if (vst76Variant || xingguiVariant)
             {
                 // The download glyph is narrower than the gear glyph; the extra spacing keeps both labels aligned.
-                Button downloadsButton = MakeVst76SideUtilityButton("⇩   下载", false);
+                Button downloadsButton = MakeVst76SideUtilityButton(xingguiVariant ? "⇩  下载中心" : "⇩   下载", false);
+                if (xingguiVariant) xingguiDownloadButton = downloadsButton;
                 downloadsButton.AutoSize = false;
                 downloadsButton.Size = new Size(158, 38);
                 downloadsButton.Click += delegate { ShowPage("downloads"); };
@@ -1269,18 +1303,52 @@ namespace ToolboxClient
                     BackColor = SideBg,
                     Margin = Padding.Empty
                 };
-                settingsButton = MakeVst76SideUtilityButton("⚙ 设置", false);
+                settingsButton = MakeVst76SideUtilityButton(xingguiVariant ? "⚙  系统设置" : "⚙ 设置", false);
                 settingsButton.AutoSize = false;
                 settingsButton.Size = new Size(158, 38);
                 settingsButton.Click += delegate { ShowPage("settings"); };
+                if (xingguiVariant)
+                {
+                    xingguiPasswordButton = MakeVst76SideUtilityButton("▣  密码", false);
+                    xingguiPasswordButton.AutoSize = false;
+                    xingguiPasswordButton.Size = new Size(120, 34);
+                    xingguiPasswordButton.Visible = false;
+                    xingguiPasswordButton.Click += delegate
+                    {
+                        string storedPassword = GetText(AsDict(Get(config, "app")), "password", "");
+                        if (String.IsNullOrWhiteSpace(storedPassword)) return;
+                        if (PromptPassword(storedPassword, "工具箱密码", "请输入工具箱启动密码")) { passwordUnlocked = true; UpdateXingguiPasswordButton(); status.Text = "密码验证成功"; }
+                    };
+                    settingsRow.Controls.Add(xingguiPasswordButton);
+                    xingguiPasswordButton.Top = 0;
+                    downloadsButton.Size = new Size(120, 34);
+                    settingsButton.Size = new Size(120, 34);
+                    downloadsButton.Top = 40;
+                    settingsButton.Top = 80;
+                    settingsRow.Height = 126;
+                }
                 Action alignUtilityButtons = delegate
                 {
-                    int left = Math.Max(0, (settingsRow.ClientSize.Width - 158) / 2);
-                    downloadsButton.Left = left;
-                    settingsButton.Left = left;
-                    downloadsButton.Width = settingsButton.Width = 158;
-                    downloadsButton.Top = 2;
-                    settingsButton.Top = 44;
+                    if (xingguiVariant)
+                    {
+                        int width = Math.Max(100, settingsRow.ClientSize.Width - 12);
+                        int left = (settingsRow.ClientSize.Width - width) / 2;
+                        if (xingguiPasswordButton != null)
+                        {
+                            xingguiPasswordButton.Left = left;
+                            xingguiPasswordButton.Width = width;
+                        }
+                        downloadsButton.Left = settingsButton.Left = left;
+                        downloadsButton.Width = settingsButton.Width = width;
+                    }
+                    else
+                    {
+                        int left = Math.Max(0, (settingsRow.ClientSize.Width - 158) / 2);
+                        downloadsButton.Left = settingsButton.Left = left;
+                        downloadsButton.Width = settingsButton.Width = 158;
+                        downloadsButton.Top = 2;
+                        settingsButton.Top = 44;
+                    }
                 };
                 settingsRow.Controls.Add(downloadsButton);
                 settingsRow.Controls.Add(settingsButton);
@@ -1311,8 +1379,9 @@ namespace ToolboxClient
             content.HorizontalScroll.Visible = false;
             content.Resize += delegate
             {
-                if ((tunerVariant || vst76Variant) && IsHandleCreated && !content.IsDisposed)
+                if ((tunerVariant || vst76Variant || xingguiVariant) && IsHandleCreated && !content.IsDisposed)
                 {
+                    if ((tunerVariant || vst76Variant) && (currentPage.Equals(TunerDriversPageId, StringComparison.OrdinalIgnoreCase) || currentPage.Equals(TunerLinksPageId, StringComparison.OrdinalIgnoreCase))) return;
                     QueueContentResizeRender();
                 }
             };
@@ -2684,18 +2753,22 @@ namespace ToolboxClient
             portalBrandSubtitleSource = GetText(app, "subtitle", "");
             string displayAppTitle = portalVariant ? PortalLabel(appTitle, "app.title") : appTitle;
             if (tunerVariant) displayAppTitle = "工具箱";
+            if (xingguiVariant) displayAppTitle = String.IsNullOrWhiteSpace(appTitle) ? "星轨工具箱" : appTitle;
             if (vst76Variant) displayAppTitle = appTitle;
             Text = displayAppTitle;
             if (vst76TitleBrandLabel != null) vst76TitleBrandLabel.Text = displayAppTitle;
             brandTitle.Text = tunerVariant ? appTitle : displayAppTitle;
+            if (xingguiVariant) brandTitle.Text = displayAppTitle;
             brandSubtitle.Text = portalVariant ? PortalLabel(portalBrandSubtitleSource, "app.subtitle") : portalBrandSubtitleSource;
-            FitBrandTitle(tunerVariant ? appTitle : displayAppTitle);
+            FitBrandTitle(xingguiVariant ? displayAppTitle : (tunerVariant ? appTitle : displayAppTitle));
             BeginInvoke(new Action(delegate { FitBrandTitle(brandTitle.Text); }));
             title.Text = portalVariant ? PortalText("首页", "Home") : ((studioVariant || tunerVariant) ? "系统优化" : (vst76Variant ? "软件首页" : appTitle));
-            string brandIconUrl = GetText(app, "icon", GetText(app, "icon_url", GetText(app, "icon_path", "")));
-            if (String.IsNullOrWhiteSpace(brandIconUrl))
-                brandIconUrl = GetText(app, "exe_icon", GetText(app, "exe_icon_url", ""));
+            string brandIconUrl = GetText(app, "logo_url", "").Trim();
+            if (String.IsNullOrWhiteSpace(brandIconUrl)) brandIconUrl = GetText(app, "icon_url", "").Trim();
+            if (String.IsNullOrWhiteSpace(brandIconUrl)) brandIconUrl = GetText(app, "exe_icon_url", GetText(app, "exe_icon", ""));
+            if (String.IsNullOrWhiteSpace(brandIconUrl)) brandIconUrl = GetText(app, "icon", GetText(app, "icon_path", ""));
             ApplyAppIcon(brandIconUrl, GetText(app, "logo_text", "Y"));
+            if (xingguiVariant) ApplyXingguiImages(app);
 
             int width = IntValue(app, "window_width", Width);
             int height = IntValue(app, "window_height", Height);
@@ -2708,7 +2781,7 @@ namespace ToolboxClient
             }
             else if (!initialSizeApplied && (tunerVariant || vst76Variant))
             {
-                Size = new Size(vst76Variant ? 1340 : 890, vst76Variant ? 760 : 635);
+                Size = new Size(vst76Variant ? 1340 : (xingguiVariant ? 1200 : 890), vst76Variant ? 760 : (xingguiVariant ? 800 : 635));
                 initialSizeApplied = true;
             }
             else if (!initialSizeApplied && width >= 860 && height >= 560)
@@ -2720,18 +2793,25 @@ namespace ToolboxClient
 
             bool allowNav = true;
             string password = GetText(app, "password", "");
+            if (xingguiPasswordButton != null && !xingguiPasswordButton.IsDisposed)
+            {
+                UpdateXingguiPasswordButton();
+            }
             if (String.IsNullOrWhiteSpace(password))
             {
                 passwordUnlocked = false;
                 lastPasswordHash = "";
+                UpdateXingguiPasswordButton();
             }
             else if (!password.Equals(lastPasswordHash, StringComparison.Ordinal))
             {
                 passwordUnlocked = false;
                 lastPasswordHash = password;
+                UpdateXingguiPasswordButton();
                 if (PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
                 {
                     passwordUnlocked = true;
+                    UpdateXingguiPasswordButton();
                 }
                 else
                 {
@@ -2742,6 +2822,7 @@ namespace ToolboxClient
             else if (!passwordUnlocked && PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
             {
                 passwordUnlocked = true;
+                UpdateXingguiPasswordButton();
             }
             else if (!passwordUnlocked)
             {
@@ -2963,7 +3044,8 @@ namespace ToolboxClient
             if (tunerVariant || vst76Variant)
             {
                 ClientSettings settings = LoadClientSettings();
-                ApplyTunerPalette(IsDarkModeSetting(settings.Theme));
+                if (xingguiVariant) ApplyXingguiPalette(!String.Equals(settings.Theme, "light", StringComparison.OrdinalIgnoreCase));
+                else ApplyTunerPalette(IsDarkModeSetting(settings.Theme));
             }
             else if (studioVariant)
             {
@@ -2988,6 +3070,338 @@ namespace ToolboxClient
         private static void ApplyTunerPalette()
         {
             ApplyTunerPalette(false);
+        }
+
+        private static void ApplyXingguiPalette(bool dark)
+        {
+            ApplyTunerPalette(dark);
+            if (dark)
+            {
+                Bg = Color.FromArgb(14, 14, 27);
+                SideBg = Color.FromArgb(18, 30, 46);
+                PanelBg = Color.FromArgb(29, 32, 48);
+                PanelBg2 = Color.FromArgb(40, 43, 60);
+                Line = Color.FromArgb(57, 60, 79);
+                TextColor = Color.FromArgb(241, 243, 250);
+                Muted = Color.FromArgb(165, 171, 189);
+            }
+            Accent = dark ? Color.FromArgb(0, 207, 232) : Color.FromArgb(0, 130, 153);
+        }
+
+        // Startrack assets are fetched only as bounded HTTPS raster images, in memory.
+        private static bool IsXingguiImageUrl(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || value.Length > 2048 || value.IndexOf('\\') >= 0 ||
+                Regex.IsMatch(value, @"\s|[\x00-\x1f\x7f]|%(?:0[0-9a-f]|1[0-9a-f]|7f)", RegexOptions.IgnoreCase)) return false;
+            Uri uri;
+            return Uri.TryCreate(value, UriKind.Absolute, out uri) && uri.Scheme == Uri.UriSchemeHttps &&
+                !String.IsNullOrWhiteSpace(uri.Host) && String.IsNullOrEmpty(uri.UserInfo);
+        }
+
+        private static Image FetchXingguiImage(string url, int width, int height)
+        {
+            try
+            {
+                const int limit = 4 * 1024 * 1024;
+                for (int redirect = 0; redirect < 5; redirect++)
+                {
+                    if (!IsXingguiImageUrl(url)) return null;
+                    HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                    request.AllowAutoRedirect = false;
+                    request.Timeout = 8000;
+                    request.ReadWriteTimeout = 8000;
+                    request.UserAgent = "XingguiToolbox";
+                    request.Accept = "image/png,image/jpeg,image/gif,image/bmp,image/x-icon,image/vnd.microsoft.icon";
+                    using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                    {
+                        int code = (int)response.StatusCode;
+                        if (code >= 300 && code < 400)
+                        {
+                            Uri next;
+                            if (!Uri.TryCreate(new Uri(url), response.Headers["Location"], out next)) return null;
+                            url = next.AbsoluteUri;
+                            continue;
+                        }
+                        string mime = (response.ContentType ?? "").Split(';')[0].Trim().ToLowerInvariant();
+                        if (mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/bmp" &&
+                            mime != "image/x-icon" && mime != "image/vnd.microsoft.icon" && mime != "application/octet-stream") return null;
+                        if (response.ContentLength > limit) return null;
+                        using (Stream stream = response.GetResponseStream())
+                        using (MemoryStream bytes = new MemoryStream())
+                        {
+                            byte[] buffer = new byte[16384];
+                            int count;
+                            while ((count = stream.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                if (bytes.Length + count > limit) return null;
+                                bytes.Write(buffer, 0, count);
+                            }
+                            bytes.Position = 0;
+                            using (Image original = Image.FromStream(bytes, false, true))
+                            {
+                                if (original.Width > 8192 || original.Height > 8192 || (long)original.Width * original.Height > 24000000) return null;
+                                return ResizeImage(original, width, height);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private void QueueXingguiImage(string url, int width, int height, Action<Image> apply)
+        {
+            if (!IsXingguiImageUrl(url) || IsDisposed || Disposing) return;
+            string key = width + "x" + height + "|" + url;
+            lock (xingguiAssetLock)
+            {
+                Image cached;
+                if (xingguiAssetCache.TryGetValue(key, out cached)) { apply(cached); return; }
+                List<Action<Image>> waiters;
+                if (xingguiAssetWaiters.TryGetValue(key, out waiters)) { waiters.Add(apply); return; }
+                xingguiAssetWaiters[key] = new List<Action<Image>> { apply };
+            }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Image loaded = FetchXingguiImage(url, width, height);
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        lock (xingguiAssetLock)
+                        {
+                            List<Action<Image>> waiters;
+                            if (!xingguiAssetWaiters.TryGetValue(key, out waiters)) { if (loaded != null) loaded.Dispose(); return; }
+                            xingguiAssetWaiters.Remove(key);
+                            if (loaded == null || IsDisposed || Disposing) { if (loaded != null) loaded.Dispose(); return; }
+                            if (xingguiAssetCache.Count >= 16)
+                            {
+                                foreach (Image old in xingguiAssetCache.Values) old.Dispose();
+                                xingguiAssetCache.Clear();
+                            }
+                            xingguiAssetCache[key] = loaded;
+                            foreach (Action<Image> callback in waiters) callback(loaded);
+                        }
+                    }));
+                }
+                catch { if (loaded != null) loaded.Dispose(); }
+            });
+        }
+
+        private void ApplyXingguiImages(Dictionary<string, object> app)
+        {
+            string url = GetText(app, "logo_url", "").Trim();
+            if (String.IsNullOrWhiteSpace(url)) url = GetText(app, "icon_url", "").Trim();
+            if (String.IsNullOrWhiteSpace(url)) url = GetText(app, "exe_icon_url", GetText(app, "exe_icon", "")).Trim();
+            if (String.IsNullOrWhiteSpace(url)) url = GetText(app, "icon", "").Trim();
+            xingguiBrandImageUrl = url;
+            using (Image fallback = CreateBrandBadge("星")) SetAppIconImage(fallback);
+            RenderTaskbarIcon();
+            QueueXingguiImage(url, 34, 34, delegate(Image image)
+            {
+                if (xingguiBrandImageUrl == url && !IsDisposed) SetAppIconImage(image);
+            });
+            string exeUrl = GetText(app, "exe_icon_url", "").Trim();
+            RenderTaskbarIcon();
+            if (String.IsNullOrWhiteSpace(exeUrl)) return;
+            QueueXingguiImage(exeUrl, 32, 32, delegate(Image image)
+            {
+                if (GetText(AsDict(Get(config, "app")), "exe_icon_url", "").Trim() != exeUrl || IsDisposed) return;
+                using (Bitmap bitmap = new Bitmap(image))
+                {
+                    IntPtr handle = bitmap.GetHicon();
+                    try
+                    {
+                        Icon next = (Icon)Icon.FromHandle(handle).Clone();
+                        Icon previous = runtimeIcon;
+                        runtimeIcon = next;
+                        Icon = next;
+                        if (previous != null) previous.Dispose();
+                    }
+                    finally { DestroyIcon(handle); }
+                }
+            });
+        }
+
+        private void RenderXingguiHomePage()
+        {
+            if (content == null || !BeginContentRender()) return;
+            content.SuspendLayout();
+            try
+            {
+                ClearChildControls(content);
+                content.AutoScroll = false;
+                ResetContentScrollState();
+                content.VerticalScroll.Enabled = false;
+                content.VerticalScroll.Visible = false;
+                content.FlowDirection = FlowDirection.TopDown;
+                content.WrapContents = false;
+                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 2);
+                int availableHeight = Math.Max(1, content.ClientSize.Height - content.Padding.Vertical - 2);
+                int heroHeight = Math.Min(280, Math.Max(180, availableHeight * 42 / 100));
+                RoundedPanel hero = new RoundedPanel { Width = width, Height = heroHeight, Radius = 14, BackColor = PanelBg2, BorderColor = Line, Margin = new Padding(0, 0, 0, 14) };
+                AnimatedBanner banner = new AnimatedBanner { Dock = DockStyle.Fill, Visible = true, BackColor = PanelBg2, CornerRadius = 14 };
+                banner.Disposed += delegate { if (banner.Image != null) { banner.Image.Dispose(); banner.Image = null; } };
+                hero.Controls.Add(banner);
+                content.Controls.Add(hero);
+                Dictionary<string, object> appConfig = AsDict(Get(config, "app"));
+                string appTitle = GetText(appConfig, "title", "星轨工具箱");
+                string url = GetText(appConfig, "home_banner_url", "").Trim();
+                QueueXingguiImage(url, 1400, 420, delegate(Image image)
+                {
+                    if (banner.IsDisposed || GetText(AsDict(Get(config, "app")), "home_banner_url", "").Trim() != url) return;
+                    Image old = banner.Image;
+                    banner.Image = new Bitmap(image);
+                    banner.Invalidate();
+                    if (old != null) old.Dispose();
+                });
+                int columnsHeight = Math.Max(1, availableHeight - heroHeight - 14);
+                bool narrow = width < 820;
+                if (narrow) columnsHeight = Math.Max(1, availableHeight - heroHeight - 14);
+                TableLayoutPanel columns = new TableLayoutPanel
+                {
+                    Width = width,
+                    Height = columnsHeight,
+                    ColumnCount = narrow ? 1 : 2,
+                    RowCount = narrow ? 2 : 1,
+                    BackColor = Color.Transparent,
+                    Margin = Padding.Empty,
+                    Padding = Padding.Empty
+                };
+                columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                if (!narrow) columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+                if (narrow)
+                {
+                    columns.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+                    columns.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+                }
+                else columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                int panelWidth = narrow ? width : width / 2 - 8;
+                int panelHeight = narrow ? Math.Max(1, (columnsHeight - 8) / 2) : columnsHeight;
+                RoundedPanel remotePanel = CreateXingguiHomePanel(panelWidth, panelHeight);
+                RoundedPanel businessPanel = CreateXingguiHomePanel(panelWidth, panelHeight);
+                columns.Controls.Add(remotePanel, 0, 0);
+                if (narrow) columns.Controls.Add(businessPanel, 0, 1);
+                else columns.Controls.Add(businessPanel, 1, 0);
+                columns.Controls[0].Margin = narrow ? new Padding(0, 0, 0, 8) : new Padding(0, 0, 8, 0);
+                columns.Controls[1].Margin = narrow ? new Padding(0, 8, 0, 0) : new Padding(8, 0, 0, 0);
+                Dictionary<string, object> homePage = AsDict(Get(AsDict(Get(config, "pages")), XingguiHomePageId));
+                IList<object> homeSections = AsList(Get(homePage, "sections"));
+                List<Dictionary<string, object>> remoteItems = homeSections.Count > 0 ? CollectButtons(new List<object> { homeSections[0] }) : new List<Dictionary<string, object>>();
+                List<Dictionary<string, object>> businessItems = homeSections.Count > 1 ? CollectButtons(new List<object> { homeSections[1] }) : new List<Dictionary<string, object>>();
+                SortButtonsByConfiguredPosition(remoteItems);
+                SortButtonsByConfiguredPosition(businessItems);
+                foreach (Dictionary<string, object> item in remoteItems) item["__search_page_id"] = XingguiHomePageId;
+                foreach (Dictionary<string, object> item in businessItems) item["__search_page_id"] = XingguiHomePageId;
+                PopulateXingguiRemotePanel(remotePanel, remoteItems);
+                PopulateXingguiBusinessPanel(businessPanel, businessItems);
+                content.Controls.Add(columns);
+                status.Text = (String.IsNullOrWhiteSpace(appTitle) ? "星轨工具箱" : appTitle) + " · 就绪";
+            }
+            finally { content.ResumeLayout(); EndContentRender(); }
+        }
+
+        private RoundedPanel CreateXingguiHomePanel(int width, int height)
+        {
+            return new RoundedPanel
+            {
+                Dock = DockStyle.Fill,
+                Width = width,
+                Height = height,
+                Radius = 12,
+                BackColor = PanelBg,
+                BorderColor = Line,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+        }
+
+        private void PopulateXingguiRemotePanel(RoundedPanel panel, List<Dictionary<string, object>> items)
+        {
+            PopulateXingguiButtonsPanel(panel, items, 0, true);
+        }
+
+        private void PopulateXingguiBusinessPanel(RoundedPanel panel, List<Dictionary<string, object>> items)
+        {
+            PopulateXingguiButtonsPanel(panel, items, 1, false);
+        }
+
+        private void PopulateXingguiButtonsPanel(RoundedPanel panel, List<Dictionary<string, object>> items, int sideIndex, bool cards)
+        {
+            Dictionary<string, object> page = AsDict(Get(AsDict(Get(config, "pages")), XingguiHomePageId));
+            IList<object> sections = AsList(Get(page, "sections"));
+            string caption = sections.Count > sideIndex ? GetText(AsDict(sections[sideIndex]), "title", cards ? "远程下载" : "业务范围") : (cards ? "远程下载" : "业务范围");
+            items = items.FindAll(delegate(Dictionary<string, object> item) { return BoolValue(item, "enabled", true); });
+            int tileHeight = cards ? 66 : 34;
+            int columns = 1;
+            int rowsPerPage = Math.Max(1, (panel.ClientSize.Height - 104) / tileHeight);
+            int capacity = Math.Max(1, columns * rowsPerPage);
+            int pageCount = Math.Max(1, (items.Count + capacity - 1) / capacity);
+            int pageIndex = Math.Max(0, Math.Min(cards ? xingguiLeftPage : xingguiRightPage, pageCount - 1));
+            if (cards) xingguiLeftPage = pageIndex; else xingguiRightPage = pageIndex;
+            TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(16, 0, 16, 12), Margin = Padding.Empty, BackColor = Color.Transparent };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, pageCount > 1 ? 32F : 0F));
+            Label heading = new Label { Dock = DockStyle.Fill, Text = caption, ForeColor = TextColor, BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold), Margin = Padding.Empty };
+            layout.Controls.Add(heading, 0, 0);
+            TableLayoutPanel rows = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = columns, RowCount = rowsPerPage, AutoScroll = false, Margin = Padding.Empty, Padding = new Padding(0, 2, 0, 2), BackColor = Color.Transparent };
+            for (int columnIndex = 0; columnIndex < columns; columnIndex++) rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
+            for (int rowIndex = 0; rowIndex < rowsPerPage; rowIndex++) rows.RowStyles.Add(new RowStyle(SizeType.Absolute, tileHeight));
+            int end = Math.Min(items.Count, (pageIndex + 1) * capacity);
+            for (int index = pageIndex * capacity; index < end; index++)
+            {
+                Dictionary<string, object> item = new Dictionary<string, object>(items[index]);
+                item["__search_page_id"] = XingguiHomePageId;
+                string name = GetText(item, "name", "功能入口");
+                string description = GetText(item, "description", GetText(item, "intro", ""));
+                string action = GetText(item, "action", "link").ToLowerInvariant();
+                ActionInfo info = new ActionInfo { Action = action, Target = GetTarget(item, action), CustomScript = GetText(item, "custom_script", ""), Name = name, BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) };
+                string iconUrl = GetText(item, "icon", "");
+                TemplateActionButton button = new TemplateActionButton
+                {
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(4),
+                    StudioMode = true,
+                    OverviewIconMode = false,
+                    XingguiHomeMode = cards,
+                    XingguiBusinessMode = !cards,
+                    Title = name,
+                    Subtitle = description,
+                    IconText = TemplateActionIcon(action),
+                    IconImage = GetCachedButtonIcon(iconUrl),
+                    AccentColor = Accent,
+                    AccessibleName = name,
+                    AccessibleDescription = description
+                };
+                button.Click += delegate { RunResourceItemAction(item, info); };
+                if (topToolTip != null) topToolTip.SetToolTip(button, name + (String.IsNullOrWhiteSpace(description) ? "" : "\r\n" + description));
+                rows.Controls.Add(button, (index - pageIndex * capacity) % columns, (index - pageIndex * capacity) / columns);
+                QueueButtonIconLoad(iconUrl, button, 32);
+            }
+            if (items.Count == 0)
+            {
+                Label empty = new Label { Dock = DockStyle.Fill, Text = "请在后台“按钮 > 星轨工具箱首页”中配置按钮", TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted, BackColor = Color.Transparent, AutoEllipsis = true };
+                rows.Controls.Add(empty, 0, 0);
+                rows.SetColumnSpan(empty, columns);
+                rows.SetRowSpan(empty, rowsPerPage);
+            }
+            layout.Controls.Add(rows, 0, 1);
+            if (pageCount > 1)
+            {
+                TableLayoutPanel pager = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, BackColor = Color.Transparent };
+                pager.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F)); pager.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F)); pager.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F));
+                Button previous = new Button { Dock = DockStyle.Fill, Text = "上一组", FlatStyle = FlatStyle.Flat, ForeColor = TextColor, BackColor = PanelBg2, Enabled = pageIndex > 0, Margin = Padding.Empty };
+                Button next = new Button { Dock = DockStyle.Fill, Text = "下一组", FlatStyle = FlatStyle.Flat, ForeColor = TextColor, BackColor = PanelBg2, Enabled = pageIndex + 1 < pageCount, Margin = Padding.Empty };
+                previous.FlatAppearance.BorderSize = next.FlatAppearance.BorderSize = 0;
+                previous.Click += delegate { if (cards) xingguiLeftPage--; else xingguiRightPage--; RenderXingguiHomePage(); };
+                next.Click += delegate { if (cards) xingguiLeftPage++; else xingguiRightPage++; RenderXingguiHomePage(); };
+                pager.Controls.Add(previous, 0, 0); pager.Controls.Add(new Label { Dock = DockStyle.Fill, Text = (pageIndex + 1) + " / " + pageCount, ForeColor = Muted, TextAlign = ContentAlignment.MiddleCenter }, 1, 0); pager.Controls.Add(next, 2, 0);
+                layout.Controls.Add(pager, 0, 2);
+            }
+            panel.Controls.Add(layout);
         }
 
         private static void ApplyTunerPalette(bool dark)
@@ -3023,9 +3437,15 @@ namespace ToolboxClient
         private void ApplyTunerThemeToShell()
         {
             if (!tunerVariant && !vst76Variant) return;
+            if (xingguiVariant) ApplyXingguiPalette(!LightTheme);
             BackColor = Bg;
             ForeColor = TextColor;
             ApplyTunerThemeToControlTree(this);
+            if (xingguiVariant)
+            {
+                ApplyXingguiUtilityButtonState(xingguiDownloadButton, String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase));
+                ApplyXingguiUtilityButtonState(settingsButton, String.Equals(currentPage, "settings", StringComparison.OrdinalIgnoreCase));
+            }
         }
 
         private void ApplyTunerThemeToControlTree(Control root)
@@ -3059,7 +3479,7 @@ namespace ToolboxClient
                     continue;
                 }
                 bool tunerChrome = String.Equals(Convert.ToString(child.Tag), "tuner_chrome", StringComparison.Ordinal);
-                Color chromeBack = LightTheme ? Color.White : Color.FromArgb(43, 50, 63);
+                Color chromeBack = xingguiVariant ? SideBg : (LightTheme ? Color.White : Color.FromArgb(43, 50, 63));
                 if (child is TableLayoutPanel || child is FlowLayoutPanel || child is Panel)
                 {
                     child.BackColor = tunerChrome ? chromeBack : (IsInsideTunerSidebar(child) ? SideBg : Bg);
@@ -3672,6 +4092,12 @@ namespace ToolboxClient
                 Dictionary<string, object> tunerPages = AsDict(Get(config, "pages"));
                 IList<object> tunerToolboxTabs = AsList(Get(config, "toolbox_tabs"));
 
+                if (xingguiVariant)
+                {
+                    AddTunerNavButton(XingguiHomePageId, "首页", "⌂");
+                    tunerAdded.Add(XingguiHomePageId);
+                }
+
                 if (vst76Variant)
                 {
                     if (tunerPages.ContainsKey(StudioOverviewPageId))
@@ -3725,6 +4151,7 @@ namespace ToolboxClient
                     string id = GetText(row, "id", "");
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     if (id.Equals("settings", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (tunerAdded.Contains(id)) continue;
                     if (IsStudioOverviewPage(id, AsDict(Get(tunerPages, id)))) continue;
                     string label = NavLabel(row, id, tunerPages);
                     AddTunerNavButton(id, label, TemplateNavIcon(label, id));
@@ -3755,7 +4182,7 @@ namespace ToolboxClient
                 }
                 AddEsportsAudioTunerNavButton(tunerAdded);
 
-                if (!tunerAdded.Contains("settings"))
+                if (!tunerAdded.Contains("settings") && !xingguiVariant)
                 {
                     AddTunerNavButton("settings", "系统设置", "gear");
                     tunerAdded.Add("settings");
@@ -3854,6 +4281,7 @@ namespace ToolboxClient
 
         private void AddAudioNavButton(string id, string label, string iconUrl)
         {
+            if (!xingguiVariant && id == XingguiHomePageId) return;
             Button button = new Button
             {
                 Width = 54, Height = 45, Margin = new Padding(0, 0, 0, 1),
@@ -3889,6 +4317,7 @@ namespace ToolboxClient
 
         private void AddNavButton(string id, string label)
         {
+            if (!xingguiVariant && id == XingguiHomePageId) return;
             if (String.Equals(id, "__esports_audio_module__", StringComparison.OrdinalIgnoreCase))
             {
                 TemplateNavButton moduleButton = new TemplateNavButton
@@ -3968,6 +4397,16 @@ namespace ToolboxClient
 
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowScrollBar(IntPtr hWnd, int bar, bool show);
+
+        private static void HideNativeScrollBars(Control control)
+        {
+            if (control == null || control.IsDisposed || !control.IsHandleCreated) return;
+            ShowScrollBar(control.Handle, 0, false);
+            ShowScrollBar(control.Handle, 1, false);
+        }
 
         private void LaunchEsportsAudioModule()
         {
@@ -4247,10 +4686,11 @@ namespace ToolboxClient
 
         private void AddTunerNavButton(string id, string label, string iconKey)
         {
+            if (!xingguiVariant && id == XingguiHomePageId) return;
             TunerNavButton button = new TunerNavButton
             {
-                Width = 174,
-                Height = 47,
+                Width = xingguiVariant ? 130 : 174,
+                Height = xingguiVariant ? 40 : 47,
                 Margin = new Padding(0, 0, 0, 1),
                 Text = label,
                 Caption = label,
@@ -4278,6 +4718,38 @@ namespace ToolboxClient
                 if (item.Width != width) item.Width = width;
             }
             nav.HorizontalScroll.Value = 0;
+        }
+
+        private void FitXingguiNavButtons()
+        {
+            if (!xingguiVariant || nav == null || nav.IsDisposed) return;
+            int width = nav.ClientSize.Width - nav.Padding.Horizontal;
+            if (nav.VerticalScroll.Visible) width -= SystemInformation.VerticalScrollBarWidth;
+            width = Math.Max(1, width);
+            foreach (Control item in nav.Controls)
+            {
+                if (item.Width != width) item.Width = width;
+            }
+            nav.HorizontalScroll.Value = 0;
+        }
+
+        private void UpdateXingguiUtilityLayout()
+        {
+            if (!xingguiVariant || xingguiPasswordButton == null || xingguiDownloadButton == null || settingsButton == null) return;
+            int offset = xingguiPasswordButton.Visible ? 40 : 0;
+            xingguiPasswordButton.Top = 0;
+            xingguiDownloadButton.Top = offset;
+            settingsButton.Top = offset + 40;
+            if (xingguiUtilityRowStyle != null) xingguiUtilityRowStyle.Height = xingguiPasswordButton.Visible ? 126F : 86F;
+            if (side != null && !side.IsDisposed) side.PerformLayout();
+        }
+
+        private void UpdateXingguiPasswordButton()
+        {
+            if (xingguiPasswordButton == null || xingguiPasswordButton.IsDisposed) return;
+            string password = GetText(AsDict(Get(config, "app")), "password", "");
+            xingguiPasswordButton.Visible = xingguiVariant && !String.IsNullOrWhiteSpace(password) && !passwordUnlocked;
+            UpdateXingguiUtilityLayout();
         }
 
         private Button MakeVst76SideUtilityButton(string text, bool primary)
@@ -4341,6 +4813,7 @@ namespace ToolboxClient
         {
             if (content == null || content.IsDisposed) return;
             if (String.IsNullOrWhiteSpace(currentPage)) return;
+            if ((tunerVariant || vst76Variant) && (currentPage.Equals(TunerDriversPageId, StringComparison.OrdinalIgnoreCase) || currentPage.Equals(TunerLinksPageId, StringComparison.OrdinalIgnoreCase))) return;
 
             int width = content.ClientSize.Width;
             int height = content.ClientSize.Height;
@@ -4390,6 +4863,11 @@ namespace ToolboxClient
                 return;
             }
             if (content == null || content.IsDisposed) return;
+            if (xingguiVariant && currentPage == XingguiHomePageId)
+            {
+                RenderXingguiHomePage();
+                return;
+            }
             if (contentRendering)
             {
                 contentResizeRenderPending = true;
@@ -4466,6 +4944,7 @@ namespace ToolboxClient
         {
             contentRendering = false;
             UpdateContentScrolling();
+            DisableHorizontalScrollbars(content);
             if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
             {
                 pageSwitchTimer.Stop();
@@ -4488,6 +4967,18 @@ namespace ToolboxClient
             }
         }
 
+        private void DisableHorizontalScrollbars(Control root)
+        {
+            if (root == null || root.IsDisposed) return;
+            ScrollableControl scrollable = root as ScrollableControl;
+            if (scrollable != null)
+            {
+                scrollable.HorizontalScroll.Enabled = false;
+                scrollable.HorizontalScroll.Visible = false;
+            }
+            foreach (Control child in root.Controls) DisableHorizontalScrollbars(child);
+        }
+
         private void MarkNavButtonActive(string id)
         {
             foreach (KeyValuePair<string, Control> pair in navButtons)
@@ -4502,15 +4993,32 @@ namespace ToolboxClient
                 Button audioItem = pair.Value as Button;
                 if (audioVariant && audioItem != null) audioItem.BackColor = active ? Color.FromArgb(15, 23, 28) : Color.FromArgb(35, 43, 49);
             }
-            if (vst76Variant && settingsButton != null && !settingsButton.IsDisposed)
+            if ((vst76Variant || xingguiVariant) && settingsButton != null && !settingsButton.IsDisposed)
             {
                 bool settingsActive = id.Equals("settings", StringComparison.OrdinalIgnoreCase);
-                settingsButton.BackColor = settingsActive
-                    ? (LightTheme ? Color.FromArgb(220, 232, 248) : Color.FromArgb(50, 67, 91))
-                    : SideBg;
-                settingsButton.ForeColor = settingsActive ? Accent : TextColor;
+                ApplyXingguiUtilityButtonState(settingsButton, settingsActive);
+                if (xingguiDownloadButton != null && !xingguiDownloadButton.IsDisposed)
+                    ApplyXingguiUtilityButtonState(xingguiDownloadButton, id.Equals("downloads", StringComparison.OrdinalIgnoreCase));
             }
             UpdatePortalBottomNavState(id);
+        }
+
+        private void ApplyXingguiUtilityButtonState(Button button, bool active)
+        {
+            if (button == null || button.IsDisposed) return;
+            RoundButton round = button as RoundButton;
+            Color baseBack = SideBg;
+            Color activeBack = LightTheme ? Color.FromArgb(220, 232, 248) : Color.FromArgb(50, 67, 91);
+            Color hoverBack = LightTheme ? Color.FromArgb(228, 238, 251) : Color.FromArgb(52, 63, 80);
+            button.BackColor = active ? activeBack : baseBack;
+            button.ForeColor = active ? Accent : TextColor;
+            if (round != null)
+            {
+                round.HoverBackColor = hoverBack;
+                round.BorderColor = Color.Transparent;
+                round.Radius = 9;
+            }
+            button.Invalidate();
         }
 
         private void UpdatePortalBottomNavState(string id)
@@ -4632,6 +5140,12 @@ namespace ToolboxClient
             MarkNavButtonActive(id);
 
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            if (xingguiVariant && id == XingguiHomePageId)
+            {
+                title.Text = "首页";
+                RenderXingguiHomePage();
+                return;
+            }
             if (vst76Variant && IsVst76HomePage(id, AsDict(Get(pages, id))))
             {
                 title.Text = "系统概览";
@@ -4812,7 +5326,7 @@ namespace ToolboxClient
                     return;
                 }
 
-                int available = Math.Max(360, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+                int available = Math.Max(360, content.ClientSize.Width - 10);
                 if (portalVariant && !listMode)
                 {
                     Dictionary<string, object> app = AsDict(Get(config, "app"));
@@ -4863,10 +5377,15 @@ namespace ToolboxClient
             try
             {
                 ClearChildControls(content);
+                content.AutoScroll = false;
+                content.VerticalScroll.Enabled = false;
+                content.VerticalScroll.Visible = false;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int width = Math.Max(600, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+                int width = Math.Max(600, content.ClientSize.Width - 4);
                 bool expandedLayout = false;
                 foreach (object pageSectionObj in currentSections)
                 {
@@ -4968,7 +5487,7 @@ namespace ToolboxClient
                 int col = i % columns;
                 string action = GetText(item, "action", Has(item, "url") ? "link" : "cmd").ToLowerInvariant();
                 string iconUrl = GetText(item, "icon", "");
-                string displayIconUrl = pageUsesConfiguredLayout ? iconUrl : "";
+                string displayIconUrl = iconUrl;
                 bool useIconLayout = iconTopLayout && !String.IsNullOrWhiteSpace(displayIconUrl);
                 int buttonHeight = rowHeights[row];
                 int buttonTop = 24;
@@ -5018,7 +5537,7 @@ namespace ToolboxClient
 
         private void AddAudioEmptyMessage()
         {
-            int width = Math.Max(520, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
+            int width = Math.Max(520, content.ClientSize.Width - 8);
             RoundedPanel empty = new RoundedPanel
             {
                 Width = width,
@@ -5064,7 +5583,7 @@ namespace ToolboxClient
                     return;
                 }
 
-                int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+                int available = Math.Max(640, content.ClientSize.Width - 12);
                 for (int i = 0; i < sections.Count; i++)
                 {
                     Dictionary<string, object> section = sections[i];
@@ -5215,13 +5734,8 @@ namespace ToolboxClient
 
         private int TunerContentWidth()
         {
-            int width = content == null ? 0 : content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 24;
-            if (width < 560)
-            {
-                int expected = Math.Max(560, ClientSize.Width - 200 - 14 - 16 - SystemInformation.VerticalScrollBarWidth - 24);
-                width = Math.Max(width, expected);
-            }
-            return Math.Max(560, width);
+            if (content == null || content.IsDisposed) return 1;
+            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);
         }
 
         private Control CreateTunerSystemOptimizeGroup(int width)
@@ -5320,7 +5834,7 @@ namespace ToolboxClient
 
         private void AddTunerEmptyMessage(string message)
         {
-            int width = Math.Max(520, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int width = TunerContentWidth();
             RoundedPanel empty = new RoundedPanel
             {
                 Width = width,
@@ -5347,7 +5861,8 @@ namespace ToolboxClient
         {
             int columns = Math.Max(2, Math.Min(4, width / 150));
             int gap = vst76Variant ? 12 : 8;
-            int buttonHeight = 42;
+            bool iconTopLayout = xingguiVariant && buttonContentLayout == "icon_top" && ButtonContentLayoutAppliesToCurrentPage();
+            int buttonHeight = iconTopLayout ? 96 : 42;
             int cardHeight = 150;
             int inlineProgressHeight = 18;
             int rows = Math.Max(1, (int)Math.Ceiling(buttons.Count / (double)columns));
@@ -5390,7 +5905,7 @@ namespace ToolboxClient
 
             int innerLeft = 18;
             int top = 72;
-            int buttonWidth = Math.Max(118, (width - innerLeft * 2 - gap * (columns - 1)) / columns);
+            int buttonWidth = Math.Max(1, (width - innerLeft * 2 - gap * (columns - 1)) / columns);
             for (int i = 0; i < buttons.Count; i++)
             {
                 int row = i / columns;
@@ -5571,7 +6086,13 @@ namespace ToolboxClient
             string target = GetTarget(item, action);
             string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
-            if (!ButtonContentLayoutAppliesToCurrentPage()) iconUrl = "";
+            if (xingguiVariant && String.IsNullOrWhiteSpace(iconUrl))
+            {
+                Dictionary<string, object> app = AsDict(Get(config, "app"));
+                iconUrl = GetText(app, "icon_url", GetText(app, "icon", ""));
+            }
+            bool applyLayout = xingguiVariant && ButtonContentLayoutAppliesToCurrentPage();
+            bool iconTopLayout = applyLayout && buttonContentLayout == "icon_top";
             Image icon = GetCachedButtonIcon(iconUrl);
             TunerActionButton button = new TunerActionButton
             {
@@ -5584,7 +6105,8 @@ namespace ToolboxClient
                 AccessibleName = GetText(item, "name", "未命名"),
                 IconText = TemplateNavIcon(GetText(item, "name", ""), GetText(item, "id", "")),
                 IconImage = icon,
-                HideIcon = true,
+                HideIcon = !applyLayout,
+                IconTop = iconTopLayout,
                 ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
@@ -6211,7 +6733,7 @@ namespace ToolboxClient
                 content.BackColor = Bg;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
-                int rawWidth = content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8;
+                int rawWidth = content.ClientSize.Width - 8;
                 int available = Math.Max(360, rawWidth);
                 content.Controls.Add(CreateStudioOverviewHeader(available));
                 content.Controls.Add(CreateStudioOverviewGrid(available));
@@ -6413,7 +6935,7 @@ namespace ToolboxClient
                 content.WrapContents = false;
                 content.BackColor = Bg;
 
-                int available = Math.Max(640, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12);
+            int available = Math.Max(640, content.ClientSize.Width - 12);
                 ClientSettings currentSettings = LoadClientSettings();
 
                 content.Controls.Add(CreateStudioSettingsCard(available, currentSettings));
@@ -6786,10 +7308,10 @@ namespace ToolboxClient
 
         private int PortalContentWidth()
         {
-            int width = content == null ? 0 : content.ClientSize.Width - content.Padding.Left - content.Padding.Right - SystemInformation.VerticalScrollBarWidth - 12;
+            int width = content == null ? 0 : content.ClientSize.Width - content.Padding.Left - content.Padding.Right - 12;
             if (width <= 0 && ClientSize.Width > 0)
             {
-                width = ClientSize.Width - 236 - 26 - 32 - SystemInformation.VerticalScrollBarWidth - 12;
+                width = ClientSize.Width - 236 - 26 - 32 - 12;
             }
             return Math.Max(280, width);
         }
@@ -7919,7 +8441,7 @@ namespace ToolboxClient
                     Margin = new Padding(0, 0, 0, 12),
                     FlowDirection = FlowDirection.LeftToRight,
                     WrapContents = true,
-                    AutoScroll = false,
+                    AutoScroll = true,
                     BackColor = SoftwareCatalogPageBackColor(),
                     Padding = new Padding(0)
                 };
@@ -7935,7 +8457,7 @@ namespace ToolboxClient
 
         private int SoftwareCatalogContentWidth()
         {
-            int width = content == null ? 720 : content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 12;
+            int width = content == null ? 720 : content.ClientSize.Width - 12;
             return Math.Max(640, width);
         }
 
@@ -9829,7 +10351,6 @@ namespace ToolboxClient
             string target = GetTarget(item, action);
             string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
-            if (!ButtonContentLayoutAppliesToCurrentPage()) iconUrl = "";
             string description = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
             Image icon = GetCachedButtonIcon(iconUrl);
             TemplateActionButton button = new TemplateActionButton
@@ -9938,7 +10459,18 @@ namespace ToolboxClient
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            if (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage))))
+            if ((tunerVariant || vst76Variant) && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
+            {
+                content.AutoScroll = false;
+                content.AutoScrollPosition = Point.Empty;
+                content.AutoScrollMinSize = Size.Empty;
+                content.VerticalScroll.Enabled = false;
+                content.VerticalScroll.Visible = false;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
+                return;
+            }
+            if ((xingguiVariant && currentPage == XingguiHomePageId) || (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage)))))
             {
                 content.AutoScroll = false;
                 content.AutoScrollPosition = Point.Empty;
@@ -10058,6 +10590,12 @@ namespace ToolboxClient
         private void LayoutResourceSearchChrome()
         {
             if (resourceSearchButton == null || resourceSearchHost == null) return;
+            if (xingguiVariant)
+            {
+                resourceSearchButton.Visible = false;
+                resourceSearchHost.Visible = false;
+                return;
+            }
             bool enabled = ResourceSearchEnabled();
             resourceSearchButton.Visible = enabled;
             int hostWidth = 200;
@@ -10108,7 +10646,7 @@ namespace ToolboxClient
                 resourceSearchButton.BackColor = back;
                 resourceSearchButton.ForeColor = LightTheme ? TextColor : Color.FromArgb(226, 232, 240);
                 resourceSearchButton.FlatAppearance.BorderSize = 0;
-                resourceSearchButton.FlatAppearance.BorderColor = Color.Transparent;
+                resourceSearchButton.FlatAppearance.BorderColor = back;
                 resourceSearchButton.FlatAppearance.MouseOverBackColor = LightTheme ? PanelBg2 : Color.FromArgb(52, 63, 80);
                 resourceSearchButton.FlatAppearance.MouseDownBackColor = LightTheme ? Color.FromArgb(226, 239, 255) : Color.FromArgb(62, 76, 94);
             }
@@ -10355,7 +10893,7 @@ namespace ToolboxClient
                 ClearChildControls(content);
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
-                int available = Math.Max(300, content.ClientSize.Width - content.Padding.Left - content.Padding.Right - SystemInformation.VerticalScrollBarWidth - 12);
+                int available = Math.Max(300, content.ClientSize.Width - content.Padding.Left - content.Padding.Right - 12);
                 FlowLayoutPanel heading = new FlowLayoutPanel { Width = available, Height = 42, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
                 Button back = new Button { Width = 64, Height = 30, FlatStyle = FlatStyle.Flat, Text = PortalText("\u8fd4\u56de", "Back"), ForeColor = TextColor, BackColor = PanelBg };
                 back.FlatAppearance.BorderColor = Line;
@@ -10439,6 +10977,9 @@ namespace ToolboxClient
         {
             string pageId = GetText(item, "__search_page_id", "");
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
+            string sourcePageId = GetText(item, "source_page_id", "");
+            if (pageId == XingguiHomePageId && !String.IsNullOrWhiteSpace(sourcePageId) && !EnsurePageUnlocked(sourcePageId)) return;
+            if (GetText(item, "__search_page_id", "") == XingguiHomePageId && String.IsNullOrWhiteSpace(info.Target) && String.IsNullOrWhiteSpace(info.CustomScript) && AsList(Get(item, "files")).Count == 0) return;
             if (!ConfirmButtonGuard(AsDict(Get(item, "guard")), info.Name)) return;
             if (info.Action == "download" && String.Equals(GetText(item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase))
             {
@@ -10531,7 +11072,6 @@ namespace ToolboxClient
             string target = GetTarget(item, action);
             string customScript = GetText(item, "custom_script", "");
             string iconUrl = GetText(item, "icon", "");
-            if (!ButtonContentLayoutAppliesToCurrentPage()) iconUrl = "";
             string description = GetText(item, "description", GetText(item, "intro", GetText(item, "remark", "")));
             Image icon = GetCachedButtonIcon(iconUrl);
             ActionCard card = new ActionCard
@@ -10567,6 +11107,8 @@ namespace ToolboxClient
 
         private bool ButtonContentLayoutAppliesToCurrentPage()
         {
+            if (String.Equals(currentPage, StudioOverviewPageId, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(currentPage, XingguiHomePageId, StringComparison.OrdinalIgnoreCase)) return false;
             return buttonContentLayout != "none" && (!buttonContentLayoutScopeEnabled || buttonContentLayoutPages.Count == 0 || buttonContentLayoutPages.Contains(currentPage ?? ""));
         }
 
@@ -10726,6 +11268,26 @@ namespace ToolboxClient
         {
             if (String.IsNullOrWhiteSpace(url))
                 return null;
+
+            if (xingguiVariant)
+            {
+                if (!IsXingguiImageUrl(url)) return null;
+                string strictKey = maxWidth + "x" + maxHeight + "|" + url;
+                lock (iconCacheLock)
+                {
+                    Image cached;
+                    if (iconCache.TryGetValue(strictKey, out cached)) return cached;
+                }
+                Image loaded = FetchXingguiImage(url, maxWidth, maxHeight);
+                if (loaded == null) return null;
+                lock (iconCacheLock)
+                {
+                    Image existing;
+                    if (iconCache.TryGetValue(strictKey, out existing)) { loaded.Dispose(); return existing; }
+                    iconCache[strictKey] = loaded;
+                }
+                return loaded;
+            }
 
             url = ResolveAssetUrl(url);
 
@@ -13953,7 +14515,7 @@ namespace ToolboxClient
         private void ToggleTunerTheme()
         {
             ClientSettings settings = LoadClientSettings();
-            bool nextDark = !IsDarkModeSetting(settings.Theme);
+            bool nextDark = xingguiVariant ? LightTheme : !IsDarkModeSetting(settings.Theme);
             settings.Theme = nextDark ? "dark" : "light";
             SaveClientSettings(settings);
             string pageBeforeThemeChange = currentPage;
@@ -16139,7 +16701,7 @@ namespace ToolboxClient
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int available = Math.Max(560, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
+                int available = Math.Max(560, content.ClientSize.Width - 8);
                 int bodyHeight = Math.Max(300, content.ClientSize.Height - 52);
                 ClientSettings settings = LoadClientSettings();
 
@@ -16240,7 +16802,7 @@ namespace ToolboxClient
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int available = Math.Max(560, content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
+                int available = Math.Max(560, content.ClientSize.Width - 8);
                 int pageHeight = Math.Max(300, content.ClientSize.Height - 8);
                 int activeHeight = Math.Max(112, Math.Min(154, (int)(pageHeight * 0.34)));
                 int recordHeight = Math.Max(92, pageHeight - activeHeight - 122);
@@ -16352,6 +16914,11 @@ namespace ToolboxClient
             try
             {
                 ClearChildControls(content);
+                content.AutoScroll = false;
+                content.VerticalScroll.Enabled = false;
+                content.VerticalScroll.Visible = false;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
@@ -16380,7 +16947,7 @@ namespace ToolboxClient
                     Height = Math.Max(64, activeHeight - 50),
                     FlowDirection = FlowDirection.TopDown,
                     WrapContents = false,
-                    AutoScroll = true,
+                    AutoScroll = false,
                     BackColor = PanelBg,
                     Padding = new Padding(0, 0, 0, 6),
                     SuppressFocusAutoScroll = true
@@ -16396,7 +16963,7 @@ namespace ToolboxClient
                 recordsList = new ListView
                 {
                     Width = available,
-                    Height = Math.Max(120, pageHeight - activeHeight - 92),
+                    Height = Math.Max(72, pageHeight - activeHeight - 150),
                     View = View.Details,
                     FullRowSelect = true,
                     MultiSelect = true,
@@ -16408,6 +16975,10 @@ namespace ToolboxClient
                     ShowItemToolTips = true,
                     OwnerDraw = true
                 };
+                recordsList.Scrollable = true;
+                recordsList.HandleCreated += delegate { HideNativeScrollBars(recordsList); };
+                recordsList.Resize += delegate { HideNativeScrollBars(recordsList); };
+                recordsList.MouseWheel += delegate { BeginInvoke(new Action(delegate { HideNativeScrollBars(recordsList); })); };
                 recordsList.Columns.Add("时间", 122);
                 recordsList.Columns.Add("结果", 86);
                 recordsList.Columns.Add("名称", 260);
@@ -16444,6 +17015,7 @@ namespace ToolboxClient
                 content.Controls.Add(actions);
 
                 FillDownloadRecordsIntoList(recordsList);
+                HideNativeScrollBars(recordsList);
                 RenderActiveDownloads();
                 status.Text = "下载页面";
             }
@@ -17068,6 +17640,11 @@ namespace ToolboxClient
 
         private bool PromptPassword(string stored, string title, string prompt)
         {
+            if (xingguiVariant)
+            {
+                using (XingguiPasswordDialog dialog = new XingguiPasswordDialog(title, prompt, delegate(string value) { return VerifyPassword(value, stored); }))
+                    return dialog.ShowDialog(this) == DialogResult.OK;
+            }
             while (true)
             {
                 using (PasswordDialog dialog = new PasswordDialog(title, prompt))
@@ -18043,6 +18620,7 @@ namespace ToolboxClient
         {
             private bool active;
             private bool hovered;
+            private bool pressed;
             public bool StudioMode;
             public string SourceCaption = "";
             public string Caption = "";
@@ -18058,7 +18636,20 @@ namespace ToolboxClient
             {
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
                 Cursor = Cursors.Hand;
+                TabStop = true;
                 Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) { pressed = true; Invalidate(); e.Handled = true; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnKeyUp(KeyEventArgs e)
+            {
+                if (pressed) { pressed = false; Invalidate(); if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) OnClick(EventArgs.Empty); e.Handled = true; }
+                base.OnKeyUp(e);
             }
 
             protected override void OnMouseEnter(EventArgs e)
@@ -18080,11 +18671,18 @@ namespace ToolboxClient
                 Color fill = StudioMode
                     ? (active ? (LightTheme ? Color.FromArgb(215, 235, 255) : Color.FromArgb(42, 65, 90)) : (hovered ? PanelBg2 : SideBg))
                     : (active ? PortalSoftAccentBack() : (hovered ? PortalHoverBack() : SideBg));
+                if (pressed && Enabled) fill = LightTheme ? Color.FromArgb(225, 235, 247) : Color.FromArgb(48, 59, 76);
+                if (!Enabled) fill = SideBg;
                 int radius = StudioMode ? 8 : 4;
                 using (GraphicsPath path = RoundRect(rect, radius))
                 using (SolidBrush bg = new SolidBrush(fill))
                 {
                     e.Graphics.FillPath(bg, path);
+                }
+                if (Focused && ShowFocusCues)
+                {
+                    using (GraphicsPath focusPath = RoundRect(rect, radius))
+                    using (Pen focus = new Pen(Accent, 1.5F)) e.Graphics.DrawPath(focus, focusPath);
                 }
                 if (!StudioMode && active)
                 {
@@ -18238,20 +18836,109 @@ namespace ToolboxClient
             }
         }
 
+        private sealed class AnimatedBanner : Control
+        {
+            private readonly System.Windows.Forms.Timer animationTimer;
+            private readonly bool animationsEnabled;
+            private DateTime animationStarted;
+            private float fromScale = 1F;
+            private float targetScale = 1F;
+            private float scale = 1F;
+            private Image image;
+            private Size regionSize;
+            private int regionRadius = -1;
+            public int CornerRadius = 14;
+
+            public Image Image
+            {
+                get { return image; }
+                set { image = value; Invalidate(); }
+            }
+
+            public AnimatedBanner()
+            {
+                bool clientAnimation;
+                animationsEnabled = SystemInformation.IsMenuAnimationEnabled;
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                TabStop = false;
+                animationTimer = new System.Windows.Forms.Timer { Interval = 16 };
+                animationTimer.Tick += delegate
+                {
+                    float progress = (float)Math.Min(1D, (DateTime.UtcNow - animationStarted).TotalMilliseconds / 280D);
+                    float eased = 1F - (1F - progress) * (1F - progress);
+                    scale = fromScale + (targetScale - fromScale) * eased;
+                    Invalidate();
+                    if (progress >= 1F) animationTimer.Stop();
+                };
+                MouseEnter += delegate { AnimateTo(1.03F); };
+                MouseLeave += delegate { AnimateTo(1F); };
+            }
+
+            private void AnimateTo(float next)
+            {
+                if (!animationsEnabled) { scale = next; Invalidate(); return; }
+                fromScale = scale;
+                targetScale = next;
+                animationStarted = DateTime.UtcNow;
+                animationTimer.Stop();
+                animationTimer.Start();
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                if (Width <= 0 || Height <= 0) return;
+                Rectangle bounds = new Rectangle(0, 0, Width - 1, Height - 1);
+                EnsureRoundedRegion(this, CornerRadius, ref regionSize, ref regionRadius);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                e.Graphics.SetClip(bounds);
+                if (image == null)
+                {
+                    using (SolidBrush brush = new SolidBrush(BackColor)) e.Graphics.FillRectangle(brush, bounds);
+                    return;
+                }
+                float drawWidth = Width * scale;
+                float drawHeight = Height * scale;
+                RectangleF destination = new RectangleF((Width - drawWidth) / 2F, (Height - drawHeight) / 2F, drawWidth, drawHeight);
+                e.Graphics.DrawImage(image, destination);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) animationTimer.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
         private sealed class TunerActionButton : Control
         {
             private bool hovered;
+            private bool pressed;
             public string Title = "";
             public string IconText = "";
             public Image IconImage;
             public ActionInfo ActionInfo;
             public bool HideIcon;
+            public bool IconTop;
 
             public TunerActionButton()
             {
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
                 Cursor = Cursors.Hand;
+                TabStop = true;
                 Font = new Font("Microsoft YaHei UI", 8.8F, FontStyle.Bold);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) { pressed = true; Invalidate(); e.Handled = true; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnKeyUp(KeyEventArgs e)
+            {
+                if (pressed) { pressed = false; Invalidate(); if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) OnClick(EventArgs.Empty); e.Handled = true; }
+                base.OnKeyUp(e);
             }
 
             protected override void OnMouseEnter(EventArgs e)
@@ -18268,21 +18955,50 @@ namespace ToolboxClient
                 base.OnMouseLeave(e);
             }
 
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && Enabled) { pressed = true; Invalidate(); }
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                pressed = false;
+                Invalidate();
+                base.OnMouseUp(e);
+            }
+
             protected override void OnPaint(PaintEventArgs e)
             {
                 e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 Rectangle rect = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
-                Color fill = LightTheme
+                Color fill = !Enabled ? Color.FromArgb(90, PanelBg2.R, PanelBg2.G, PanelBg2.B) :
+                    (pressed ? Color.FromArgb(45, 52, 67) : (LightTheme
                     ? (hovered ? Color.FromArgb(248, 251, 255) : Color.FromArgb(253, 254, 255))
-                    : (hovered ? Color.FromArgb(59, 66, 82) : PanelBg2);
-                using (GraphicsPath path = UiRoundRect(rect, 5))
+                    : (hovered ? Color.FromArgb(59, 66, 82) : PanelBg2)));
+                using (GraphicsPath path = UiRoundRect(rect, 11))
                 using (SolidBrush bg = new SolidBrush(fill))
                 using (Pen border = new Pen(hovered ? Color.FromArgb(150, Accent) : Color.FromArgb(LightTheme ? 255 : 86, Line), 1F))
                 {
                     e.Graphics.FillPath(bg, path);
                     e.Graphics.DrawPath(border, path);
+                    if (Focused && ShowFocusCues) using (Pen focus = new Pen(Accent, 1.5F)) e.Graphics.DrawPath(focus, path);
                 }
 
+                if (IconTop && !HideIcon)
+                {
+                    Rectangle topIcon = new Rectangle((Width - 32) / 2, 10, 32, 32);
+                    if (IconImage != null)
+                    {
+                        double scale = Math.Min((double)topIcon.Width / Math.Max(1, IconImage.Width), (double)topIcon.Height / Math.Max(1, IconImage.Height));
+                        int drawWidth = Math.Max(1, (int)Math.Round(IconImage.Width * scale));
+                        int drawHeight = Math.Max(1, (int)Math.Round(IconImage.Height * scale));
+                        e.Graphics.DrawImage(IconImage, topIcon.Left + (topIcon.Width - drawWidth) / 2, topIcon.Top + (topIcon.Height - drawHeight) / 2, drawWidth, drawHeight);
+                    }
+                    else TextRenderer.DrawText(e.Graphics, IconText, new Font(Font.FontFamily, 12F, FontStyle.Bold), topIcon, Accent, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    TextRenderer.DrawText(e.Graphics, Title, Font, new Rectangle(8, 49, Width - 16, Height - 55), TextColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.WordBreak);
+                    return;
+                }
                 int textLeft = HideIcon ? 8 : 12;
                 Rectangle iconRect = new Rectangle(10, (Height - 18) / 2, 18, 18);
                 if (!HideIcon && IconImage != null)
@@ -18304,6 +19020,7 @@ namespace ToolboxClient
         {
             private bool active;
             private bool hovered;
+            private bool pressed;
             public string Caption = "";
             public string IconKey = "";
 
@@ -18317,7 +19034,20 @@ namespace ToolboxClient
             {
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
                 Cursor = Cursors.Hand;
+                TabStop = true;
                 Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) { pressed = true; Invalidate(); e.Handled = true; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnKeyUp(KeyEventArgs e)
+            {
+                if (pressed) { pressed = false; Invalidate(); if (Enabled && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space)) OnClick(EventArgs.Empty); e.Handled = true; }
+                base.OnKeyUp(e);
             }
 
             protected override void OnMouseEnter(EventArgs e)
@@ -18341,7 +19071,7 @@ namespace ToolboxClient
                 if (active || hovered)
                 {
                     Color fill = active ? Color.FromArgb(45, 145, 245) : (LightTheme ? Color.FromArgb(244, 248, 252) : Color.FromArgb(50, 58, 72));
-                    using (GraphicsPath path = UiRoundRect(rect, 5))
+                    using (GraphicsPath path = UiRoundRect(rect, 12))
                     using (SolidBrush bg = new SolidBrush(fill))
                     {
                         e.Graphics.FillPath(bg, path);
@@ -18351,6 +19081,81 @@ namespace ToolboxClient
                 Color textColor = active ? Color.White : (LightTheme ? Color.FromArgb(51, 65, 85) : Color.FromArgb(216, 226, 240));
                 DrawTunerGlyph(e.Graphics, IconKey, new Rectangle(20, (Height - 18) / 2, 18, 18), iconColor, 1.45F);
                 TextRenderer.DrawText(e.Graphics, Caption, Font, new Rectangle(46, 0, Width - 56, Height), textColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
+
+        private sealed class XingguiDownloadCard : Control
+        {
+            private readonly string title;
+            private readonly string description;
+            private readonly Color accent;
+            private readonly Color normalBack;
+            private readonly Color borderColor;
+            private readonly Color titleColor;
+            private readonly Color detailColor;
+            private bool hovered;
+
+            public XingguiDownloadCard(string title, string description, Color accent, Color back, Color border, Color titleColor, Color detailColor)
+            {
+                this.title = title ?? "";
+                this.description = description ?? "";
+                this.accent = accent;
+                normalBack = back;
+                borderColor = border;
+                this.titleColor = titleColor;
+                this.detailColor = detailColor;
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                Cursor = Cursors.Hand;
+                TabStop = true;
+                AccessibleRole = AccessibleRole.PushButton;
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Rectangle card = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+                Color back = hovered ? Blend(normalBack, accent, 0.12F) : normalBack;
+                using (GraphicsPath path = UiRoundRect(card, 8))
+                using (SolidBrush brush = new SolidBrush(back))
+                using (Pen border = new Pen(hovered ? accent : borderColor, 1F))
+                {
+                    e.Graphics.FillPath(brush, path);
+                    e.Graphics.DrawPath(border, path);
+                }
+                Rectangle iconBox = new Rectangle(13, (Height - 34) / 2, 34, 34);
+                using (GraphicsPath iconPath = UiRoundRect(iconBox, 7))
+                using (SolidBrush iconBack = new SolidBrush(Color.FromArgb(38, accent.R, accent.G, accent.B)))
+                using (Pen iconPen = new Pen(accent, 1.7F))
+                {
+                    e.Graphics.FillPath(iconBack, iconPath);
+                    Rectangle monitor = new Rectangle(iconBox.Left + 9, iconBox.Top + 8, 16, 12);
+                    e.Graphics.DrawRectangle(iconPen, monitor);
+                    e.Graphics.DrawLine(iconPen, monitor.Left + 8, monitor.Bottom, monitor.Left + 8, monitor.Bottom + 4);
+                    e.Graphics.DrawLine(iconPen, monitor.Left + 4, monitor.Bottom + 4, monitor.Right - 4, monitor.Bottom + 4);
+                }
+                TextRenderer.DrawText(e.Graphics, title, new Font(Font.FontFamily, 9F, FontStyle.Bold), new Rectangle(59, 11, Math.Max(40, Width - 96), 22), titleColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(e.Graphics, description, new Font(Font.FontFamily, 8F, FontStyle.Regular), new Rectangle(59, 34, Math.Max(40, Width - 96), 20), detailColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(e.Graphics, "›", new Font(Font.FontFamily, 18F, FontStyle.Regular), new Rectangle(Width - 30, 0, 22, Height), detailColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                if (Focused)
+                {
+                    using (Pen focus = new Pen(accent, 1F))
+                        e.Graphics.DrawPath(focus, UiRoundRect(new Rectangle(3, 3, Math.Max(1, Width - 7), Math.Max(1, Height - 7)), 6));
+                }
             }
         }
 
@@ -19052,8 +19857,12 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
         private sealed class TemplateActionButton : Control
         {
             private bool hovered;
+            private Size regionSize;
+            private int regionRadius = -1;
             public bool StudioMode = true;
             public bool OverviewIconMode;
+            public bool XingguiHomeMode;
+            public bool XingguiBusinessMode;
             public string Title = "";
             public string Subtitle = "";
             public string IconText = "";
@@ -19093,16 +19902,41 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             private void PaintStudio(Graphics g)
             {
                 Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                int cornerRadius = XingguiHomeMode ? 11 : (XingguiBusinessMode ? 9 : 8);
                 Color fill = hovered
                     ? (LightTheme ? Color.FromArgb(248, 251, 255) : Color.FromArgb(50, 63, 78))
                     : (LightTheme ? Color.FromArgb(250, 252, 255) : Color.FromArgb(37, 49, 64));
                 Color borderColor = LightTheme ? Color.FromArgb(214, 224, 236) : Color.FromArgb(75, 91, 110);
-                using (GraphicsPath path = RoundRect(rect, 8))
+                using (GraphicsPath path = RoundRect(rect, cornerRadius))
                 using (SolidBrush bg = new SolidBrush(fill))
                 using (Pen border = new Pen(borderColor, 1F))
                 {
+                    EnsureRoundedRegion(this, cornerRadius, ref regionSize, ref regionRadius);
                     g.FillPath(bg, path);
                     g.DrawPath(border, path);
+                }
+                if (XingguiBusinessMode)
+                {
+                    Rectangle row = new Rectangle(0, 0, Width - 1, Height - 1);
+                    using (GraphicsPath rowPath = RoundRect(row, 9))
+                    using (SolidBrush rowBrush = new SolidBrush(hovered ? Color.FromArgb(54, 52, 70) : Color.FromArgb(43, 42, 57)))
+                    {
+                        g.FillPath(rowBrush, rowPath);
+                    }
+                    using (SolidBrush dot = new SolidBrush(Color.FromArgb(0, 211, 235)))
+                        g.FillEllipse(dot, new Rectangle(Width / 2 - 70, Height / 2 - 3, 6, 6));
+                    TextRenderer.DrawText(g, Title, new Font(Font.FontFamily, 8.5F, FontStyle.Regular), new Rectangle(Width / 2 - 58, 0, Math.Min(Width - 68, 310), Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    return;
+                }
+                if (XingguiHomeMode)
+                {
+                    Rectangle icon = new Rectangle(14, Math.Max(4, (Height - 34) / 2), 34, 34);
+                    if (IconImage != null) g.DrawImage(IconImage, icon);
+                    else TextRenderer.DrawText(g, IconText, new Font(Font.FontFamily, 12F, FontStyle.Bold), icon, AccentColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    TextRenderer.DrawText(g, Title, new Font(Font.FontFamily, 9F, FontStyle.Bold), new Rectangle(58, 8, Width - 88, 22), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    TextRenderer.DrawText(g, Subtitle, new Font(Font.FontFamily, 8F, FontStyle.Regular), new Rectangle(58, 31, Width - 88, 20), Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    TextRenderer.DrawText(g, ">", new Font(Font.FontFamily, 12F, FontStyle.Regular), new Rectangle(Width - 28, 0, 18, Height), Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    return;
                 }
                 if (OverviewIconMode)
                 {
@@ -19359,6 +20193,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                 using (SolidBrush bg = new SolidBrush(BackColor))
                 using (Pen border = new Pen(BorderColor, 1F))
                 {
+                    EnsureRoundedRegion(this, Radius, ref regionSize, ref regionRadius);
                     e.Graphics.FillPath(bg, path);
                     e.Graphics.DrawPath(border, framePath);
                 }
@@ -20435,6 +21270,137 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
             path.CloseFigure();
             return path;
+        }
+    }
+
+    internal sealed class XingguiPasswordDialog : Form
+    {
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SystemParametersInfo(uint action, uint parameter, out bool value, uint flags);
+        private readonly TextBox input;
+        private readonly Label state;
+        private readonly Button confirm;
+        private readonly CheckBox reveal;
+        private readonly ProgressBar loading;
+        private readonly Panel field;
+        private readonly Func<string, bool> verify;
+        private readonly System.Windows.Forms.Timer transition;
+        private readonly bool animate;
+        private bool validating;
+        private bool closing;
+        private bool finishClose;
+        private DialogResult closeResult;
+        private DateTime transitionStarted;
+
+        public XingguiPasswordDialog(string caption, string prompt, Func<string, bool> verifyPassword)
+        {
+            verify = verifyPassword;
+            bool clientAnimation;
+            animate = SystemParametersInfo(0x1042, 0, out clientAnimation, 0) && clientAnimation && SystemInformation.IsMenuAnimationEnabled;
+            Text = "星轨工具箱 · " + (String.IsNullOrWhiteSpace(caption) ? "访问验证" : caption);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(440, 294);
+            BackColor = Color.FromArgb(31, 36, 37);
+            ForeColor = Color.FromArgb(236, 242, 240);
+            Font = new Font("Microsoft YaHei UI", 9F);
+            Label heading = new Label { Left = 28, Top = 24, Width = 382, Height = 34, Text = "星轨工具箱", Font = new Font(Font.FontFamily, 16F, FontStyle.Bold) };
+            Label label = new Label { Left = 30, Top = 72, Width = 380, Height = 26, Text = String.IsNullOrWhiteSpace(prompt) ? "请输入访问密码" : prompt };
+            field = new Panel { Left = 28, Top = 108, Width = 384, Height = 42, Padding = new Padding(2), BackColor = Color.FromArgb(74, 87, 84) };
+            input = new TextBox { Left = 12, Top = 10, Width = 358, Height = 26, BorderStyle = BorderStyle.None, BackColor = Color.FromArgb(41, 49, 50), ForeColor = ForeColor, UseSystemPasswordChar = true, AccessibleName = "访问密码" };
+            Panel inner = new Panel { Dock = DockStyle.Fill, BackColor = input.BackColor };
+            inner.Controls.Add(input);
+            field.Controls.Add(inner);
+            reveal = new CheckBox { Left = 30, Top = 160, Width = 170, Height = 26, Text = "显示密码", BackColor = BackColor, ForeColor = ForeColor };
+            reveal.CheckedChanged += delegate { input.UseSystemPasswordChar = !reveal.Checked; };
+            state = new Label { Left = 30, Top = 192, Width = 382, Height = 24, Text = "输入密码后继续", ForeColor = Color.FromArgb(169, 183, 179), AccessibleRole = AccessibleRole.Alert };
+            loading = new ProgressBar { Left = 30, Top = 220, Width = 380, Height = 3, Style = ProgressBarStyle.Marquee, Visible = false };
+            confirm = new Button { Left = 232, Top = 238, Width = 180, Height = 34, Text = "验证并进入", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(75, 212, 178), ForeColor = Color.FromArgb(13, 37, 29) };
+            confirm.FlatAppearance.BorderSize = 0;
+            Button cancel = new Button { Left = 28, Top = 238, Width = 180, Height = 34, Text = "取消", FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(41, 49, 50), ForeColor = ForeColor, DialogResult = DialogResult.Cancel };
+            cancel.FlatAppearance.BorderColor = Color.FromArgb(74, 87, 84);
+            input.GotFocus += delegate { field.BackColor = Color.FromArgb(75, 212, 178); };
+            input.LostFocus += delegate { field.BackColor = Color.FromArgb(74, 87, 84); };
+            input.TextChanged += delegate { if (!validating) { state.Text = "输入密码后继续"; state.ForeColor = Color.FromArgb(169, 183, 179); } };
+            confirm.Click += delegate { BeginVerification(); };
+            Controls.AddRange(new Control[] { heading, label, field, reveal, state, loading, confirm, cancel });
+            AcceptButton = confirm;
+            CancelButton = cancel;
+            transition = new System.Windows.Forms.Timer { Interval = 16 };
+            transition.Tick += delegate
+            {
+                double fraction = Math.Min(1, (DateTime.UtcNow - transitionStarted).TotalMilliseconds / 200.0);
+                Opacity = closing ? 1 - fraction : fraction;
+                if (fraction < 1) return;
+                transition.Stop();
+                if (closing) { finishClose = true; DialogResult = closeResult; Close(); }
+            };
+            if (animate) Opacity = 0;
+            Shown += delegate { input.Focus(); if (animate) { transitionStarted = DateTime.UtcNow; transition.Start(); } };
+            FormClosing += delegate(object sender, FormClosingEventArgs args)
+            {
+                if (!animate || finishClose) return;
+                args.Cancel = true;
+                if (closing) return;
+                closing = true;
+                closeResult = DialogResult == DialogResult.OK ? DialogResult.OK : DialogResult.Cancel;
+                DialogResult = DialogResult.None;
+                transitionStarted = DateTime.UtcNow;
+                transition.Start();
+            };
+        }
+
+        private void BeginVerification()
+        {
+            if (validating || closing) return;
+            string password = input.Text;
+            validating = true;
+            confirm.Enabled = input.Enabled = reveal.Enabled = false;
+            confirm.Text = "正在验证…";
+            state.Text = "正在验证密码…";
+            loading.Visible = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool valid = false;
+                try { valid = verify(password); } catch { }
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (IsDisposed || Disposing || closing) return;
+                        loading.Visible = false;
+                        validating = false;
+                        if (valid)
+                        {
+                            state.Text = "验证成功";
+                            state.ForeColor = Color.FromArgb(75, 212, 178);
+                            confirm.Text = "验证成功";
+                            DialogResult = DialogResult.OK;
+                            Close();
+                        }
+                        else
+                        {
+                            confirm.Enabled = input.Enabled = reveal.Enabled = true;
+                            confirm.Text = "重新验证";
+                            state.Text = "密码不正确，请重试";
+                            state.ForeColor = Color.FromArgb(255, 139, 139);
+                            input.Focus();
+                            field.BackColor = state.ForeColor;
+                            input.SelectAll();
+                        }
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && transition != null) transition.Dispose();
+            base.Dispose(disposing);
         }
     }
 

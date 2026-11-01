@@ -117,6 +117,7 @@ const SCRIPT_LABELS = {
 const SCRIPT_OPTIONS = Object.entries(SCRIPT_LABELS).map(([value, label]) => ({ value, label }));
 const SCRIPT_VALUE_BY_LABEL = Object.fromEntries(SCRIPT_OPTIONS.map(({ value, label }) => [label, value]));
 const CUSTOM_SCRIPT_VALUE = '__custom_script__';
+const XINGGUI_DEFAULT_COVER_URL = '/xinggui-version-cover.png';
 const INVITE_REFRESH_INTERVAL_MS = 3000;
 const CLIENT_VARIANTS = [
   {
@@ -157,6 +158,10 @@ const CLIENT_VARIANTS = [
   {
     id: 'vst76', label: '调音师工具箱旗舰版', badge: '对接中',
     description: '复刻 VST615 的旗舰版桌面布局，使用共享软件目录、页面锁和下载任务。', preview: 'vst76'
+  },
+  {
+    id: 'xinggui', label: '星轨工具箱', badge: '全新版本',
+    description: '深色导航、首页横幅与紧凑工具入口，认证和下载沿用后台现有配置。', preview: 'xinggui'
   }
 ];
 
@@ -2238,6 +2243,90 @@ function renderJsonPermissions() {
   });
 }
 
+function renderXingguiHome() {
+  const host = $('xingguiHomeEditors');
+  if (!host || !state.config) return;
+  const page = state.config.pages?.xinggui_home || {};
+  const disabled = isTemplateMode();
+  $('saveXingguiHomeBtn').disabled = disabled;
+  $('xingguiHomeScope').textContent = disabled
+    ? '当前为新用户模板视图，请切换到用户后配置该用户的首页。'
+    : `正在配置：${displayNameOf(state.targetUser || state.currentUser)} · 此首页仅保存到该用户。`;
+  host.replaceChildren();
+  [0, 1].forEach((index) => {
+    const section = page.sections?.[index] || { title: index ? '业务范围' : '远程下载', buttons: [] };
+    const column = document.createElement('section');
+    column.className = 'xinggui-home-editor';
+    column.dataset.xingguiSide = String(index);
+    column.innerHTML = `<div class="panel-head"><h3>${index ? '右侧按钮' : '左侧按钮'}</h3><button type="button" data-xinggui-add ${disabled ? 'disabled' : ''}>添加按钮</button></div><label>区域标题<input data-xinggui-title value="${escapeAttr(section.title || '')}" ${disabled ? 'disabled' : ''}></label><div data-xinggui-rows></div>`;
+    const rows = column.querySelector('[data-xinggui-rows]');
+    (section.buttons || []).forEach((item) => appendXingguiButton(rows, item, disabled));
+    column.querySelector('[data-xinggui-add]').onclick = () => appendXingguiButton(rows, { name: '新按钮', action: 'link', enabled: true, sort: rows.children.length * 10 + 10 });
+    host.appendChild(column);
+  });
+}
+
+function appendXingguiButton(host, item, disabled = false) {
+  const row = document.createElement('article');
+  row.className = 'xinggui-home-button-editor';
+  row.xingguiOriginal = item;
+  const action = item.action || 'link';
+  const target = item.target || item.download_url || item.url || item.command || item.script_id || item.package_id || '';
+  row.innerHTML = `<div class="form-grid compact"><label>按钮文字<input data-field="name" value="${escapeAttr(item.name || '')}"></label><label>排序<input type="number" data-field="sort" value="${Number(item.sort || 0)}"></label><label>动作<select data-field="action">${ACTIONS.map(([value, label]) => `<option value="${value}" ${action === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label class="checkline"><input data-field="enabled" type="checkbox" ${item.enabled !== false ? 'checked' : ''}> 显示按钮</label><label class="wide">说明<input data-field="description" value="${escapeAttr(item.description || '')}"></label><label class="wide">动作内容（留空仅显示文字）<div class="target-control">${targetControlHtml(action, target, item)}</div><small class="target-note"></small></label><label class="wide">按钮图标（可选）<div class="icon-field xinggui-icon-field"><span class="icon-preview"><img data-icon-preview src="${escapeAttr(item.icon || '')}" alt="" ${item.icon ? '' : 'hidden'}></span><div class="xinggui-icon-controls"><input data-field="icon" value="${escapeAttr(item.icon || '')}" placeholder="图标地址"><button type="button" class="icon-picker-trigger" data-icon-picker-open>选择图标</button><div class="icon-picker-popover" data-icon-picker-popup hidden></div></div></div></label></div><details><summary>点击验证与确认</summary>${buttonGuardHtml(item)}</details><div class="xinggui-home-row-actions"><button type="button" data-xinggui-up>上移</button><button type="button" data-xinggui-down>下移</button><button type="button" class="danger" data-xinggui-remove>删除按钮</button></div>`;
+  const iconInput = row.querySelector('[data-field="icon"]');
+  const iconPreview = row.querySelector('[data-icon-preview]');
+  iconInput.oninput = () => { iconPreview.src = iconInput.value.trim(); iconPreview.hidden = !iconInput.value.trim(); };
+  initButtonIconPicker(row, iconInput, iconPreview);
+  bindScriptTargetControl(row);
+  bindDownloadControl(row);
+  row.querySelector('[data-field="action"]').onchange = () => {
+    const nextAction = row.querySelector('[data-field="action"]').value;
+    row.querySelector('.target-control').innerHTML = targetControlHtml(nextAction, '', {});
+    bindScriptTargetControl(row); bindDownloadControl(row);
+  };
+  row.querySelector('[data-guard-password-toggle]').onclick = () => {
+    const input = row.querySelector('[data-guard-password-value]');
+    input.type = input.type === 'password' ? 'text' : 'password';
+  };
+  row.querySelector('[data-xinggui-remove]').onclick = () => row.remove();
+  const move = (direction) => {
+    const sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) return;
+    if (direction < 0) host.insertBefore(row, sibling); else host.insertBefore(sibling, row);
+    [...host.children].forEach((child, index) => { child.querySelector('[data-field="sort"]').value = (index + 1) * 10; });
+  };
+  row.querySelector('[data-xinggui-up]').onclick = () => move(-1);
+  row.querySelector('[data-xinggui-down]').onclick = () => move(1);
+  if (disabled) row.querySelectorAll('input, select, button, textarea').forEach((control) => { control.disabled = true; });
+  host.appendChild(row);
+}
+
+async function saveXingguiHome() {
+  if (isTemplateMode()) return;
+  const sections = [...document.querySelectorAll('[data-xinggui-side]')].map((column) => ({
+    title: column.querySelector('[data-xinggui-title]').value.trim(),
+    buttons: [...column.querySelector('[data-xinggui-rows]').children].map((row) => {
+      const value = (field) => row.querySelector(`[data-field="${field}"]`)?.value.trim() || '';
+      const item = { id: row.xingguiOriginal?.id || '', name: value('name'), sort: Number(value('sort') || 0), description: value('description'), icon: value('icon'), action: value('action'), target: readRowTarget(row), enabled: row.querySelector('[data-field="enabled"]').checked, guard: readButtonGuard(row, row.xingguiOriginal || {}) };
+      if (!item.name) throw new Error('请填写按钮文字。');
+      if (item.action === 'download') Object.assign(item, readDownloadConfig(row));
+      return item;
+    })
+  }));
+  const targetUserId = state.targetUserId || state.currentUser?.id;
+  const button = $('saveXingguiHomeBtn');
+  button.disabled = true;
+  try {
+    const saved = await api('/api/admin/xinggui-home', { method: 'PATCH', targetUserId, body: JSON.stringify({ sections }) });
+    if (targetUserId === (state.targetUserId || state.currentUser?.id) && !isTemplateMode()) {
+      state.config = saved;
+      state.buttons = await api(buttonsApiPath(), { targetUserId });
+      renderAll();
+      setStatus('当前用户的星轨首页已保存，工具箱将自动同步。');
+    }
+  } finally { button.disabled = isTemplateMode(); }
+}
+
 function renderApp() {
   ensureExeMetaFields();
   ensureUpdateFields();
@@ -2255,6 +2344,8 @@ function renderApp() {
   renderButtonContentLayout(app.button_content_layout, app.button_content_layout_rules);
   $('appLogo').value = app.logo_text || '';
   $('appIcon').value = app.icon || app.icon_url || '';
+  $('appHomeBannerUrl').value = app.home_banner_url || '';
+  refreshImageUrlPreviews();
   ensureExeIconField();
   $('appExeIcon').value = app.exe_icon || app.exe_icon_url || '';
   $('loginTitleInput').value = app.admin_title || '工具箱后台登录';
@@ -2792,6 +2883,57 @@ function ensureExeIconField() {
   label.className = 'wide';
   label.innerHTML = 'EXE 图标链接<input id="appExeIcon" placeholder="建议填 .ico 或 PNG 图床链接，生成工具箱时使用">';
   appIcon.closest('label').insertAdjacentElement('afterend', label);
+}
+
+function allowedImageUrl(value) {
+  try {
+    const text = String(value || '').trim();
+    if (!text || text.length > 2048 || /[\s\\\x00-\x1f\x7f]|%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(text)) return false;
+    const url = new URL(text);
+    return /^https:\/\//i.test(text) && url.protocol === 'https:' && !!url.hostname && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function refreshImageUrlPreviews() {
+  document.querySelectorAll('[data-image-url-field]').forEach((field) => {
+    const input = field.querySelector('input');
+    const image = field.querySelector('img');
+    if (!input || !image) return;
+    const value = input.value.trim();
+    image.hidden = true;
+    image.removeAttribute('src');
+    if (allowedImageUrl(value)) {
+      image.onload = () => { image.hidden = false; };
+      image.onerror = () => { image.hidden = true; image.removeAttribute('src'); };
+      image.src = value;
+    }
+  });
+}
+
+function handleImageUrlAction(event) {
+  const previewButton = event.target.closest('[data-image-preview]');
+  const clearButton = event.target.closest('[data-image-clear]');
+  const button = previewButton || clearButton;
+  if (!button) return;
+  const input = $(button.dataset.imagePreview || button.dataset.imageClear);
+  const field = input?.closest('[data-image-url-field]');
+  const image = field?.querySelector('img');
+  if (!input || !field || !image) return;
+  if (clearButton) {
+    input.value = '';
+    image.hidden = true;
+    image.removeAttribute('src');
+    return;
+  }
+  if (!allowedImageUrl(input.value)) {
+    setStatus('图片地址必须是有效的 HTTPS 链接。', true);
+    return;
+  }
+  image.onload = () => { image.hidden = false; setStatus('图片预览已加载。'); };
+  image.onerror = () => { image.hidden = true; image.removeAttribute('src'); setStatus('图片加载失败，请检查图床地址或图片格式。', true); };
+  image.src = input.value.trim();
 }
 
 function ensureUpdateFields() {
@@ -3674,21 +3816,53 @@ function renderClientVariantSettings() {
   wrap.innerHTML = CLIENT_VARIANTS.map((variant) => {
     const config = variantSettings(variant);
     const mode = config.coverMode || 'default';
+    const coverControls = variant.id === 'xinggui'
+      ? `<label class="wide variant-cover-url">封面图床链接<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/xinggui-cover.webp"></label><div class="image-url-actions wide"><button type="button" data-variant-cover-preview>预览</button><button type="button" class="secondary-btn" data-variant-cover-clear>清除</button></div>`
+      : `<label>封面来源<select data-variant-field="coverMode"><option value="default" ${mode === 'default' ? 'selected' : ''}>默认封面</option><option value="upload" ${mode === 'upload' ? 'selected' : ''}>上传服务器</option><option value="url" ${mode === 'url' ? 'selected' : ''}>图床地址</option></select></label>
+        <label class="wide variant-cover-url">图床 / 封面地址<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/cover.png"></label>
+        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/vnd.microsoft.icon,.ico"><button data-variant-upload-btn type="button">上传图片</button></div>`;
     return `<article class="variant-setting" data-variant-setting="${escapeAttr(variant.id)}">
-      <div class="variant-setting-preview">${mode !== 'default' && config.coverUrl ? `<img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}">` : clientPreviewMarkup(variant.preview)}</div>
+      <div class="variant-setting-preview" data-variant-cover-preview-host>${config.coverUrl && (variant.id === 'xinggui' || mode !== 'default') ? `<img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}">` : clientPreviewMarkup(variant.preview)}</div>
       <div class="variant-setting-fields">
         <label>名称<input data-variant-field="name" value="${escapeAttr(config.name || variant.label)}"></label>
         <label>角标<input data-variant-field="badge" value="${escapeAttr(config.badge || variant.badge)}"></label>
         <label class="wide">介绍<textarea data-variant-field="description" rows="3">${escapeHtml(config.description || variant.description)}</textarea></label>
-        <label>封面来源<select data-variant-field="coverMode"><option value="default" ${mode === 'default' ? 'selected' : ''}>默认封面</option><option value="upload" ${mode === 'upload' ? 'selected' : ''}>上传服务器</option><option value="url" ${mode === 'url' ? 'selected' : ''}>图床地址</option></select></label>
-        <label class="wide variant-cover-url">图床 / 封面地址<input data-variant-field="coverUrl" value="${escapeAttr(config.coverUrl || '')}" placeholder="https://example.com/cover.png"></label>
-        <div class="variant-upload-row"><input data-variant-upload type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/vnd.microsoft.icon,.ico"><button data-variant-upload-btn type="button">上传图片</button></div>
+        ${coverControls}
       </div>
     </article>`;
   }).join('');
   wrap.querySelectorAll('[data-variant-upload-btn]').forEach((button) => {
     button.onclick = () => uploadVariantCover(button.closest('[data-variant-setting]')).catch((error) => setStatus(error.message, true));
   });
+  wrap.querySelectorAll('[data-variant-cover-preview]').forEach((button) => {
+    button.onclick = () => previewVariantCover(button.closest('[data-variant-setting]'));
+  });
+  wrap.querySelectorAll('[data-variant-cover-clear]').forEach((button) => {
+    button.onclick = () => clearVariantCover(button.closest('[data-variant-setting]'));
+  });
+}
+
+function previewVariantCover(card) {
+  const input = card?.querySelector('[data-variant-field="coverUrl"]');
+  const host = card?.querySelector('[data-variant-cover-preview-host]');
+  if (!input || !host) return;
+  if (!allowedImageUrl(input.value)) {
+    setStatus('图片地址必须是有效的 HTTPS 链接。', true);
+    return;
+  }
+  const image = document.createElement('img');
+  image.alt = '星轨工具箱封面预览';
+  image.onload = () => setStatus('星轨工具箱封面预览已加载。');
+  image.onerror = () => { host.innerHTML = clientPreviewMarkup('xinggui'); setStatus('封面图片加载失败。', true); };
+  image.src = input.value.trim();
+  host.replaceChildren(image);
+}
+
+function clearVariantCover(card) {
+  const input = card?.querySelector('[data-variant-field="coverUrl"]');
+  const host = card?.querySelector('[data-variant-cover-preview-host]');
+  if (input) input.value = '';
+  if (host) host.innerHTML = clientPreviewMarkup('xinggui');
 }
 
 async function uploadVariantCover(card) {
@@ -3715,7 +3889,11 @@ async function saveClientVariants() {
   const clientVariants = {};
   document.querySelectorAll('[data-variant-setting]').forEach((card) => {
     const value = (field) => card.querySelector(`[data-variant-field="${field}"]`)?.value.trim() || '';
-    clientVariants[card.dataset.variantSetting] = { name: value('name'), badge: value('badge'), description: value('description'), coverMode: value('coverMode'), coverUrl: value('coverUrl') };
+    const variantId = card.dataset.variantSetting;
+    const coverMode = variantId === 'xinggui' ? 'url' : value('coverMode');
+    const coverUrl = value('coverUrl');
+    if (variantId === 'xinggui' && coverUrl && coverUrl !== XINGGUI_DEFAULT_COVER_URL && !allowedImageUrl(coverUrl)) throw new Error('星轨工具箱封面地址必须是 HTTPS 链接。');
+    clientVariants[variantId] = { name: value('name'), badge: value('badge'), description: value('description'), coverMode, coverUrl };
   });
   state.system = await api('/api/super/system', { method: 'PATCH', body: JSON.stringify({ clientVariants }) });
   await loadClientVariants();
@@ -3963,6 +4141,9 @@ function renderTemplateControls() {
 }
 
 function clientPreviewMarkup(type) {
+  if (type === 'xinggui') {
+    return `<div class="client-preview xinggui-preview"><div class="preview-window-bar"><span>星轨工具箱</span><i></i><i></i><i></i></div><div class="xinggui-preview-body"><aside><b>星</b><em class="active">首页</em><em>软件资源</em><em>系统工具</em><em>下载管理</em><em>设置</em></aside><main><section class="xinggui-preview-hero"><strong>星轨工具箱</strong><span>工具与资源，一处管理</span></section><h4>常用工具</h4><div class="xinggui-preview-grid"><i>设备管理</i><i>系统清理</i><i>软件资源</i><i>常用链接</i></div></main></div></div>`;
+  }
   if (type === 'original') {
     return `
       <div class="client-preview original-preview">
@@ -4080,7 +4261,8 @@ function renderClientVariants() {
   const editing = isTemplateMode();
   const cards = CLIENT_VARIANTS.map((variant) => {
     const config = variantSettings(variant);
-    const cover = config.coverMode !== 'default' && config.coverUrl ? `<div class="client-preview custom-client-cover"><img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}"></div>` : clientPreviewMarkup(variant.preview);
+    const validCover = variant.id === 'xinggui' ? (config.coverUrl && (config.coverUrl.startsWith('/') || allowedImageUrl(config.coverUrl))) : true;
+    const cover = config.coverMode !== 'default' && config.coverUrl && validCover ? `<div class="client-preview custom-client-cover"><img src="${escapeAttr(config.coverUrl)}" alt="${escapeAttr(config.name || variant.label)}"></div>` : clientPreviewMarkup(variant.preview);
     return `
     <article class="client-variant-card" data-client-variant="${escapeAttr(variant.id)}">
       ${cover}
@@ -5485,6 +5667,10 @@ async function saveAppPatch(patch, message) {
 }
 
 async function saveAppBasicSettings() {
+  for (const id of ['appHomeBannerUrl']) {
+    const value = $(id)?.value.trim() || '';
+    if (value && !allowedImageUrl(value)) throw new Error('图片地址必须是有效的 HTTPS 链接。');
+  }
   const deleteDownloadsOnExit = $('deleteDownloadsOnExit')?.checked === true;
   await saveAppPatch({
     title: $('appTitle').value.trim(),
@@ -5497,6 +5683,7 @@ async function saveAppBasicSettings() {
     logo_text: $('appLogo').value.trim(),
     icon: $('appIcon').value.trim(),
     exe_icon: $('appExeIcon')?.value.trim() || '',
+    home_banner_url: $('appHomeBannerUrl').value.trim(),
     window_width: Number($('appWidth').value || 1080),
     window_height: Number($('appHeight').value || 700),
     delete_downloads_on_exit: deleteDownloadsOnExit
@@ -5522,15 +5709,16 @@ function normalizeButtonContentLayout(value) {
 }
 
 function buttonLayoutPages() {
+  const fixedPages = new Set(['system_overview', 'xinggui_home']);
   const rows = [];
   const seen = new Set();
   (state.config?.sidebar || []).forEach((item) => {
-    if (!item?.id || item.id === 'settings' || seen.has(item.id)) return;
+    if (!item?.id || item.id === 'settings' || fixedPages.has(item.id) || seen.has(item.id)) return;
     seen.add(item.id);
     rows.push({ id: item.id, name: item.name || state.config?.pages?.[item.id]?.title || item.id });
   });
   Object.entries(state.config?.pages || {}).forEach(([id, page]) => {
-    if (!id || id === 'settings' || seen.has(id)) return;
+    if (!id || id === 'settings' || fixedPages.has(id) || seen.has(id)) return;
     seen.add(id);
     rows.push({ id, name: page?.title || page?.name || id });
   });
@@ -8140,6 +8328,7 @@ $('targetUserSelect').onchange = async () => {
 };
 
 $('saveAppBtn').onclick = () => saveApp().catch((error) => setStatus(error.message, true));
+document.addEventListener('click', handleImageUrlAction);
 $('saveAccountBtn').onclick = () => saveAccount().catch((error) => setStatus(error.message, true));
 $('saveMailBtn').onclick = () => saveMailSettings().catch((error) => setStatus(error.message, true));
 $('testMailBtn').onclick = () => testMailSettings().catch((error) => setStatus(error.message, true));

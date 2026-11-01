@@ -43,6 +43,16 @@ class ButtonContentLayoutBackendTests(unittest.TestCase):
         self.app.apply_app_patch(cfg, {"button_content_layout": "other"})
         self.assertEqual("icon_left", cfg["app"]["button_content_layout"])
 
+    def test_fixed_pages_are_removed_from_layout_scope(self):
+        cfg = self.app.default_config()
+        self.app.apply_app_patch(cfg, {"button_content_layout_rules": {
+            "icon_top": {"enabled": True, "pages": ["system_overview", "xinggui_home", "legacy"]}
+        }})
+        rules = cfg["app"]["button_content_layout_rules"]
+        self.assertNotIn("system_overview", rules["icon_top"]["pages"])
+        self.assertNotIn("xinggui_home", rules["icon_top"]["pages"])
+        self.assertIn("legacy", rules["icon_top"]["pages"])
+
     def test_users_and_public_config_are_isolated(self):
         for user_id, value in (("user-a", "icon_top"), ("user-b", "icon_left")):
             cfg = self.app.default_config()
@@ -89,6 +99,23 @@ class ButtonContentLayoutClientTests(unittest.TestCase):
         self.assertIn("previousButtonContentLayout", self.cs)
         self.assertIn("RestoreContentScrollSoon(previousScroll)", self.cs)
         self.assertIn("GetCachedButtonIcon(iconUrl)", self.cs)
+        self.assertIn('string displayIconUrl = iconUrl;', self.cs)
+        self.assertIn('String.Equals(currentPage, XingguiHomePageId', self.cs)
+        self.assertIn('bool iconTopLayout = xingguiVariant && buttonContentLayout == "icon_top"', self.cs)
+        self.assertIn('IconTop = iconTopLayout', self.cs)
+        self.assertIn('public bool IconTop;', self.cs)
+        self.assertIn('if (IconTop && !HideIcon)', self.cs)
+        self.assertIn('int buttonHeight = iconTopLayout ? 96 : 42;', self.cs)
+        js = (PROJECT / "wwwroot" / "admin.js").read_text(encoding="utf-8")
+        pages = js[js.index("function buttonLayoutPages()"):js.index("function normalizedButtonLayoutRules")]
+        self.assertIn("system_overview", pages)
+        self.assertIn("xinggui_home", pages)
+        self.assertIn("fixedPages.has(item.id)", pages)
+        self.assertIn("fixedPages.has(id)", pages)
+
+    def test_content_width_does_not_double_subtract_scrollbar(self):
+        self.assertNotIn("content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth", self.cs)
+        self.assertIn('return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);', self.cs)
         self.assertIn("ScheduleBusinessIconRefresh()", self.cs)
         self.assertIn("Interval = 120", self.cs)
         self.assertIn("ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl))", self.cs)
