@@ -864,6 +864,10 @@ async function register() {
     setLoginMessage('注册失败：用户名、邮箱、密码和邀请码都要填写。');
     return;
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    setLoginMessage('注册失败：请输入正确的邮箱地址。');
+    return;
+  }
 
   try {
     const result = await api('/api/register', {

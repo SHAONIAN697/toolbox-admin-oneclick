@@ -4407,25 +4407,26 @@ def send_announcement_mail_to_users(announcement, users):
             f"更新内容：\n{announcement.get('content') or ''}\n"
             f"发布时间：{publish_time or '未设置'}"
         )
-        for user_id, email in sendable:
-            msg = EmailMessage()
-            msg["From"] = sender
-            msg["To"] = email
-            msg["Subject"] = subject
-            msg.set_content(content)
-            try:
-                if settings.get("secure", True) or port == 465:
-                    with smtplib.SMTP_SSL(host, port, timeout=15) as smtp:
-                        smtp.login(smtp_user, password)
+        try:
+            smtp_factory = smtplib.SMTP_SSL if settings.get("secure", True) or port == 465 else smtplib.SMTP
+            with smtp_factory(host, port, timeout=15) as smtp:
+                if smtp_factory is smtplib.SMTP:
+                    smtp.starttls()
+                smtp.login(smtp_user, password)
+                for user_id, email in sendable:
+                    msg = EmailMessage()
+                    msg["From"] = sender
+                    msg["To"] = email
+                    msg["Subject"] = subject
+                    msg.set_content(content)
+                    try:
                         smtp.send_message(msg)
-                else:
-                    with smtplib.SMTP(host, port, timeout=15) as smtp:
-                        smtp.starttls()
-                        smtp.login(smtp_user, password)
-                        smtp.send_message(msg)
-                sent += 1
-            except Exception as exc:
-                failures.append({"userId": user_id, "reason": smtp_failure_reason(exc)})
+                        sent += 1
+                    except Exception as exc:
+                        failures.append({"userId": user_id, "reason": smtp_failure_reason(exc)})
+        except Exception as exc:
+            reason = smtp_failure_reason(exc)
+            failures.extend({"userId": user_id, "reason": reason} for user_id, _ in sendable[sent:])
     failed = len(failures)
     return {
         "ok": sent > 0,
@@ -4709,6 +4710,8 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
         raise ValueError("用户不存在。")
     username = (body.get("username") or user.get("username") or "").strip()
     email = (body.get("email") or user.get("email") or "").strip().lower()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise ValueError("请输入正确的邮箱地址。")
     if not username:
         raise ValueError("用户名不能为空。")
     for other in store["users"]:
@@ -6337,6 +6340,9 @@ class Handler(BaseHTTPRequestHandler):
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()
+                email = (body.get("email") or "").strip().lower()
+                if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                    return self.send_json({"error": "请输入正确的邮箱地址。"}, 400)
                 code = (body.get("inviteCode") or "").strip()
                 store = read_users()
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)

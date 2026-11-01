@@ -190,6 +190,13 @@ class AnnouncementMailTests(unittest.TestCase):
         self.assertEqual(entries[0]["details"]["selected"], 1)
         self.assertNotIn("password", json.dumps(entries[0], ensure_ascii=False).lower())
 
+    def test_account_update_rejects_invalid_email_without_mutation(self):
+        user = {"id": "u1", "username": "one", "email": "one@example.com", "passwordHash": ""}
+        APP.write_json(APP.USERS_PATH, {"users": [user], "inviteCodes": [], "settings": {}})
+        with self.assertRaisesRegex(ValueError, "正确的邮箱地址"):
+            APP.update_user_account("u1", {"email": "not-an-email"})
+        self.assertEqual(APP.read_users()["users"][0]["email"], "one@example.com")
+
 
 if __name__ == "__main__":
     unittest.main()
