@@ -962,8 +962,8 @@ namespace ToolboxClient
             FlowLayoutPanel chrome = new FlowLayoutPanel
             {
                 Dock = DockStyle.Right, Width = 294, Height = 42,
-                FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-                Padding = new Padding(0, 8, 0, 0), BackColor = Color.Transparent
+                FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+                Padding = new Padding(0, 8, 0, 0), Margin = Padding.Empty, BackColor = Color.Transparent
             };
             chrome.MouseDown += DragWindow;
             titleBar.Controls.Add(chrome);
@@ -980,12 +980,12 @@ namespace ToolboxClient
             minButton.Click += delegate { WindowState = FormWindowState.Minimized; };
             maxButton.Click += delegate { WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized; };
             closeButton.Click += delegate { Close(); };
-            chrome.Controls.Add(downloadTasksButton);
-            chrome.Controls.Add(settingsButton);
-            chrome.Controls.Add(topMostButton);
-            chrome.Controls.Add(minButton);
-            chrome.Controls.Add(maxButton);
             chrome.Controls.Add(closeButton);
+            chrome.Controls.Add(maxButton);
+            chrome.Controls.Add(minButton);
+            chrome.Controls.Add(topMostButton);
+            chrome.Controls.Add(settingsButton);
+            chrome.Controls.Add(downloadTasksButton);
 
             Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(248, 249, 250), Padding = new Padding(14, 8, 10, 4) };
             root.Controls.Add(main, 1, 1);
@@ -10754,7 +10754,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (resourceSearchButtonHost.Dock == DockStyle.Right)
                 resourceSearchButtonHost.Width += resourceSearchButton.Width + resourceSearchButton.Margin.Horizontal;
             resourceSearchButtonHost.Controls.Add(resourceSearchButton);
-            if (resourceSearchButtonHost.FlowDirection != FlowDirection.RightToLeft)
+            if (audioVariant && resourceSearchButtonHost.FlowDirection == FlowDirection.RightToLeft)
+                resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, resourceSearchButtonHost.Controls.Count - 1);
+            else if (resourceSearchButtonHost.FlowDirection != FlowDirection.RightToLeft)
                 resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, 0);
         }
 

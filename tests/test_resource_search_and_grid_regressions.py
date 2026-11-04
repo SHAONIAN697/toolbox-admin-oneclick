@@ -29,6 +29,15 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         self.assertIn("Dock = DockStyle.Right, Width = 294, Height = 42", self.source)
         self.assertIn("titleBar.Controls.Add(chrome);\n            resourceSearchButtonHost = chrome;\n            downloadTasksButton", self.source)
 
+    def test_audio_window_controls_are_anchored_at_the_right_edge(self):
+        shell = self.source[self.source.index("private void BuildAudioShell()"):self.source.index("private Button MakeAudioChromeButton")]
+        self.assertIn("FlowDirection = FlowDirection.RightToLeft", shell)
+        ordered_controls = ["chrome.Controls.Add(closeButton);", "chrome.Controls.Add(maxButton);", "chrome.Controls.Add(minButton);", "chrome.Controls.Add(topMostButton);"]
+        positions = [shell.index(control) for control in ordered_controls]
+        self.assertEqual(sorted(positions), positions)
+        search = self.source[self.source.index("private void AddResourceSearchButtonToChrome()"):self.source.index("private void LayoutResourceSearchChrome()")]
+        self.assertIn("resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, resourceSearchButtonHost.Controls.Count - 1);", search)
+
     def test_resource_search_input_has_no_outer_border(self):
         self.assertIn("resourceSearchHost.Padding = Padding.Empty;", self.source)
         self.assertNotIn("PaintResourceSearchBorder", self.source)
