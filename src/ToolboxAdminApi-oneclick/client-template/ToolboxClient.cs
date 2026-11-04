@@ -103,8 +103,11 @@ namespace ToolboxClient
 
     internal sealed class ToolboxForm : Form
     {
-        private const int ConfigRefreshBaseIntervalMs = 5000;
-        private const int ConfigRefreshJitterMs = 3000;
+        // Keep password/config changes visible quickly without waiting for a long
+        // randomized polling window. The server already uses ETags, so unchanged
+        // polls are cheap 304 responses.
+        private const int ConfigRefreshBaseIntervalMs = 250;
+        private const int ConfigRefreshJitterMs = 0;
         private readonly string configUrl;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private readonly Random configRefreshRandom = new Random();
@@ -244,6 +247,8 @@ namespace ToolboxClient
         private bool buttonContentLayoutScopeEnabled = false;
         private readonly HashSet<string> buttonContentLayoutPages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private bool passwordUnlocked = false;
+        private bool startupPasswordPromptActive = false;
+        private bool configApplyPending = false;
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
@@ -428,9 +433,9 @@ namespace ToolboxClient
 
         private int NextConfigRefreshInterval()
         {
-            int multiplier = 1 << Math.Min(3, Math.Max(0, configRefreshFailureCount));
-            int baseInterval = Math.Min(60000, ConfigRefreshBaseIntervalMs * multiplier);
-            return Math.Min(60000, baseInterval + configRefreshRandom.Next(ConfigRefreshJitterMs + 1));
+            if (configRefreshFailureCount <= 0) return ConfigRefreshBaseIntervalMs;
+            int multiplier = 1 << Math.Min(2, Math.Max(0, configRefreshFailureCount));
+            return Math.Min(1000, ConfigRefreshBaseIntervalMs * multiplier);
         }
 
         private void UpdateStatusClock()
@@ -2726,6 +2731,11 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
+            if (startupPasswordPromptActive)
+            {
+                configApplyPending = true;
+                return;
+            }
             Point previousScroll = CaptureContentScroll();
             string previousButtonContentLayout = buttonContentLayout;
             Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
@@ -2842,7 +2852,12 @@ namespace ToolboxClient
                 passwordUnlocked = false;
                 lastPasswordHash = password;
                 UpdateXingguiPasswordButton();
-                if (PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
+                if (startupPasswordPromptActive) return;
+                startupPasswordPromptActive = true;
+                bool unlocked = false;
+                try { unlocked = PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"); }
+                finally { startupPasswordPromptActive = false; }
+                if (unlocked)
                 {
                     passwordUnlocked = true;
                     UpdateXingguiPasswordButton();
@@ -2852,13 +2867,35 @@ namespace ToolboxClient
                     Close();
                     allowNav = false;
                 }
+                if (configApplyPending && !IsDisposed && !Disposing)
+                {
+                    configApplyPending = false;
+                    BeginInvoke(new Action(ApplyConfig));
+                }
             }
-            else if (!passwordUnlocked && PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"))
+            else if (!passwordUnlocked && !startupPasswordPromptActive)
             {
-                passwordUnlocked = true;
-                UpdateXingguiPasswordButton();
+                startupPasswordPromptActive = true;
+                bool unlocked = false;
+                try { unlocked = PromptPassword(password, "工具箱密码", "请输入工具箱启动密码"); }
+                finally { startupPasswordPromptActive = false; }
+                if (unlocked)
+                {
+                    passwordUnlocked = true;
+                    UpdateXingguiPasswordButton();
+                }
+                else
+                {
+                    Close();
+                    allowNav = false;
+                }
+                if (configApplyPending && !IsDisposed && !Disposing)
+                {
+                    configApplyPending = false;
+                    BeginInvoke(new Action(ApplyConfig));
+                }
             }
-            else if (!passwordUnlocked)
+            else if (!passwordUnlocked && !startupPasswordPromptActive)
             {
                 Close();
                 allowNav = false;
@@ -18367,7 +18404,10 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (String.IsNullOrWhiteSpace(json)) return;
             try
             {
-                config = AsDict(serializer.DeserializeObject(json));
+                Dictionary<string, object> initialConfig = AsDict(serializer.DeserializeObject(json));
+                string configuredPassword = GetText(AsDict(Get(initialConfig, "app")), "password", "");
+                if (!String.IsNullOrWhiteSpace(configuredPassword)) return;
+                config = initialConfig;
                 lastConfigJson = json;
                 lastSyncText = "正在连接后台...";
                 status.Text = lastSyncText;

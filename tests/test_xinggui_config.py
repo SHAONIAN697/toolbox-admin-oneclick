@@ -11,6 +11,7 @@ class XingguiConfigTests(unittest.TestCase):
         self.assertIn('string text = NormalizeConfigJson(raw);', source)
         self.assertIn('File.WriteAllText(CachePath(), json ?? "", Encoding.UTF8);', source)
         self.assertNotIn('StripPasswordFromCachedConfig', source)
+        self.assertIn('if (!String.IsNullOrWhiteSpace(configuredPassword)) return;', source)
 
     @classmethod
     def setUpClass(cls):
