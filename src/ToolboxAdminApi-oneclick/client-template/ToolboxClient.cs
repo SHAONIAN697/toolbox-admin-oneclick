@@ -423,6 +423,15 @@ namespace ToolboxClient
             statusClockTimer.Start();
             Shown += delegate
             {
+                if (portalVariant)
+                {
+                    Rectangle workArea = Screen.FromControl(this).WorkingArea;
+                    int width = Math.Min(1280, Math.Max(MinimumSize.Width, workArea.Width - 24));
+                    int height = Math.Min(840, Math.Max(MinimumSize.Height, workArea.Height - 24));
+                    Size = new Size(width, height);
+                    Location = new Point(workArea.Left + (workArea.Width - width) / 2, workArea.Top + (workArea.Height - height) / 2);
+                    QueueContentResizeRender();
+                }
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
                 ShowStartupLoadingWindow();
                 startupRenderTimer.Start();
@@ -7562,6 +7571,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             {
                 Width = available,
                 Margin = new Padding(0, 0, 0, 10),
+                Padding = Padding.Empty,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
                 AutoScroll = false,

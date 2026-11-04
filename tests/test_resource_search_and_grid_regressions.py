@@ -48,6 +48,12 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         portal = self.source[self.source.index("private void BuildPortalShell()"):self.source.index("private void AttachBrandPopupEntry")]
         self.assertIn("Rectangle portalWorkArea = Screen.FromControl(this).WorkingArea;", portal)
         self.assertIn("portalWorkArea.Width - 24", portal)
+        shown = self.source[self.source.index("Shown += delegate"):self.source.index("private int NextConfigRefreshInterval()")]
+        self.assertIn("Rectangle workArea = Screen.FromControl(this).WorkingArea;", shown)
+        self.assertIn("Location = new Point(workArea.Left + (workArea.Width - width) / 2", shown)
+        cards = self.source[self.source.index("private void RenderPortalSections()"):self.source.index("private void RenderPortalLoadingState")]
+        self.assertIn("WrapContents = true", cards)
+        self.assertIn("AutoScroll = false", cards)
         resize = self.source[self.source.index("protected override void OnResize(EventArgs e)"):self.source.index("protected override void OnDeactivate")]
         self.assertIn("if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId", resize)
         self.assertIn("QueueContentResizeRender();", resize)
