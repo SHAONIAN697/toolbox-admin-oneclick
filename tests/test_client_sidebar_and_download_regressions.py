@@ -90,12 +90,9 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
 
     def test_first_config_queues_post_layout_page_render(self):
         apply_config = self.method("private void ApplyConfig()", "private void ApplyTheme(")
-        self.assertIn("bool firstConfigApplication = !configApplied;", apply_config)
-        self.assertIn("if (firstConfigApplication) QueueInitialPageRender();", apply_config)
-        queue = self.method("private void QueueInitialPageRender", "private void ApplyTheme(")
-        self.assertIn("BeginInvoke(new Action(delegate", queue)
-        self.assertIn("RenderCurrentVisiblePage();", queue)
-        self.assertIn("ShowPage(key);", queue)
+        self.assertIn("configApplied = true;", apply_config)
+        self.assertIn("BuildNav();", apply_config)
+        self.assertNotIn("QueueInitialPageRender", self.source)
 
     def test_flagship_configured_buttons_use_catalog_style_icon_cards(self):
         self.assertIn("CreateVst76ConfiguredActionCard", self.source)
@@ -146,22 +143,46 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("softwareCatalogIconTargets", self.source)
         self.assertIn("if (!targets.Contains(target)) targets.Add(target);", icon_loader)
         self.assertIn("foreach (PictureBox pending in targets)", icon_loader)
-        self.assertIn("ScheduleSoftwareIconRefresh();", icon_loader)
-        button_loader = self.method("private void QueueButtonIconLoad(string url, Control target, int size)", "private void ScheduleBusinessIconRefresh")
+        self.assertNotIn("ScheduleSoftwareIconRefresh", icon_loader)
+        self.assertIn("ApplySoftwareCatalogIcon(pending, data)", icon_loader)
+        button_loader = self.method("private void QueueButtonIconLoad(string url, Control target, int size)", "private void ApplyButtonIconImage")
         self.assertIn("for (int attempt = 0; attempt < 3 && image == null; attempt++)", button_loader)
-        self.assertIn("failedIcons.Remove(cacheKey)", button_loader)
+        self.assertIn("buttonIconTargets", self.source)
+        self.assertIn("if (!targets.Contains(target)) targets.Add(target);", button_loader)
+        self.assertIn("foreach (Control pending in targets)", button_loader)
+        self.assertIn("buttonIconTargets.Remove(cacheKey)", button_loader)
+        self.assertNotIn("RenderCurrentVisiblePage", button_loader)
+        self.assertNotIn("ScheduleBusinessIconRefresh", self.source)
 
-    def test_async_icon_refresh_keeps_the_current_flagship_page_route(self):
-        refresh = self.method("private void ScheduleBusinessIconRefresh", "private Image LoadRemoteImage")
-        self.assertIn("RenderCurrentVisiblePage();", refresh)
-        self.assertNotIn("RenderCurrentSections();", refresh)
+    def test_async_icon_updates_only_live_controls_and_keeps_the_current_flagship_page_route(self):
+        apply_icon = self.method("private void ApplyButtonIconImage", "private Image LoadRemoteImage")
+        self.assertIn("target.IsDisposed || target.Disposing", apply_icon)
+        self.assertIn("target.Invalidate();", apply_icon)
+        self.assertNotIn("RenderCurrentVisiblePage", apply_icon)
+        self.assertNotIn("ClearChildControls", apply_icon)
+        self.assertIn("picture.Image = new Bitmap(image);", apply_icon)
+        self.assertNotIn("businessIconRefreshTimer", self.source)
 
         home = self.method("private bool IsVst76HomePage", "private bool IsConfiguredVst76HomeLabel")
         self.assertIn('String.Equals((label ?? "").Trim(), "系统概览"', home)
         self.assertIn("NavLabel(row, id, pages)", home)
 
         queue = self.method("private void QueueShowPage", "private void QueueContentResizeRender")
-        self.assertIn("RenderCurrentVisiblePage();", queue)
+        self.assertIn("ShowPage(id);", queue)
+        self.assertNotIn("RenderCurrentVisiblePage();", queue)
+
+    def test_button_count_does_not_create_a_resize_render_loop_without_icons(self):
+        shell = self.method("private void BuildShell()", "private void BuildAudioShell()")
+        self.assertIn("Avoid recursive FlowLayoutPanel resize/render loops", shell)
+        self.assertIn("content.Resize += delegate", shell)
+        resize = self.method("private void QueueContentResizeRender()", "private void EnsureContentResizeTimer()")
+        self.assertIn("Math.Abs(width - lastResizeRenderWidth) < 8", resize)
+        self.assertIn("Math.Abs(height - lastResizeRenderHeight) < 8", resize)
+        self.assertIn("softwareCatalogLayoutUpdating || contentRendering", resize)
+        timer = self.method("private void EnsureContentResizeTimer()", "private void RenderCurrentVisiblePage()")
+        self.assertIn("contentResizeTimer.Interval = 120;", timer)
+        self.assertIn("RenderCurrentVisiblePage();", timer)
+        self.assertNotIn("QueueContentResizeRender();", timer)
 
     def test_non_studio_variants_hide_overview_by_id_or_label(self):
         self.assertIn("private bool IsStudioOverviewPage", self.source)

@@ -211,7 +211,6 @@ namespace ToolboxClient
         private System.Windows.Forms.Timer softwareRenderTimer;
         private System.Windows.Forms.Timer pageSwitchTimer;
         private System.Windows.Forms.Timer contentResizeTimer;
-        private System.Windows.Forms.Timer businessIconRefreshTimer;
         private string softwareCatalogQuery = "";
         private string softwareCatalogCategory = "全部";
         private bool softwareCatalogLayoutUpdating = false;
@@ -220,6 +219,9 @@ namespace ToolboxClient
         private string lastResizeRenderPage = "";
         private int lastResizeRenderWidth = -1;
         private int lastResizeRenderHeight = -1;
+        private string lastRenderedPageId = "";
+        private string lastRenderedPageSignature = "";
+        private string lastNavigationSignature = "";
         private List<SoftwareCatalogEntry> softwareRenderEntries = new List<SoftwareCatalogEntry>();
         private int softwareRenderIndex = 0;
         private int softwareRenderCardWidth = 286;
@@ -245,7 +247,6 @@ namespace ToolboxClient
         private readonly Dictionary<string, string> unlockedPagePasswords = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool loadingConfig = false;
         private bool configApplied = false;
-        private bool initialPageRenderQueued = false;
         private bool updatePromptShown = false;
         private bool selfUpdateDownloading = false;
         private readonly List<DownloadTask> activeDownloads = new List<DownloadTask>();
@@ -289,6 +290,7 @@ namespace ToolboxClient
         private int xingguiRightPage;
         private readonly Dictionary<string, Control> navButtons = new Dictionary<string, Control>();
         private readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
+        private readonly Dictionary<string, List<Control>> buttonIconTargets = new Dictionary<string, List<Control>>(StringComparer.Ordinal);
         private readonly Dictionary<string, byte[]> softwareCatalogIconBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> softwareCatalogIconRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<PictureBox>> softwareCatalogIconTargets = new Dictionary<string, List<PictureBox>>(StringComparer.OrdinalIgnoreCase);
@@ -575,12 +577,6 @@ namespace ToolboxClient
                 contentResizeTimer.Dispose();
                 contentResizeTimer = null;
             }
-            if (businessIconRefreshTimer != null)
-            {
-                businessIconRefreshTimer.Stop();
-                businessIconRefreshTimer.Dispose();
-                businessIconRefreshTimer = null;
-            }
             if (tunerClockTimer != null)
             {
                 tunerClockTimer.Stop();
@@ -606,7 +602,17 @@ namespace ToolboxClient
                 EnsureRoundedRegion(this, xingguiVariant ? 14 : 12, ref toolboxWindowRegionSize, ref toolboxWindowRegionRadius);
             if ((portalVariant || tunerVariant || studioVariant || audioVariant || vst76Variant || xingguiVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
-                QueueContentResizeRender();
+                // A resize must not rebuild the current business page. Recreating
+                // every card here exposes an empty/reflowed frame on all variants.
+                // Existing controls and FlowLayoutPanel layout are sufficient for
+                // the common pages; special pages retain their own explicit refresh.
+                content.PerformLayout();
+                content.Invalidate();
+                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) &&
+                    !softwareCatalogLayoutUpdating)
+                {
+                    QueueContentResizeRender();
+                }
             }
             LayoutResourceSearchChrome();
             if (IsHandleCreated && content != null && !content.IsDisposed)
@@ -636,6 +642,10 @@ namespace ToolboxClient
             {
                 CreateParams cp = base.CreateParams;
                 cp.Style |= WsSysMenu | WsMinimizeBox;
+                // Child panels provide their own double buffering. Avoid
+                // WS_EX_COMPOSITED here: whole-window composition makes a small
+                // button/layout invalidation repaint the portal hero and sidebar,
+                // which appears as a full-page flash on multi-button pages.
                 return cp;
             }
         }
@@ -1381,8 +1391,11 @@ namespace ToolboxClient
             {
                 if ((tunerVariant || vst76Variant || xingguiVariant) && IsHandleCreated && !content.IsDisposed)
                 {
-                    if ((tunerVariant || vst76Variant) && (currentPage.Equals(TunerDriversPageId, StringComparison.OrdinalIgnoreCase) || currentPage.Equals(TunerLinksPageId, StringComparison.OrdinalIgnoreCase))) return;
-                    QueueContentResizeRender();
+                    // The current control tree is already valid during a resize.
+                    // A delayed full-page render used to clear and recreate every
+                    // business card, which produced the same flash on every
+                    // tuner/xinggui-style page.
+                    content.Invalidate();
                 }
             };
             main.Controls.Add(content);
@@ -1641,7 +1654,7 @@ namespace ToolboxClient
             {
                 if (studioVariant && IsHandleCreated && !content.IsDisposed)
                 {
-                    QueueContentResizeRender();
+                    content.Invalidate();
                 }
             };
             main.Controls.Add(content);
@@ -1835,7 +1848,7 @@ namespace ToolboxClient
             {
                 if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && !content.IsDisposed)
                 {
-                    QueueContentResizeRender();
+                    content.Invalidate();
                 }
             };
             mainLayout.Controls.Add(content, 0, 1);
@@ -2666,7 +2679,11 @@ namespace ToolboxClient
                     {
                         status.Text = portalVariant ? "连接后台失败，等待下次同步。" : "连接后台失败。";
                         title.Text = portalVariant ? PortalText("配置同步失败", "Sync Failed") : "工具箱无法加载";
-                        if (portalVariant) RenderPortalLoadingState("连接后台失败，等待下次同步");
+                        // Keep an already-rendered portal page visible while a
+                        // later sync is unavailable. Replacing it with a
+                        // loading state and restoring it on the next retry is
+                        // another full-page flash path.
+                        if (portalVariant && !configApplied) RenderPortalLoadingState("连接后台失败，等待下次同步");
                         if (showMessage) MessageBox.Show(errorMessage, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }));
                     return;
@@ -2709,11 +2726,28 @@ namespace ToolboxClient
 
         private void ApplyConfig()
         {
-            bool firstConfigApplication = !configApplied;
             Point previousScroll = CaptureContentScroll();
             string previousButtonContentLayout = buttonContentLayout;
             Dictionary<string, object> updateApp = AsDict(Get(config, "app"));
             if (EnforceUpdatePolicy(updateApp)) return;
+
+            // A normal sync often only renews signed download/parser URLs. If
+            // the visible page and navigation are unchanged, keep the existing
+            // control tree and update its action payloads in place. Running the
+            // full shell/theme/layout path here briefly exposes the reflowed
+            // four-button page and is the source of the recurring flash.
+            if (configApplied && !String.IsNullOrWhiteSpace(currentPage))
+            {
+                // Automatic sync must never rebuild the page currently visible
+                // to the user. Besides signed URLs, module fields and backend
+                // metadata can change without changing the rendered cards. Keep
+                // those values for the next explicit page render and hot-update
+                // only live action payloads in the existing controls.
+                RefreshVisibleActionTargets();
+                lastConfigJson = serializer.Serialize(config);
+                HideStartupOverlay();
+                return;
+            }
 
             SuspendLayout();
             side.SuspendLayout();
@@ -2844,7 +2878,19 @@ namespace ToolboxClient
                     resourceSearchVisible = false;
                     resourceSearchActive = false;
                 }
-                BuildNav();
+                string navigationSignature = NavigationSignature();
+                if (!String.Equals(navigationSignature, lastNavigationSignature, StringComparison.Ordinal))
+                {
+                    BuildNav();
+                    lastNavigationSignature = navigationSignature;
+                }
+                else if (!String.IsNullOrWhiteSpace(currentPage))
+                {
+                    // Keep the existing navigation/control tree on an unchanged
+                    // sync; ShowPage's page signature decides whether content
+                    // itself actually needs rebuilding.
+                    ShowPage(currentPage);
+                }
                 LayoutResourceSearchChrome();
                 RestorePausedDownloadTasksOnce();
                 if (tunerVariant || vst76Variant) ForceTunerLayoutRefresh();
@@ -2857,34 +2903,47 @@ namespace ToolboxClient
             side.ResumeLayout();
             ResumeLayout();
             HideStartupOverlay();
-            if (firstConfigApplication) QueueInitialPageRender();
         }
 
-        private void QueueInitialPageRender()
+        private void RefreshVisibleActionTargets()
         {
-            if (initialPageRenderQueued || !configApplied || IsDisposed || Disposing || !IsHandleCreated) return;
-            initialPageRenderQueued = true;
-            try
+            if (content == null || content.IsDisposed) return;
+            Dictionary<string, Dictionary<string, object>> latest = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+            Dictionary<string, object> page = AsDict(Get(pages, currentPage));
+            foreach (object sectionObject in AsList(Get(page, "sections")))
             {
-                BeginInvoke(new Action(delegate
+                Dictionary<string, object> section = AsDict(sectionObject);
+                foreach (object buttonObject in AsList(Get(section, "buttons")))
                 {
-                    initialPageRenderQueued = false;
-                    if (IsDisposed || Disposing || !configApplied || content == null || content.IsDisposed) return;
-                    if (String.IsNullOrWhiteSpace(currentPage) || !navButtons.ContainsKey(currentPage))
-                    {
-                        foreach (string key in navButtons.Keys)
-                        {
-                            if (String.Equals(key, "settings", StringComparison.OrdinalIgnoreCase)) continue;
-                            ShowPage(key);
-                            return;
-                        }
-                    }
-                    RenderCurrentVisiblePage();
-                }));
+                    Dictionary<string, object> button = AsDict(buttonObject);
+                    string id = GetText(button, "id", "");
+                    if (!String.IsNullOrWhiteSpace(id)) latest[id] = button;
+                }
             }
-            catch
+            foreach (Control control in FixtureLikeDescendants(content))
             {
-                initialPageRenderQueued = false;
+                ActionInfo info = control.Tag as ActionInfo;
+                if (info == null || String.IsNullOrWhiteSpace(info.ItemId)) continue;
+                Dictionary<string, object> button;
+                if (!latest.TryGetValue(info.ItemId, out button)) continue;
+                string action = GetText(button, "action", Has(button, "url") ? "link" : "cmd").ToLowerInvariant();
+                info.Action = action;
+                info.Target = GetTarget(button, action);
+                info.CustomScript = GetText(button, "custom_script", "");
+                info.Name = GetText(button, "name", info.Name);
+                info.BackupUrl = GetBackupUrl(button);
+                info.BackupPageUrl = GetBackupPageUrl(button);
+                info.DownloadKey = BuildActionDownloadKey(button);
+            }
+        }
+
+        private static IEnumerable<Control> FixtureLikeDescendants(Control parent)
+        {
+            foreach (Control child in parent.Controls)
+            {
+                yield return child;
+                foreach (Control nested in FixtureLikeDescendants(child)) yield return nested;
             }
         }
 
@@ -3358,7 +3417,7 @@ namespace ToolboxClient
                 string name = GetText(item, "name", "功能入口");
                 string description = GetText(item, "description", GetText(item, "intro", ""));
                 string action = GetText(item, "action", "link").ToLowerInvariant();
-                ActionInfo info = new ActionInfo { Action = action, Target = GetTarget(item, action), CustomScript = GetText(item, "custom_script", ""), Name = name, BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) };
+                ActionInfo info = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action, Target = GetTarget(item, action), CustomScript = GetText(item, "custom_script", ""), Name = name, BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) };
                 string iconUrl = GetText(item, "icon", "");
                 TemplateActionButton button = new TemplateActionButton
                 {
@@ -3977,10 +4036,12 @@ namespace ToolboxClient
         private static void ClearChildControls(Control parent)
         {
             if (parent == null) return;
-            while (parent.Controls.Count > 0)
+            if (parent.Controls.Count == 0) return;
+            List<Control> children = new List<Control>();
+            foreach (Control child in parent.Controls) children.Add(child);
+            parent.Controls.Clear();
+            foreach (Control child in children)
             {
-                Control child = parent.Controls[0];
-                parent.Controls.RemoveAt(0);
                 child.Dispose();
             }
         }
@@ -4776,9 +4837,14 @@ namespace ToolboxClient
         private void QueueShowPage(string id)
         {
             if (String.IsNullOrWhiteSpace(id)) return;
+            if (audioVariant && !contentRendering)
+            {
+                pendingPageId = "";
+                ShowPage(id);
+                return;
+            }
             if (id.Equals(currentPage, StringComparison.OrdinalIgnoreCase) && String.IsNullOrWhiteSpace(pendingPageId))
             {
-                RenderCurrentVisiblePage();
                 return;
             }
             pendingPageId = id;
@@ -4942,9 +5008,10 @@ namespace ToolboxClient
 
         private void EndContentRender()
         {
-            contentRendering = false;
             UpdateContentScrolling();
             DisableHorizontalScrollbars(content);
+            contentRendering = false;
+            if (content != null && !content.IsDisposed) content.Invalidate();
             if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
             {
                 pageSwitchTimer.Stop();
@@ -5055,6 +5122,13 @@ namespace ToolboxClient
                 if (resourceSearchBox != null && resourceSearchBox.TextLength > 0) resourceSearchBox.Text = "";
             }
             if (String.IsNullOrWhiteSpace(id)) return;
+            if (String.Equals(id, currentPage, StringComparison.OrdinalIgnoreCase) &&
+                !contentRendering &&
+                String.Equals(PageRenderSignature(id), lastRenderedPageSignature, StringComparison.Ordinal))
+            {
+                MarkNavButtonActive(id);
+                return;
+            }
             if (refreshCurrentSearchPage)
             {
                 currentPage = id;
@@ -5249,6 +5323,86 @@ namespace ToolboxClient
         {
             currentSections = sections;
             RenderCurrentSections();
+            lastRenderedPageId = currentPage ?? "";
+            lastRenderedPageSignature = PageRenderSignature(lastRenderedPageId);
+        }
+
+        private string PageRenderSignature(string id)
+        {
+            if (String.IsNullOrWhiteSpace(id) || config == null) return "";
+            try
+            {
+                Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+                object page = Get(pages, id);
+                // Config refreshes can renew download/parser URLs while the
+                // visible page remains identical. Including those volatile
+                // targets in the render signature caused the whole page to be
+                // cleared and rebuilt every refresh, producing the flash seen
+                // on 常用工具 and every similar multi-button page.
+                return id + "|" + buttonContentLayout + "|" + serializer.Serialize(PageVisualSignature(page));
+            }
+            catch
+            {
+                return id + "|" + buttonContentLayout;
+            }
+        }
+
+        private Dictionary<string, object> PageVisualSignature(object pageObject)
+        {
+            Dictionary<string, object> page = AsDict(pageObject);
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["title"] = Get(page, "title");
+            List<object> visualSections = new List<object>();
+            foreach (object sectionObject in AsList(Get(page, "sections")))
+            {
+                Dictionary<string, object> section = AsDict(sectionObject);
+                Dictionary<string, object> visualSection = new Dictionary<string, object>();
+                visualSection["title"] = Get(section, "title");
+                List<object> visualButtons = new List<object>();
+                foreach (object buttonObject in AsList(Get(section, "buttons")))
+                {
+                    Dictionary<string, object> button = AsDict(buttonObject);
+                    Dictionary<string, object> visualButton = new Dictionary<string, object>();
+                    visualButton["id"] = Get(button, "id");
+                    visualButton["name"] = Get(button, "name");
+                    visualButton["icon"] = Get(button, "icon");
+                    visualButton["action"] = Get(button, "action");
+                    visualButton["enabled"] = Get(button, "enabled");
+                    visualButton["sort"] = Get(button, "sort");
+                    visualButtons.Add(visualButton);
+                }
+                visualSection["buttons"] = visualButtons;
+                visualSections.Add(visualSection);
+            }
+            result["sections"] = visualSections;
+            return result;
+        }
+
+        private string NavigationSignature()
+        {
+            try
+            {
+                Dictionary<string, object> navConfig = new Dictionary<string, object>();
+                navConfig["sidebar"] = Get(config, "sidebar");
+                // Only navigation-affecting module fields belong here. The
+                // module object can contain runtime/download values that change
+                // during sync and must not rebuild the sidebar or current page.
+                Dictionary<string, object> module = AsDict(Get(config, "esportsAudioModule"));
+                navConfig["esportsAudioModule"] = new Dictionary<string, object>
+                {
+                    { "enabled", Get(module, "enabled") },
+                    { "visible", Get(module, "visible") },
+                    { "name", Get(module, "name") },
+                    { "title", Get(module, "title") }
+                };
+                navConfig["variant"] = Program.ClientVariant;
+                navConfig["softwareCatalog"] = SoftwareCatalogEnabled();
+                return serializer.Serialize(navConfig);
+            }
+            catch
+            {
+                return Program.ClientVariant + "|" + (config == null ? "" : Convert.ToString(Get(config, "sidebar")));
+            }
         }
 
         private void RenderCurrentSections()
@@ -5256,7 +5410,6 @@ namespace ToolboxClient
             if (content == null) return;
             if (!BeginContentRender()) return;
             ResetContentScrollState();
-            bool oldVisible = content.Visible;
             if (studioVariant)
             {
                 try
@@ -5310,7 +5463,6 @@ namespace ToolboxClient
                     EndContentRender();
                 }
             }
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5364,15 +5516,12 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
 
         private void RenderAudioSections()
         {
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5423,7 +5572,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
             }
         }
 
@@ -5494,6 +5642,7 @@ namespace ToolboxClient
                 for (int priorRow = 0; priorRow < row; priorRow++) buttonTop += rowHeights[priorRow] + gap;
                 ActionInfo info = new ActionInfo
                 {
+                    ItemId = GetText(item, "id", ""),
                     Action = action,
                     Target = GetTarget(item, action),
                     CustomScript = GetText(item, "custom_script", ""),
@@ -5562,8 +5711,6 @@ namespace ToolboxClient
 
         private void RenderStudioSections()
         {
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5604,14 +5751,12 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
+                content.Invalidate();
             }
         }
 
         private void RenderTunerSections()
         {
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5650,7 +5795,7 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
+                content.Invalidate();
             }
         }
 
@@ -5658,8 +5803,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5675,7 +5818,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -5684,8 +5826,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -5701,7 +5841,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -5952,6 +6091,7 @@ namespace ToolboxClient
             Color accent = CardAccent(action, nameText, index);
             ActionInfo info = new ActionInfo
             {
+                ItemId = GetText(item, "id", ""),
                 Action = action,
                 Target = target,
                 CustomScript = GetText(item, "custom_script", ""),
@@ -6107,7 +6247,7 @@ namespace ToolboxClient
                 IconImage = icon,
                 HideIcon = !applyLayout,
                 IconTop = iconTopLayout,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
+ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, GetText(item, "description", "")));
             button.Click += delegate
@@ -6318,8 +6458,6 @@ namespace ToolboxClient
         private void RenderVst76HomePage()
         {
             if (content == null || !BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -6343,7 +6481,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
             QueueVst76MetricRefresh();
@@ -6708,8 +6845,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -6742,7 +6877,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -6925,8 +7059,6 @@ namespace ToolboxClient
             RestorePausedDownloadTasksOnce();
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -6944,7 +7076,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
             RenderActiveDownloads();
@@ -7414,7 +7545,9 @@ namespace ToolboxClient
             content.Controls.Add(cards);
 
             content.ResumeLayout();
-            ApplyPortalThemeToShell();
+            // The portal palette is applied by ApplyConfig and explicit theme
+            // changes. Reapplying it after every card rebuild invalidates the
+            // entire shell and creates a visible flash on four-button pages.
         }
 
         private void RenderPortalLoadingState(string message)
@@ -9501,36 +9634,22 @@ namespace ToolboxClient
                     if (softwareCatalogIconTargets.TryGetValue(resolved, out targets))
                         softwareCatalogIconTargets.Remove(resolved);
                 }
-                if (data == null || IsDisposed || !IsHandleCreated) return;
+                if (data == null || IsDisposed || Disposing || !IsHandleCreated) return;
                 try
                 {
                     BeginInvoke(new Action(delegate
                     {
-                        bool detachedTarget = false;
                         if (targets != null)
                         {
                             foreach (PictureBox pending in targets)
                             {
                                 if (pending != null && !pending.IsDisposed) ApplySoftwareCatalogIcon(pending, data);
-                                else detachedTarget = true;
                             }
                         }
-                        if (detachedTarget) ScheduleSoftwareIconRefresh();
                     }));
                 }
                 catch { }
             });
-        }
-
-        private void ScheduleSoftwareIconRefresh()
-        {
-            if (IsDisposed || Disposing || content == null || !configApplied) return;
-            if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase))
-            {
-                if (!softwareCatalogLayoutUpdating) RefreshSoftwareCatalogResults();
-                return;
-            }
-            ScheduleBusinessIconRefresh();
         }
 
         private static byte[] DownloadSoftwareCatalogIconBytes(string url)
@@ -10361,7 +10480,7 @@ namespace ToolboxClient
                 IconImage = icon,
                 ButtonText = portalVariant ? PortalText("打开", "Open") : "打开",
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
+ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             if (topToolTip != null) topToolTip.SetToolTip(button, BuildActionTip(button.Title, action, target, description));
             button.Click += delegate
@@ -10480,26 +10599,41 @@ namespace ToolboxClient
                 content.HorizontalScroll.Visible = false;
                 return;
             }
-            content.PerformLayout();
-            int requiredBottom = content.Padding.Top;
-            foreach (Control child in content.Controls)
+            // Layout/scrollbar changes can synchronously invalidate the parent and
+            // cause a visible blank frame while a page is being rebuilt. Calculate
+            // the desired state first, then apply only actual changes as one batch.
+            content.SuspendLayout();
+            try
             {
-                if (!child.Visible) continue;
-                requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
+                content.PerformLayout();
+                int requiredBottom = content.Padding.Top;
+                foreach (Control child in content.Controls)
+                {
+                    if (!child.Visible) continue;
+                    requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
+                }
+                int bottomPadding = Math.Max(16, content.Padding.Bottom + 12);
+                int requiredScrollBottom = requiredBottom + bottomPadding;
+                bool needsVerticalScroll = requiredScrollBottom > content.ClientSize.Height + 2;
+                if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
+                if (needsVerticalScroll)
+                {
+                    Size desiredMinSize = new Size(0, requiredScrollBottom);
+                    if (content.AutoScrollMinSize != desiredMinSize) content.AutoScrollMinSize = desiredMinSize;
+                }
+                else
+                {
+                    if (content.AutoScrollPosition != Point.Empty) content.AutoScrollPosition = Point.Empty;
+                    if (content.AutoScrollMinSize != Size.Empty) content.AutoScrollMinSize = Size.Empty;
+                    content.VerticalScroll.Visible = false;
+                }
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
             }
-            int bottomPadding = Math.Max(16, content.Padding.Bottom + 12);
-            int requiredScrollBottom = requiredBottom + bottomPadding;
-            bool needsVerticalScroll = requiredScrollBottom > content.ClientSize.Height + 2;
-            if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
-            if (needsVerticalScroll) content.AutoScrollMinSize = new Size(0, requiredScrollBottom);
-            if (!needsVerticalScroll)
+            finally
             {
-                content.AutoScrollPosition = Point.Empty;
-                content.AutoScrollMinSize = Size.Empty;
-                content.VerticalScroll.Visible = false;
+                content.ResumeLayout(false);
             }
-            content.HorizontalScroll.Enabled = false;
-            content.HorizontalScroll.Visible = false;
         }
 
         private void BuildResourceSearchChrome()
@@ -11086,7 +11220,7 @@ namespace ToolboxClient
                 AccentColor = CardAccent(action, GetText(item, "name", "未命名"), index),
                 ListMode = listMode,
                 PortalMode = portalVariant && !listMode,
-                ActionInfo = new ActionInfo { Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
+ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action, Target = target, CustomScript = customScript, Name = GetText(item, "name", "未命名"), BackupUrl = GetBackupUrl(item), BackupPageUrl = GetBackupPageUrl(item), DownloadKey = BuildActionDownloadKey(item) }
             };
             ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl));
             topToolTip.SetToolTip(card, BuildActionTip(card.Title, action, target, description));
@@ -11197,11 +11331,30 @@ namespace ToolboxClient
             if (String.IsNullOrWhiteSpace(url) || target == null) return;
             string resolved = ResolveAssetUrl(url);
             string cacheKey = size + "x" + size + "|" + resolved;
+            Image cached = null;
+            bool startRequest = false;
             lock (iconCacheLock)
             {
-                if (iconCache.ContainsKey(cacheKey) || failedIcons.Contains(cacheKey)) return;
-                failedIcons.Add(cacheKey);
+                iconCache.TryGetValue(cacheKey, out cached);
+                if (cached == null)
+                {
+                    List<Control> targets;
+                    if (!buttonIconTargets.TryGetValue(cacheKey, out targets))
+                    {
+                        targets = new List<Control>();
+                        buttonIconTargets[cacheKey] = targets;
+                        startRequest = true;
+                    }
+                    if (!targets.Contains(target)) targets.Add(target);
+                }
             }
+            if (cached != null)
+            {
+                ApplyButtonIconImage(target, cached);
+                return;
+            }
+            if (!startRequest) return;
+
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Image image = null;
@@ -11210,55 +11363,48 @@ namespace ToolboxClient
                     image = LoadRemoteImage(resolved, size, size);
                     if (image == null && attempt < 2) Thread.Sleep(350 * (attempt + 1));
                 }
-                lock (iconCacheLock) failedIcons.Remove(cacheKey);
-                if (image == null) return;
+                List<Control> targets = null;
+                lock (iconCacheLock)
+                {
+                    if (buttonIconTargets.TryGetValue(cacheKey, out targets))
+                        buttonIconTargets.Remove(cacheKey);
+                }
+                if (image == null || targets == null || IsDisposed || Disposing || !IsHandleCreated) return;
                 try
                 {
                     BeginInvoke(new Action(delegate
                     {
-                        if (target != null && !target.IsDisposed)
+                        if (IsDisposed || Disposing) return;
+                        foreach (Control pending in targets)
                         {
-                            TemplateActionButton templateButton = target as TemplateActionButton;
-                            ActionCard actionCard = target as ActionCard;
-                            TunerActionButton tunerButton = target as TunerActionButton;
-                            Button standardButton = target as Button;
-                            PictureBox picture = target as PictureBox;
-                            if (templateButton != null) templateButton.IconImage = image;
-                            if (actionCard != null) actionCard.IconImage = image;
-                            if (tunerButton != null) tunerButton.IconImage = image;
-                            if (standardButton != null) standardButton.Image = image;
-                            if (picture != null)
-                            {
-                                Image previous = picture.Image;
-                                picture.Image = new Bitmap(image);
-                                if (previous != null) previous.Dispose();
-                            }
-                            target.Invalidate();
+                            try { ApplyButtonIconImage(pending, image); }
+                            catch { }
                         }
-                        if (!(target is PictureBox)) ScheduleBusinessIconRefresh();
                     }));
                 }
                 catch { }
             });
         }
 
-        private void ScheduleBusinessIconRefresh()
+        private void ApplyButtonIconImage(Control target, Image image)
         {
-            if (IsDisposed || Disposing || content == null) return;
-            if (businessIconRefreshTimer == null)
+            if (target == null || image == null || target.IsDisposed || target.Disposing) return;
+            TemplateActionButton templateButton = target as TemplateActionButton;
+            ActionCard actionCard = target as ActionCard;
+            TunerActionButton tunerButton = target as TunerActionButton;
+            Button standardButton = target as Button;
+            PictureBox picture = target as PictureBox;
+            if (templateButton != null) templateButton.IconImage = image;
+            if (actionCard != null) actionCard.IconImage = image;
+            if (tunerButton != null) tunerButton.IconImage = image;
+            if (standardButton != null) standardButton.Image = image;
+            if (picture != null)
             {
-                businessIconRefreshTimer = new System.Windows.Forms.Timer { Interval = 120 };
-                businessIconRefreshTimer.Tick += delegate
-                {
-                    businessIconRefreshTimer.Stop();
-                    if (IsDisposed || Disposing || !configApplied) return;
-                    Point scrollPosition = CaptureContentScroll();
-                    RenderCurrentVisiblePage();
-                    RestoreContentScrollSoon(scrollPosition);
-                };
+                Image previous = picture.Image;
+                picture.Image = new Bitmap(image);
+                if (previous != null) previous.Dispose();
             }
-            businessIconRefreshTimer.Stop();
-            businessIconRefreshTimer.Start();
+            target.Invalidate();
         }
 
         private Image LoadRemoteImage(
@@ -16325,8 +16471,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -16474,7 +16618,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -16548,8 +16691,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -16671,7 +16812,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -16692,8 +16832,6 @@ namespace ToolboxClient
         {
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -16783,7 +16921,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -16793,8 +16930,6 @@ namespace ToolboxClient
             RestorePausedDownloadTasksOnce();
             if (content == null) return;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -16881,7 +17016,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -16908,8 +17042,6 @@ namespace ToolboxClient
             if (recordsPanel != null) recordsPanel.Visible = false;
             if (settingsPanel != null) settingsPanel.Visible = false;
             if (!BeginContentRender()) return;
-            bool oldVisible = content.Visible;
-            content.Visible = false;
             content.SuspendLayout();
             try
             {
@@ -17022,7 +17154,6 @@ namespace ToolboxClient
             finally
             {
                 content.ResumeLayout();
-                content.Visible = oldVisible;
                 EndContentRender();
             }
         }
@@ -20018,6 +20149,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
 
         internal sealed class ActionInfo
         {
+            public string ItemId;
             public string Action;
             public string Target;
             public string CustomScript;
@@ -20176,6 +20308,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
 
             protected override void OnPaintBackground(PaintEventArgs e)
             {
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush brush = new SolidBrush(clear))
+                    e.Graphics.FillRectangle(brush, ClientRectangle);
             }
 
             protected override void OnPaint(PaintEventArgs e)
@@ -20218,6 +20353,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
 
             protected override void OnPaintBackground(PaintEventArgs e)
             {
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush brush = new SolidBrush(clear))
+                    e.Graphics.FillRectangle(brush, ClientRectangle);
             }
 
             protected override void OnPaint(PaintEventArgs e)
@@ -20453,6 +20591,9 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
 
             protected override void OnPaintBackground(PaintEventArgs e)
             {
+                Color clear = EffectiveBackColor(Parent);
+                using (SolidBrush brush = new SolidBrush(clear))
+                    e.Graphics.FillRectangle(brush, ClientRectangle);
             }
 
             protected override void OnPaint(PaintEventArgs e)
@@ -21124,12 +21265,13 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
     internal sealed class BufferedFlowLayoutPanel : FlowLayoutPanel
     {
         public bool SuppressFocusAutoScroll { get; set; }
+        public bool BatchUpdating { get; set; }
 
         public BufferedFlowLayoutPanel()
         {
             DoubleBuffered = true;
-            // Let FlowLayoutPanel handle its native scroll painting; UserPaint causes stale
-            // back-buffer regions to be copied into newly exposed rows while scrolling.
+            // Keep the native FlowLayoutPanel background path so each variant's
+            // configured BackColor is preserved.
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
 

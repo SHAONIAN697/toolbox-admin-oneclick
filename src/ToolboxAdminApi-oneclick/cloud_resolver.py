@@ -1478,7 +1478,10 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers, api_ba
             name = html.unescape(str(item.get("fileName") or item.get("name") or "未命名文件").strip())[:240]
             path = (folder_path.rstrip("/") + "/" + name) if folder_path else "/" + name
             parser_url = str(item.get("parserUrl") or item.get("downloadUrl") or "").strip()
-            kind = str(item.get("fileType") or "").lower()
+            # The documented QAIU response uses `fileType` (`folder` for
+            # directories). A few deployments expose the same value as
+            # `type`, so accept that as a compatibility fallback.
+            kind = str(item.get("fileType") or item.get("type") or "").strip().lower()
             if kind == "folder":
                 if parser_url:
                     if not _qaiu_safe_https_url(parser_url):
@@ -2395,6 +2398,12 @@ def route(handler, app, path, method, auth):
             plan = next((x for x in store["plans"] if x.get("id") == body.get("planId") and x.get("enabled", True)), None)
             if not plan:
                 return handler.send_json({"error": "套餐不存在或已停用。"}, 400)
+            if not is_super and user.get("role") == "user":
+                user_store = app.read_users()
+                ancestor_ids = app.agent_descendant_ids(user.get("parentAgentId"), user_store) if user.get("parentAgentId") else set()
+                blocked = [row for row in user_store.get("users", []) if row.get("id") in ancestor_ids and row.get("role") == "agent" and row.get("agentOpenMode") == "redeem_only"]
+                if blocked:
+                    return handler.send_json({"error": "当前代理分支仅允许兑换激活码，暂不支持在线购买。", "code": "AGENT_REDEEM_ONLY"}, 403)
             amount = _effective_agent_price(plan) if app.is_agent(user) and not is_super else _effective_member_price(plan)
             action = "cloud_resolver_plan_purchase"
             settings = app.read_system_settings()
@@ -2490,7 +2499,7 @@ def route(handler, app, path, method, auth):
                 redeemable = False
             if row and user_id in (row.get("redeemedUsers") or []):
                 return handler.send_json({"error": "该激活码已由当前账号兑换。"}, 409)
-            if row and row.get("assignedAgentId") and row.get("status") == "assigned":
+            if row and row.get("assignedAgentId") and row.get("status") == "assigned" and not (row.get("generatedByAgent") is True and row.get("assignedAgentId") == user_id):
                 return handler.send_json({"error": "该激活码尚未销售给当前账号。"}, 403)
             if not redeemable or (row.get("expiresAt") and row["expiresAt"] < _iso(_now())):
                 return handler.send_json({"error": "激活码无效或已使用。"}, 400)
@@ -2638,6 +2647,14 @@ def route(handler, app, path, method, auth):
             _owner(task, user)
             action = match.group(2)
             if method == "GET" and action in (None, "files"):
+                return handler.send_json(_public_task(task))
+            if method == "PATCH" and action is None:
+                body = handler.read_body()
+                if "remark" not in body:
+                    return handler.send_json({"error": "备注不能为空。"}, 400)
+                task["remark"] = str(body.get("remark") or "").strip()[:200]
+                task["updatedAt"] = _iso(_now())
+                _save(app, store); _audit(app, user, handler, "parse_remark_update", task["id"], {"remark": task["remark"]})
                 return handler.send_json(_public_task(task))
             if method == "DELETE" and action is None:
                 if task.get("status") == "processing":
@@ -2906,7 +2923,9 @@ def route(handler, app, path, method, auth):
                 return handler.send_json({"error": "DOWNLOAD_SOURCE_UNAVAILABLE"}, 409)
             download_url = source.get("downloadUrl") or ""
             backup_url = source.get("backupUrl") or ""
-            if source.get("provider") == "lanzou" or (not download_url and source.get("provider") not in ("mock",)):
+            # QAIU parserUrl values are refreshed from the directory listing
+            # before every new download task; they are not permanent URLs.
+            if source.get("provider") == "lanzou" or source.get("resolverType") == "qaiu" or (not download_url and source.get("provider") not in ("mock",)):
                 try:
                     access_code = _unprotect(app, source.get("accessCodeEncrypted"))
                     if source.get("provider") == "lanzou":
@@ -3086,6 +3105,14 @@ def route(handler, app, path, method, auth):
                 except (TypeError, ValueError):
                     return handler.send_json({"error": "套餐额度和有效期必须是有效整数。"}, 400)
                 if "enabled" in body: plan["enabled"] = body.get("enabled") is not False
+                if "agentChainPercent" in body:
+                    try:
+                        value = float(body.get("agentChainPercent") or 0)
+                    except (TypeError, ValueError):
+                        return handler.send_json({"error": "代理链可分配比例必须是有效数字。"}, 400)
+                    if value < 0 or value > 100:
+                        return handler.send_json({"error": "代理链可分配比例必须在 0 到 100 之间。"}, 400)
+                    plan["agentChainPercent"] = round(value, 4)
                 if "description" in body: plan["description"] = str(body.get("description") or "")[:500]
                 for key in ("memberPrice", "promoPrice", "agentWholesalePrice", "agentPromoPrice"):
                     if key in body:
@@ -3256,6 +3283,10 @@ def fulfill_order(app, order, external_trade_no=""):
     order["paidAt"] = order.get("paidAt") or _iso(_now())
     order["externalTradeNo"] = external_trade_no or order.get("externalTradeNo", "")
     order["fulfilledBy"] = "payment_callback"
+    try:
+        app.record_order_agent_ledger(order, user, plan)
+    except Exception:
+        pass
     return entitlement
 
 

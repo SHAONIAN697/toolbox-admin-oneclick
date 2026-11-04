@@ -69,6 +69,7 @@
       <button class="nav" data-view="buttons" type="button">按钮</button>
       <button class="nav" data-view="cloud-resolver" type="button">网盘资源</button>
       <button class="nav manager-only" data-view="users" type="button">用户</button>
+      <button class="nav super-only" data-view="agents" type="button">代理</button>
       <button class="nav announcement-nav" data-view="announcements" type="button">更新公告<span id="announcementUnreadBadge" class="nav-badge" hidden>0</span></button>
       <button class="nav super-only" data-view="system" type="button">系统管理</button>
       <button class="nav" data-view="json" type="button">JSON</button>
@@ -291,6 +292,15 @@
       </div>
     </section>
 
+    <section class="view" id="view-agents">
+      <div class="panel">
+        <div class="panel-head"><h2>代理层级与分账</h2><button id="refreshAgentsBtn" type="button">刷新</button></div>
+        <p class="note">分成比例按直接上级当前可分配份额计算；历史订单以账本快照为准。</p>
+        <div class="table-wrap"><table><thead><tr><th>代理</th><th>层级</th><th>上级代理</th><th>直属代理</th><th>直属用户</th><th>开通模式</th><th>下级分成%</th><th>操作</th></tr></thead><tbody id="agentRows"></tbody></table></div>
+      </div>
+      <div class="panel"><div class="panel-head"><h2>分账记录</h2></div><div class="table-wrap"><table><thead><tr><th>订单</th><th>类型</th><th>金额</th><th>时间</th></tr></thead><tbody id="agentLedgerRows"></tbody></table></div></div>
+    </section>
+
     <section class="view" id="view-cloud-resolver">
       <div class="panel cloud-resolver-summary">
         <div class="panel-head"><h2>网盘资源解析与管理</h2><span id="cloudResolverStatus" class="status-chip">读取中</span></div>
@@ -339,7 +349,7 @@
       <div class="panel cloudResolver-authorized collapsible-panel is-collapsed" id="cloudResolverTasksPanel" data-collapsible-panel data-default-collapsed="1" hidden>
         <div class="panel-head"><h2 id="cloudResolverTasksTitle">解析任务</h2><button id="cloudResolverRefreshBtn" type="button">刷新</button></div>
         <div class="cloud-task-toolbar"><button id="cloudTaskSelectAllBtn" type="button">全选</button><button id="cloudTaskSelectNoneBtn" type="button">取消全选</button><button id="cloudTaskInvertBtn" type="button">反选</button><button id="cloudTaskBatchArchiveBtn" type="button">标记已处理</button><button id="cloudTaskBatchRetryBtn" type="button">重试失败任务</button><button id="cloudTaskBatchDeleteBtn" type="button" class="danger">删除选中任务</button></div>
-        <div class="table-wrap"><table><thead><tr><th>选择</th><th>网盘平台</th><th>分享链接</th><th>解析状态</th><th>文件数量</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="cloudResolverTaskRows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>选择</th><th>文件备注</th><th>网盘平台</th><th>分享链接</th><th>解析状态</th><th>文件数量</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="cloudResolverTaskRows"></tbody></table></div>
       </div>
       <div class="panel cloudResolver-authorized collapsible-panel is-collapsed" id="cloudResolverFailedPanel" data-collapsible-panel data-default-collapsed="1" hidden>
         <div class="panel-head"><h2 id="cloudResolverFailedTitle">解析失败</h2><div class="button-pair"><button id="cloudFailedRetryAllBtn" type="button">重试全部</button><button id="cloudFailedClearBtn" type="button" class="danger">清空失败任务</button></div></div>

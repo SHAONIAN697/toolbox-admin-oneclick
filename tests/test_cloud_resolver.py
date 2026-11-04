@@ -1211,6 +1211,39 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(files[0]["downloadHeaders"], {"Referer": "https://share.example/"})
         self.assertEqual(request.call_count, 2)
 
+    def test_qaiu_directory_parse_uses_type_field_for_folders(self):
+        replies = {
+            "https://share.example/root": {"data": [{
+                "fileName": "目录", "fileId": "dir-1", "type": "folder",
+                "parserUrl": "https://share.example/folder-1",
+            }]},
+            "https://share.example/folder-1": {"data": [{
+                "fileName": "setup.exe", "fileId": "file-1", "type": "file",
+                "size": 1234, "parserUrl": "https://pan.vst76.cn/v2/redirectUrl/x/file-1",
+            }]},
+        }
+        with patch.object(RESOLVER, "_qaiu_request", side_effect=lambda path, params=None, api_key="", require_api_key=True: replies[params["url"]]) as request:
+            files = RESOLVER._qaiu_folder_files("https://share.example/root", "", self.qaiu_key,
+                                                 "其他网盘", {})
+        self.assertEqual([item["path"] for item in files], ["/目录/setup.exe"])
+        self.assertEqual(files[0]["downloadUrl"], "https://pan.vst76.cn/v2/redirectUrl/x/file-1")
+        self.assertEqual(request.call_count, 2)
+
+    def test_qaiu_download_refresh_does_not_reuse_persisted_parser_url(self):
+        source = {
+            "id": "source-qaiu-refresh", "provider": "tianyi", "resolverType": "qaiu",
+            "shareUrl": "https://cloud.189.cn/t/demo", "fileId": "file-1",
+            "downloadUrl": "https://pan.vst76.cn/v2/redirectUrl/old-token",
+            "backupUrl": "", "downloadHeaders": {}, "accessCodeEncrypted": "",
+        }
+        fresh = [{"id": "file-1", "downloadUrl": "https://pan.vst76.cn/v2/redirectUrl/new-token",
+                  "backupUrl": "", "downloadHeaders": {}, "resolverType": "qaiu"}]
+        with patch.object(RESOLVER, "_provider_parse", return_value=fresh) as parser, \
+             patch.object(RESOLVER, "_qaiu_api_key", return_value=self.qaiu_key):
+            result = APP._refresh_cloud_download_source(source, RESOLVER._load(APP), RESOLVER)
+        parser.assert_called_once()
+        self.assertEqual(result["downloadUrl"], "https://pan.vst76.cn/v2/redirectUrl/new-token")
+
     def test_xiaofeiji_unavailable_source_returns_permanent_download_error(self):
         self.grant("alice", ["xiaofeiji"])
         store = RESOLVER._load(APP)

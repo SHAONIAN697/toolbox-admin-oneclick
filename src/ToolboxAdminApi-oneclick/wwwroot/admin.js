@@ -239,6 +239,7 @@ const VIEW_TITLES = {
   account: ['账号资料', '修改当前账号的基础信息和登录密码。'],
   buttons: ['按钮管理', '配置工具箱里的页面、分组、按钮和动作。'],
   users: ['用户管理', '管理账号、邀请码和用户专属对接地址。'],
+  agents: ['代理管理', '管理代理层级、分支开通限制与订单分账。'],
   audit: ['操作日志', '查看所有账号的后台登录和操作记录。'],
   system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
@@ -247,6 +248,51 @@ const VIEW_TITLES = {
   announcements: ['更新公告', '查看管理后台的功能更新、问题修复和系统通知。'],
   'cloud-resolver': ['网盘资源', '解析分享链接、管理个人资源并配置多线路下载。']
 };
+
+async function loadAgents() {
+  if (!isSuper()) return;
+  const result = await api('/api/super/agents');
+  const rows = $('agentRows');
+  if (rows) rows.innerHTML = (result.agents || []).map((agent) => `<tr><td>${escapeHtml(displayNameOf(agent, agent.username))}</td><td>${Number(agent.agentLevel || 0)}</td><td>${escapeHtml(agent.parentAgentName || '总管理员')}</td><td>${Number(agent.directAgentCount || 0)}</td><td>${Number(agent.directUserCount || 0)}（分支 ${Number(agent.branchUserCount || agent.directUserCount || 0)}）</td><td>${agent.agentOpenMode === 'redeem_only' ? '仅兑换激活码' : '允许在线开通'}</td><td>${Number(agent.downlineSharePercent || 0).toFixed(2)}</td><td><button type="button" data-agent-edit="${escapeAttr(agent.id)}">设置</button></td></tr>`).join('') || '<tr><td colspan="8" class="empty-cell">暂无代理</td></tr>';
+  const ledger = await api('/api/super/agent-ledger');
+  const ledgerRows = $('agentLedgerRows');
+  if (ledgerRows) ledgerRows.innerHTML = (ledger.entries || []).slice(-100).reverse().map((entry) => `<tr><td>${escapeHtml(entry.orderId || '')}</td><td>${entry.kind === 'reversal' ? '退款冲正' : '支付分账'}</td><td>${Number(entry.snapshot?.amount || 0).toFixed(2)}</td><td>${escapeHtml(entry.createdAt || '')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-cell">暂无记录</td></tr>';
+}
+
+async function editAgentSettings(agentId) {
+  const result = await api('/api/super/agents');
+  const agents = result.agents || [];
+  const agent = agents.find((item) => String(item.id) === String(agentId));
+  if (!agent) throw new Error('代理不存在或列表已过期，请刷新。');
+  const parentOptions = agents.filter((item) => String(item.id) !== String(agent.id)).map((item) => `${item.id}=${displayNameOf(item, item.username)}`).join('\n');
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay agent-settings-overlay';
+  overlay.innerHTML = `<div class="modal-card agent-settings-card" role="dialog" aria-modal="true" aria-labelledby="agentSettingsTitle">
+    <div class="modal-head"><div><h2 id="agentSettingsTitle">代理设置</h2><p>${escapeHtml(displayNameOf(agent, agent.username))}</p></div><button type="button" data-agent-settings-close aria-label="关闭">×</button></div>
+    <div class="form-grid compact agent-settings-grid">
+      <label>在线开通模式<select id="agentSettingsMode"><option value="online">允许在线开通</option><option value="redeem_only">仅允许兑换激活码</option></select><small>关闭后，该代理及所有下级代理用户只能兑换激活码。</small></label>
+      <label>直接下级分成比例（%）<input id="agentSettingsShare" type="number" min="0" max="100" step="0.01" value="${escapeAttr(String(agent.downlineSharePercent ?? 0))}"><small>从该代理当前可分配份额中划分。</small></label>
+      <label class="wide">上级代理<select id="agentSettingsParent"><option value="">总管理员</option>${agents.filter((item) => String(item.id) !== String(agent.id)).map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(displayNameOf(item, item.username))}（${escapeHtml(item.id)}）</option>`).join('')}</select><small>禁止选择自己或自己的下级代理。</small></label>
+    </div>
+    <div class="button-pair agent-settings-actions"><button type="button" data-agent-settings-close>取消</button><button type="button" class="primary" id="agentSettingsSaveBtn">保存设置</button></div>
+  </div>`;
+  document.body.appendChild(overlay); document.body.classList.add('modal-open');
+  const modeInput = overlay.querySelector('#agentSettingsMode');
+  const parentInput = overlay.querySelector('#agentSettingsParent');
+  modeInput.value = agent.agentOpenMode || 'online'; parentInput.value = agent.parentAgentId || '';
+  const close = () => { overlay.remove(); document.body.classList.remove('modal-open'); };
+  overlay.querySelectorAll('[data-agent-settings-close]').forEach((button) => { button.onclick = close; });
+  overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+  overlay.querySelector('#agentSettingsSaveBtn').onclick = async () => {
+    const shareValue = Number(overlay.querySelector('#agentSettingsShare').value);
+    if (!Number.isFinite(shareValue) || shareValue < 0 || shareValue > 100) { setStatus('分成比例必须是 0 到 100 之间的数字。', true); return; }
+    const saveButton = overlay.querySelector('#agentSettingsSaveBtn'); saveButton.disabled = true;
+    try {
+      await api('/api/super/agents', { method: 'PATCH', body: JSON.stringify({ id: agent.id, agentOpenMode: modeInput.value, downlineSharePercent: shareValue, parentAgentId: parentInput.value }) });
+      close(); await loadUsers(); await loadAgents(); setStatus('代理设置已保存。');
+    } catch (error) { saveButton.disabled = false; setStatus(error.message, true); }
+  };
+}
 
 function setupSidebar() {
   const sidebar = document.querySelector('.sidebar');
@@ -1347,16 +1393,32 @@ function renderCloudResolver() {
   const status = $('cloudResolverStatus');
   if (!status) return;
   const allowed = !!(feature.entitlement && feature.entitlement.allowed);
+  const purchaseBlocked = (() => {
+    if (isSuper() || !state.currentUser || state.currentUser.role !== 'user') return false;
+    const byId = new Map((state.users || []).map((item) => [String(item.id), item]));
+    let current = byId.get(String(state.currentUser.parentAgentId || ''));
+    const seen = new Set();
+    while (current && !seen.has(String(current.id))) {
+      seen.add(String(current.id));
+      if (current.role === 'agent' && current.agentOpenMode === 'redeem_only') return true;
+      current = byId.get(String(current.parentAgentId || ''));
+    }
+    return false;
+  })();
   renderCloudOrders();
   status.textContent = feature.error ? feature.error : (allowed ? '已启用' : '需要授权');
   status.className = 'status-chip ' + (allowed ? 'is-ok' : 'is-warning');
   $('cloudResolverEntitlement').innerHTML = entitlement ? '<span>解析额度 <b>' + (entitlement.parseQuota < 0 ? '不限' : (entitlement.parseUsed || 0) + ' / ' + entitlement.parseQuota) + '</b></span><span>每日额度 <b>' + (entitlement.dailyParseLimit < 0 ? '不限' : (entitlement.dailyParseUsed || 0) + ' / ' + entitlement.dailyParseLimit) + '</b></span><span>流量额度 <b>' + (entitlement.trafficQuota < 0 ? '不限' : (entitlement.trafficUsed || 0) + ' / ' + entitlement.trafficQuota) + '</b></span><span>有效期 <b>' + escapeHtml(entitlement.expiresAt || entitlement.expiredAt ? cloudDateTime(entitlement.expiresAt || entitlement.expiredAt) : '长期') + '</b></span>' : '<span>当前账号没有网盘解析授权，可购买套餐或兑换激活码。</span>';
   const plansPanel = $('cloudResolverPlansPanel');
-  if (plansPanel) plansPanel.hidden = allowed;
+  if (plansPanel) plansPanel.hidden = allowed || purchaseBlocked;
   const redeemPanel = $('cloudResolverRedeemPanel');
   if (redeemPanel) redeemPanel.hidden = allowed;
   const renewPanel = $('cloudResolverRenewPanel');
-  if (renewPanel) renewPanel.hidden = !allowed;
+  if (renewPanel) renewPanel.hidden = !allowed || purchaseBlocked;
+  if (purchaseBlocked && !allowed) {
+    const message = '当前代理分支已关闭在线购买，仅允许兑换激活码。';
+    if ($('cloudResolverEntitlement')) $('cloudResolverEntitlement').insertAdjacentHTML('beforeend', `<span class="status-chip is-warning">${escapeHtml(message)}</span>`);
+  }
   const planCards = $('cloudResolverPlanCards');
   if (planCards) planCards.innerHTML = cloudPlanCards(feature.plans || []);
   const renewCards = $('cloudResolverRenewCards');
@@ -1379,7 +1441,7 @@ function renderCloudResolver() {
   }
   const taskRows = $('cloudResolverTaskRows');
   // Render official-page actions separately from direct-download actions.
-  taskRows.innerHTML = feature.tasks && feature.tasks.length ? feature.tasks.map(function(task) { return '<tr><td>' + escapeHtml(task.providerName || cloudProviderLabel(task.provider)) + '</td><td class="mono-cell">' + escapeHtml(task.shareUrl || '') + '</td><td>' + escapeHtml(cloudStatusLabel(task.status)) + (task.errorCode ? '<small>' + escapeHtml(cloudErrorMessage({ message: task.errorCode })) + '</small>' : '') + '</td><td>' + (task.files || []).length + '</td><td>' + escapeHtml(cloudDateTime(task.createdAt)) + '</td><td>' + (task.status === 'parsed' ? '<button type="button" data-cloud-assign="' + escapeAttr(task.id) + '">预览并加入按钮</button>' : task.status === 'failed' ? '<button type="button" data-cloud-retry="' + escapeAttr(task.id) + '">重试</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="6" class="empty-cell">暂无解析任务</td></tr>';
+  taskRows.innerHTML = feature.tasks && feature.tasks.length ? feature.tasks.map(function(task) { const files = task.files || []; const autoRemark = files.length === 1 ? (files[0].name || '') : files.length > 1 ? `${files[0]?.name || ''} 等 ${files.length} 个文件` : ''; const remark = task.remark || autoRemark || '未命名任务'; return '<tr><td>' + escapeHtml(remark) + '<button type="button" class="link-button" data-cloud-remark="' + escapeAttr(task.id) + '">编辑</button></td><td>' + escapeHtml(task.providerName || cloudProviderLabel(task.provider)) + '</td><td class="mono-cell">' + escapeHtml(task.shareUrl || '') + '</td><td>' + escapeHtml(cloudStatusLabel(task.status)) + (task.errorCode ? '<small>' + escapeHtml(cloudErrorMessage({ message: task.errorCode })) + '</small>' : '') + '</td><td>' + files.length + '</td><td>' + escapeHtml(cloudDateTime(task.createdAt)) + '</td><td>' + (task.status === 'parsed' ? '<button type="button" data-cloud-assign="' + escapeAttr(task.id) + '">预览并加入按钮</button>' : task.status === 'failed' ? '<button type="button" data-cloud-retry="' + escapeAttr(task.id) + '">重试</button>' : '') + '</td></tr>'; }).join('') : '<tr><td colspan="7" class="empty-cell">暂无解析任务</td></tr>';
   (feature.tasks || []).forEach(function(task, index) {
     if (!((task.provider === 'xiaofeiji' && task.status === 'failed') || task.provider === 'weiyun')) return;
     let url;
@@ -1405,6 +1467,8 @@ function renderCloudResolver() {
   if (systemPlans) systemPlans.innerHTML = renderAdminCloudPlanRows(feature.adminPlans || []);
   const codePlan = $('cloudResolverCodePlan');
   if (codePlan) codePlan.innerHTML = (feature.adminPlans || []).filter((plan) => plan.enabled !== false).map((plan) => `<option value="${escapeAttr(plan.id)}">${escapeHtml(plan.name)}</option>`).join('');
+  const codeAgent = $('cloudResolverCodeAgent');
+  if (codeAgent) { const selectedAgent = codeAgent.value; const agents = (state.users || []).filter((item) => item.role === 'agent' && item.active !== false); codeAgent.innerHTML = '<option value="">暂不分配</option>' + agents.map((agent) => `<option value="${escapeAttr(agent.id)}">${escapeHtml(displayNameOf(agent, agent.username))}</option>`).join(''); if (agents.some((agent) => agent.id === selectedAgent)) codeAgent.value = selectedAgent; }
   const codeRows = $('cloudResolverCodeRows');
   if (codeRows) codeRows.innerHTML = (feature.codes || []).map((code) => {
     const codeId = code.id || code.codeId || code.codeHashPrefix || '';
@@ -1431,7 +1495,7 @@ function renderCloudTaskTables(feature) {
   const active = tasks.filter((task) => !['failed','completed','archived'].includes(task.status));
   const failed = tasks.filter((task) => task.status === 'failed');
   const taskRows = $('cloudResolverTaskRows');
-  if (taskRows) taskRows.innerHTML = active.length ? active.map((task) => `<tr><td><input type="checkbox" class="cloud-task-check" value="${escapeAttr(task.id)}"></td><td>${escapeHtml(task.providerName || cloudProviderLabel(task.provider))}</td><td class="mono-cell cloud-url-cell" title="${escapeAttr(task.shareUrl || '')}">${escapeHtml(task.shareUrl || '')}</td><td>${cloudTaskStatus(task.status)}</td><td>${(task.files || []).length}</td><td>${escapeHtml(cloudDateTime(task.createdAt))}</td><td>${escapeHtml(cloudDateTime(task.updatedAt))}</td><td>${task.status === 'parsed' ? `<button type="button" data-cloud-assign="${escapeAttr(task.id)}">选择文件</button>` : ''} <button type="button" data-cloud-archive="${escapeAttr(task.id)}">归档</button> <button type="button" class="danger" data-cloud-delete-task="${escapeAttr(task.id)}">删除</button></td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">暂无待处理任务</td></tr>';
+  if (taskRows) taskRows.innerHTML = active.length ? active.map((task) => { const files = task.files || []; const autoRemark = files.length === 1 ? (files[0].name || files[0].fileName || '') : files.length > 1 ? `${files[0]?.name || files[0]?.fileName || ''} 等 ${files.length} 个文件` : ''; const remark = task.remark || autoRemark || '未命名任务'; return `<tr><td><input type="checkbox" class="cloud-task-check" value="${escapeAttr(task.id)}"></td><td>${escapeHtml(remark)} <button type="button" class="link-button" data-cloud-remark="${escapeAttr(task.id)}">编辑</button></td><td>${escapeHtml(task.providerName || cloudProviderLabel(task.provider))}</td><td class="mono-cell cloud-url-cell" title="${escapeAttr(task.shareUrl || '')}">${escapeHtml(task.shareUrl || '')}</td><td>${cloudTaskStatus(task.status)}</td><td>${files.length || Number(task.fileCount || 0)}</td><td>${escapeHtml(cloudDateTime(task.createdAt))}</td><td>${escapeHtml(cloudDateTime(task.updatedAt))}</td><td>${task.status === 'parsed' ? `<button type="button" data-cloud-assign="${escapeAttr(task.id)}">选择文件</button>` : ''} <button type="button" data-cloud-archive="${escapeAttr(task.id)}">归档</button> <button type="button" class="danger" data-cloud-delete-task="${escapeAttr(task.id)}">删除</button></td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">暂无待处理任务</td></tr>';
   const failedRows = $('cloudResolverFailedRows');
   if (failedRows) failedRows.innerHTML = failed.length ? failed.map((task) => `<tr><td><input type="checkbox" class="cloud-failed-check" value="${escapeAttr(task.id)}"></td><td>${escapeHtml(task.providerName || cloudProviderLabel(task.provider))}</td><td class="mono-cell cloud-url-cell" title="${escapeAttr(task.shareUrl || '')}">${escapeHtml(task.shareUrl || '')}</td><td>${escapeHtml(cloudErrorMessage({message: task.errorCode || '解析失败'}))}</td><td>${escapeHtml(cloudDateTime(task.createdAt))}</td><td><button type="button" data-cloud-retry="${escapeAttr(task.id)}">重试</button> <button type="button" class="danger" data-cloud-delete-task="${escapeAttr(task.id)}">删除</button></td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">暂无失败任务</td></tr>';
   const taskTitle = $('cloudResolverTasksTitle'); if (taskTitle) taskTitle.textContent = `解析任务（${active.length}）`;
@@ -2182,6 +2246,7 @@ function switchView(view) {
   if (view === 'users' && !isManager()) {
     view = 'overview';
   }
+  if (view === 'agents' && !isSuper()) view = 'overview';
   if (view === 'json' && !canViewJson()) {
     setStatus('当前账号没有 JSON 管理权限。', true);
     view = 'overview';
@@ -2196,6 +2261,7 @@ function switchView(view) {
   if (panel) panel.classList.add('show');
   if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
   if (view === 'cloud-resolver') loadAndRenderCloudResolver().catch(error => setStatus(cloudErrorMessage(error), true));
+  if (view === 'agents') loadAgents().catch(error => setStatus(error.message, true));
   syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
@@ -6940,13 +7006,14 @@ async function saveUser(userId, row) {
 }
 
 async function saveAgentBalance(userId, row) {
-  const balance = Number(row.querySelector('[data-field="detailBalance"]')?.value || row.querySelector('[data-field="balance"]')?.value || 0);
-  await api('/api/super/users/agent', {
+  const balance = Number((row.querySelector('[data-field="balance"]') || row.querySelector('[data-field="detailBalance"]'))?.value || 0);
+  const result = await api('/api/super/users/agent', {
     method: 'POST',
     body: JSON.stringify({ id: userId, action: 'balance', balance })
   });
+  if (Number(result.user?.balance) !== balance) throw new Error('服务器返回的余额与提交金额不一致。');
   await loadUsers();
-  renderUserContext();
+  renderUsers(); renderUserContext();
   setStatus('代理余额已保存。');
 }
 
@@ -8385,6 +8452,12 @@ $('refreshUsersBtn').onclick = async () => {
   renderUserContext();
   setStatus('用户列表已刷新。');
 };
+if ($('refreshAgentsBtn')) $('refreshAgentsBtn').onclick = () => loadAgents().catch((error) => setStatus(error.message, true));
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-agent-edit]');
+  if (!button) return;
+  editAgentSettings(button.dataset.agentEdit).catch((error) => setStatus(error.message, true));
+});
 $('saveJsonBtn').onclick = () => saveJson().catch((error) => setStatus(error.message, true));
 if ($('exportConfigBtn')) $('exportConfigBtn').onclick = () => exportConfigFile().catch((error) => setStatus(error.message, true));
 if ($('importConfigFileBtn')) $('importConfigFileBtn').onclick = () => importConfigFile().catch((error) => setStatus(error.message, true));
@@ -8489,6 +8562,15 @@ if ($('cloudResolverSaveSettingsBtn')) $('cloudResolverSaveSettingsBtn').onclick
   try { await api('/api/admin/cloud-resolver/settings', { method: 'PATCH', body: JSON.stringify(payload) }); $('cloudResolverQaiuApiKey').value = ''; $('cloudResolverClearQaiuApiKey').checked = false; await loadAndRenderCloudResolver(); showToast('网盘解析设置已保存。', 'success'); } catch (error) { setStatus(cloudErrorMessage(error), true); }
 };
 document.addEventListener('click', (event) => {
+  const remarkButton = event.target.closest('[data-cloud-remark]');
+  if (remarkButton) {
+    const task = (state.cloudResolver?.tasks || []).find((item) => item.id === remarkButton.dataset.cloudRemark);
+    const files = task?.files || [];
+    const fallback = files.length === 1 ? (files[0].name || '') : '';
+    const remark = window.prompt('请输入文件备注：', task?.remark || fallback);
+    if (remark !== null) api('/api/cloud-resolver/parse-tasks/' + encodeURIComponent(remarkButton.dataset.cloudRemark), { method: 'PATCH', body: JSON.stringify({ remark }) }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));
+    return;
+  }
   const assign = event.target.closest('[data-cloud-assign]'); if (assign) assignCloudTask(assign.dataset.cloudAssign).catch((error) => setStatus(error.message, true));
   const retry = event.target.closest('[data-cloud-retry]'); if (retry) api('/api/cloud-resolver/parse-tasks/' + encodeURIComponent(retry.dataset.cloudRetry) + '/retry', { method: 'POST', body: '{}' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(error.message, true));
   const archive = event.target.closest('[data-cloud-archive]'); if (archive) api('/api/cloud-resolver/parse-tasks/' + encodeURIComponent(archive.dataset.cloudArchive) + '/archive', { method: 'POST', body: '{}' }).then(loadAndRenderCloudResolver).catch((error) => setStatus(cloudErrorMessage(error), true));

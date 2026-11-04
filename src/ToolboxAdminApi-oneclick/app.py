@@ -40,6 +40,7 @@ NOTICES_PATH = DATA / "notices.json"
 ADMIN_ANNOUNCEMENTS_PATH = DATA / "admin-announcements.json"
 ADMIN_ANNOUNCEMENT_READS_PATH = DATA / "admin-announcement-reads.json"
 ORDERS_PATH = DATA / "orders.json"
+AGENT_LEDGER_PATH = DATA / "agent-ledger.json"
 SESSIONS_PATH = DATA / "sessions.json"
 USER_TEMPLATE_PATH = DATA / "user-template.json"
 USER_DATA = DATA / "users"
@@ -2584,8 +2585,11 @@ def _refresh_cloud_download_source(source, store, resolver, force=False):
     aggregate = source.get("resolverType") == "qaiu" or provider not in ("lanzou", "mock")
     if not source.get("shareUrl") or (provider != "lanzou" and not aggregate):
         return source
-    if aggregate and not force and source.get("downloadUrl"):
-        return source
+    # QAIU `parserUrl` values are short-lived 302 links returned by the
+    # directory-list response. Never treat a persisted parserUrl as a stable
+    # direct link; refresh the directory and select a fresh URL before a
+    # download. The in-memory burst cache below still prevents duplicate
+    # upstream calls for segmented requests in the same short window.
     cache_key = str(source.get("id") or source.get("shareUrl"))
     now = time.monotonic()
     with CLOUD_DOWNLOAD_REFRESH_LOCK:
@@ -4048,7 +4052,14 @@ def scoped_users(store, actor):
         return users
     if is_agent(actor):
         own = actor.get("id")
-        return [u for u in users if u.get("id") == own or u.get("parentAgentId") == own]
+        allowed = {own}
+        changed = True
+        while changed:
+            changed = False
+            for row in users:
+                if row.get("parentAgentId") in allowed and row.get("id") not in allowed:
+                    allowed.add(row.get("id")); changed = True
+        return [u for u in users if u.get("id") in allowed]
     return [actor]
 
 
@@ -4058,7 +4069,7 @@ def assert_user_scope(actor, target_id):
     target = find_user_by_id(target_id)
     if not target:
         raise ValueError("用户不存在。")
-    if is_agent(actor) and target.get("parentAgentId") == actor.get("id"):
+    if is_agent(actor) and target.get("id") in {u.get("id") for u in scoped_users(read_users(), actor)}:
         return
     if target.get("id") == actor.get("id"):
         return
@@ -4145,6 +4156,9 @@ def public_user(user, store=None):
         "balance": round(float(user.get("balance") or 0), 2) if user.get("role") == "agent" else 0,
         "agentLevelId": user.get("agentLevelId", "") if user.get("role") == "agent" else "",
         "agentLevelName": user.get("agentLevelName", "") if user.get("role") == "agent" else "",
+        "agentOpenMode": user.get("agentOpenMode", "online") if user.get("role") == "agent" else "",
+        "downlineSharePercent": round(float(user.get("downlineSharePercent", 0) or 0), 4) if user.get("role") == "agent" else 0,
+        "agentLevel": agent_depth(user.get("id"), store or read_users()) if user.get("role") == "agent" else 0,
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
@@ -4152,6 +4166,88 @@ def public_user(user, store=None):
         "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
     }
     return data
+
+
+def agent_depth(user_id, store=None):
+    rows = (store or read_users()).get("users", [])
+    by_id = {str(row.get("id")): row for row in rows}
+    depth, seen, current = 0, set(), by_id.get(str(user_id))
+    while current and current.get("parentAgentId") and current.get("id") not in seen:
+        seen.add(current.get("id")); depth += 1
+        current = by_id.get(str(current.get("parentAgentId")))
+    return depth
+
+
+def agent_descendant_ids(agent_id, store=None):
+    rows = (store or read_users()).get("users", [])
+    result, pending = {str(agent_id)}, [str(agent_id)]
+    while pending:
+        parent = pending.pop()
+        for row in rows:
+            if str(row.get("parentAgentId") or "") == parent and str(row.get("id")) not in result:
+                result.add(str(row.get("id"))); pending.append(str(row.get("id")))
+    return result
+
+
+def validate_agent_parent(user_id, parent_id, store):
+    parent_id = str(parent_id or "").strip()
+    if not parent_id:
+        return ""
+    if parent_id == str(user_id) or parent_id in agent_descendant_ids(user_id, store):
+        raise ValueError("代理上下级关系会形成循环。")
+    parent = next((row for row in store.get("users", []) if str(row.get("id")) == parent_id), None)
+    if not parent or parent.get("role") != "agent":
+        raise ValueError("上级代理不存在。")
+    return parent_id
+
+
+def read_agent_ledger():
+    return read_json(AGENT_LEDGER_PATH, {"entries": [], "adjustments": []})
+
+
+def write_agent_ledger(data):
+    write_json(AGENT_LEDGER_PATH, data)
+
+
+def build_agent_share_snapshot(order, user, plan, store=None):
+    amount = round(float(order.get("amount") or 0), 2)
+    if amount <= 0 or not user or user.get("role") != "user":
+        return {"version": 1, "amount": amount, "entries": [], "adminAmount": amount}
+    settings = read_system_settings(); feature = (settings.get("agent") or {})
+    chain_limit = max(0.0, min(100.0, float(plan.get("agentChainPercent", feature.get("agentChainPercent", 0)) or 0)))
+    rows = {str(row.get("id")): row for row in (store or read_users()).get("users", [])}
+    chain, current, seen = [], rows.get(str(user.get("parentAgentId") or "")), set()
+    while current and current.get("role") == "agent" and current.get("id") not in seen:
+        seen.add(current.get("id")); chain.append(current); current = rows.get(str(current.get("parentAgentId") or ""))
+    chain.reverse()
+    remaining = round(amount * chain_limit / 100, 2); entries = []
+    for agent in chain:
+        pct = max(0.0, min(100.0, float(agent.get("downlineSharePercent", 0) or 0)))
+        share = round(remaining * pct / 100, 2)
+        entries.append({"agentId": agent.get("id"), "agentName": agent.get("displayName") or agent.get("username"), "percentOfParentShare": pct, "amount": share})
+        remaining = round(remaining - share, 2)
+    return {"version": 1, "amount": amount, "chainPercent": chain_limit, "entries": entries, "adminAmount": round(amount - sum(x["amount"] for x in entries), 2), "createdAt": now_iso()}
+
+
+def record_order_agent_ledger(order, user, plan):
+    if order.get("agentShareSnapshot"):
+        return order["agentShareSnapshot"]
+    snapshot = build_agent_share_snapshot(order, user, plan)
+    order["agentShareSnapshot"] = snapshot
+    ledger = read_agent_ledger()
+    if not any(x.get("orderId") == order.get("id") and x.get("kind") == "charge" for x in ledger.get("entries", [])):
+        ledger.setdefault("entries", []).append({"orderId": order.get("id"), "kind": "charge", "snapshot": snapshot, "createdAt": now_iso()})
+        write_agent_ledger(ledger)
+    return snapshot
+
+
+def reverse_order_agent_ledger(order, reason="refund"):
+    ledger = read_agent_ledger(); order_id = order.get("id")
+    if any(x.get("orderId") == order_id and x.get("kind") == "reversal" for x in ledger.get("entries", [])):
+        return
+    snapshot = order.get("agentShareSnapshot") or {}
+    ledger.setdefault("entries", []).append({"orderId": order_id, "kind": "reversal", "reason": reason, "snapshot": snapshot, "createdAt": now_iso()})
+    write_agent_ledger(ledger)
 
 
 def find_user_by_id(user_id):
@@ -4239,6 +4335,8 @@ def create_user(username, password, display_name="", role="user", template_user=
         "createdAt": now_iso(),
         "parentAgentId": parent_agent_id if role == "user" else "",
         "balance": round(float(balance or 0), 2) if role == "agent" else 0,
+        "agentOpenMode": "online" if role == "agent" else "",
+        "downlineSharePercent": 0.0 if role == "agent" else 0,
     }
     if role == "agent":
         user["agentLevelId"] = level.get("id")
@@ -4757,6 +4855,21 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
         user["agentLevelName"] = level.get("name")
     if super_edit and "active" in body:
         user["active"] = bool(body.get("active"))
+    if super_edit and user.get("role") == "agent" and "parentAgentId" in body:
+        user["parentAgentId"] = validate_agent_parent(user_id, body.get("parentAgentId"), store)
+    if user.get("role") == "agent" and "agentOpenMode" in body:
+        mode = str(body.get("agentOpenMode") or "online").strip()
+        if mode not in ("online", "redeem_only"):
+            raise ValueError("代理开通模式无效。")
+        user["agentOpenMode"] = mode
+    if user.get("role") == "agent" and "downlineSharePercent" in body:
+        try:
+            pct = float(body.get("downlineSharePercent"))
+        except (TypeError, ValueError):
+            raise ValueError("下级分成比例必须是数字。")
+        if pct < 0 or pct > 100:
+            raise ValueError("下级分成比例必须在 0 到 100 之间。")
+        user["downlineSharePercent"] = round(pct, 4)
     if super_edit and "canViewJson" in body:
         user["canViewJson"] = bool(body.get("canViewJson")) or user.get("role") == "super"
     if body.get("password"):
@@ -6352,7 +6465,8 @@ class Handler(BaseHTTPRequestHandler):
                 max_uses = int(invite.get("maxUses") or 1)
                 if max_uses > 0 and used >= max_uses:
                     raise ValueError("邀请码已被使用。")
-                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"))
+                owner_agent_id = str(invite.get("ownerAgentId") or "").strip()
+                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"), parent_agent_id=owner_agent_id)
                 store = read_users()
                 invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
                 invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
@@ -6471,6 +6585,35 @@ class Handler(BaseHTTPRequestHandler):
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
+        if path == "/api/super/agents" and method == "GET":
+            rows = []
+            for item in store.get("users", []):
+                if item.get("role") != "agent":
+                    continue
+                child_ids = [x.get("id") for x in store.get("users", []) if x.get("parentAgentId") == item.get("id")]
+                branch_ids = agent_descendant_ids(item.get("id"), store)
+                user_count = sum(1 for x in store.get("users", []) if x.get("role") == "user" and x.get("parentAgentId") in branch_ids)
+                rows.append(dict(public_user(item, store), directAgentCount=len(child_ids), directUserCount=user_count,
+                                  branchUserCount=user_count,
+                                  path=[public_user(store_row, store) for store_row in []], openMode=item.get("agentOpenMode", "online")))
+            return self.send_json({"agents": rows})
+        if path == "/api/super/agents" and method == "PATCH":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以调整代理关系。"}, 403)
+            body = self.read_body(); target = next((x for x in store.get("users", []) if x.get("id") == body.get("id") and x.get("role") == "agent"), None)
+            if not target:
+                return self.send_json({"error": "代理不存在。"}, 404)
+            target["parentAgentId"] = validate_agent_parent(target.get("id"), body.get("parentAgentId"), store)
+            if "agentOpenMode" in body:
+                target["agentOpenMode"] = body.get("agentOpenMode") if body.get("agentOpenMode") in ("online", "redeem_only") else "online"
+            if "downlineSharePercent" in body:
+                pct = float(body.get("downlineSharePercent"));
+                if not 0 <= pct <= 100: raise ValueError("下级分成比例必须在 0 到 100 之间。")
+                target["downlineSharePercent"] = round(pct, 4)
+            write_users(store); audit_event("agent_relationship_update", auth["user"], target.get("id"), self, {"parentAgentId": target.get("parentAgentId")})
+            return self.send_json(public_user(target, store))
+        if path == "/api/super/agent-ledger" and method == "GET":
+            return self.send_json(read_agent_ledger())
         if path == "/api/super/audit" and method == "GET":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权查看操作日志。"}, 403)

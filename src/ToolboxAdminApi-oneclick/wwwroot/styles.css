@@ -667,6 +667,12 @@ body.modal-open { overflow:hidden; }
   padding: 16px;
 }
 
+.agent-settings-card { width: min(560px, calc(100vw - 32px)); }
+.agent-settings-grid { gap: 12px; }
+.agent-settings-grid .wide { grid-column: 1 / -1; }
+.agent-settings-grid small { display: block; margin-top: 5px; color: var(--muted); line-height: 1.4; }
+.agent-settings-actions { justify-content: flex-end; margin-top: 16px; }
+
 #noticeComposer .modal-card {
   width: min(560px, calc(100vw - 32px));
 }

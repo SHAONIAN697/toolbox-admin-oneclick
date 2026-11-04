@@ -116,8 +116,9 @@ class ButtonContentLayoutClientTests(unittest.TestCase):
     def test_content_width_does_not_double_subtract_scrollbar(self):
         self.assertNotIn("content.ClientSize.Width - SystemInformation.VerticalScrollBarWidth", self.cs)
         self.assertIn('return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);', self.cs)
-        self.assertIn("ScheduleBusinessIconRefresh()", self.cs)
-        self.assertIn("Interval = 120", self.cs)
+        icon_loader = self.cs[self.cs.index("private void QueueButtonIconLoad(string url, Control target, int size)"):self.cs.index("private void ApplyButtonIconImage")]
+        self.assertNotIn("ScheduleBusinessIconRefresh", self.cs)
+        self.assertNotIn("RenderCurrentVisiblePage", icon_loader)
         self.assertIn("ApplyBusinessButtonLayout(card, !String.IsNullOrWhiteSpace(iconUrl))", self.cs)
         self.assertIn("ApplyBusinessButtonLayout(action, !String.IsNullOrWhiteSpace(iconUrl))", self.cs)
         method = self.cs[self.cs.index("private void ApplyBusinessButtonLayout"):self.cs.index("private string BuildActionTip")]

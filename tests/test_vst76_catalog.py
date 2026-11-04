@@ -160,10 +160,17 @@ class Vst76CatalogTests(unittest.TestCase):
         self.assertIn("softwareCatalogIconTargets", cs)
         self.assertIn("if (!targets.Contains(target)) targets.Add(target);", icon_loader)
         self.assertIn("foreach (PictureBox pending in targets)", icon_loader)
-        self.assertIn("ScheduleSoftwareIconRefresh();", icon_loader)
-        button_loader = cs[cs.index("private void QueueButtonIconLoad(string url, Control target, int size)"):cs.index("private void ScheduleBusinessIconRefresh")]
+        self.assertNotIn("ScheduleSoftwareIconRefresh", icon_loader)
+        self.assertIn("ApplySoftwareCatalogIcon(pending, data)", icon_loader)
+        button_loader = cs[cs.index("private void QueueButtonIconLoad(string url, Control target, int size)"):cs.index("private void ApplyButtonIconImage")]
         self.assertIn("for (int attempt = 0; attempt < 3 && image == null; attempt++)", button_loader)
-        self.assertIn("failedIcons.Remove(cacheKey)", button_loader)
+        self.assertIn("buttonIconTargets", cs)
+        self.assertIn("if (!targets.Contains(target)) targets.Add(target);", button_loader)
+        self.assertIn("foreach (Control pending in targets)", button_loader)
+        self.assertNotIn("RenderCurrentVisiblePage", button_loader)
+        apply_icon = cs[cs.index("private void ApplyButtonIconImage"):cs.index("private Image LoadRemoteImage")]
+        self.assertIn("target.Invalidate();", apply_icon)
+        self.assertNotIn("RenderCurrentVisiblePage", apply_icon)
 
     def test_flagship_memory_cleanup_keeps_reference_intervals(self):
         cs = (PROJECT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
