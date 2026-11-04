@@ -613,7 +613,7 @@ namespace ToolboxClient
                 // the common pages; special pages retain their own explicit refresh.
                 content.PerformLayout();
                 content.Invalidate();
-                if (currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase) &&
+                if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) &&
                     !softwareCatalogLayoutUpdating)
                 {
                     QueueContentResizeRender();
@@ -1691,8 +1691,13 @@ namespace ToolboxClient
             FormBorderStyle = FormBorderStyle.None;
             BackColor = portalShellBack;
             ForeColor = Color.FromArgb(15, 23, 42);
-            MinimumSize = new Size(980, 640);
-            Size = new Size(1280, 840);
+            Rectangle portalWorkArea = Screen.FromControl(this).WorkingArea;
+            MinimumSize = new Size(
+                Math.Min(980, Math.Max(760, portalWorkArea.Width - 24)),
+                Math.Min(640, Math.Max(520, portalWorkArea.Height - 24)));
+            Size = new Size(
+                Math.Min(1280, Math.Max(MinimumSize.Width, portalWorkArea.Width - 24)),
+                Math.Min(840, Math.Max(MinimumSize.Height, portalWorkArea.Height - 24)));
 
             TableLayoutPanel root = new TableLayoutPanel
             {
@@ -10728,6 +10733,18 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private void AddResourceSearchButtonToChrome()
         {
             if (resourceSearchButtonHost == null) return;
+            if (audioVariant)
+            {
+                resourceSearchButton.Size = new Size(30, 28);
+                resourceSearchButton.Margin = Padding.Empty;
+                resourceSearchButton.Padding = Padding.Empty;
+                resourceSearchButton.Dock = DockStyle.None;
+                resourceSearchButton.AutoSize = false;
+                resourceSearchButtonHost.Controls.Add(resourceSearchButton);
+                resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, 3);
+                LayoutAudioWindowChrome();
+                return;
+            }
             Control template = null;
             if (resourceSearchButtonHost.Controls.Count > 0)
             {
@@ -10754,10 +10771,28 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (resourceSearchButtonHost.Dock == DockStyle.Right)
                 resourceSearchButtonHost.Width += resourceSearchButton.Width + resourceSearchButton.Margin.Horizontal;
             resourceSearchButtonHost.Controls.Add(resourceSearchButton);
-            if (audioVariant && resourceSearchButtonHost.FlowDirection == FlowDirection.RightToLeft)
-                resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, resourceSearchButtonHost.Controls.Count - 1);
-            else if (resourceSearchButtonHost.FlowDirection != FlowDirection.RightToLeft)
+            if (resourceSearchButtonHost.FlowDirection != FlowDirection.RightToLeft)
                 resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, 0);
+        }
+
+        private void LayoutAudioWindowChrome()
+        {
+            if (!audioVariant || resourceSearchButtonHost == null || resourceSearchButtonHost.IsDisposed) return;
+            FlowLayoutPanel chrome = resourceSearchButtonHost;
+            int buttonWidth = 38;
+            int searchWidth = 30;
+            int minimumWidth = buttonWidth * 6 + searchWidth + 8;
+            int availableWidth = titleBar == null ? chrome.Width : Math.Max(0, titleBar.ClientSize.Width - 14);
+            int targetWidth = Math.Max(minimumWidth, Math.Min(294, availableWidth));
+            chrome.Width = targetWidth;
+            int regularButtonWidth = Math.Max(28, Math.Min(buttonWidth, (targetWidth - searchWidth - 8) / 6));
+            foreach (Control control in chrome.Controls)
+            {
+                control.Height = 28;
+                if (Object.ReferenceEquals(control, resourceSearchButton)) control.Width = searchWidth;
+                else control.Width = regularButtonWidth;
+            }
+            chrome.PerformLayout();
         }
 
         private void LayoutResourceSearchChrome()
@@ -10771,6 +10806,19 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             }
             bool enabled = ResourceSearchEnabled();
             resourceSearchButton.Visible = enabled;
+            if (audioVariant)
+            {
+                LayoutAudioWindowChrome();
+                resourceSearchHost.Visible = enabled && resourceSearchVisible;
+                if (resourceSearchHost.Visible && resourceSearchButton.Parent != null)
+                {
+                    Point audioSearchLocation = PointToClient(resourceSearchButton.Parent.PointToScreen(resourceSearchButton.Location));
+                    resourceSearchHost.SetBounds(Math.Max(4, audioSearchLocation.X - 204), audioSearchLocation.Y, 200, 34);
+                    resourceSearchBox.Width = 132;
+                    resourceSearchClearButton.Left = 169;
+                }
+                return;
+            }
             int hostWidth = 200;
             bool enough = !studioVariant || ClientSize.Width >= 1040;
             resourceSearchHost.Visible = enabled && resourceSearchVisible && enough;

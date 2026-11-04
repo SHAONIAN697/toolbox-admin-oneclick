@@ -35,8 +35,22 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         ordered_controls = ["chrome.Controls.Add(closeButton);", "chrome.Controls.Add(maxButton);", "chrome.Controls.Add(minButton);", "chrome.Controls.Add(topMostButton);"]
         positions = [shell.index(control) for control in ordered_controls]
         self.assertEqual(sorted(positions), positions)
-        search = self.source[self.source.index("private void AddResourceSearchButtonToChrome()"):self.source.index("private void LayoutResourceSearchChrome()")]
-        self.assertIn("resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, resourceSearchButtonHost.Controls.Count - 1);", search)
+        search = self.source[self.source.index("private void AddResourceSearchButtonToChrome()"):self.source.index("private void LayoutAudioWindowChrome()")]
+        self.assertIn("resourceSearchButtonHost.Controls.Add(resourceSearchButton);", search)
+        self.assertIn("resourceSearchButtonHost.Controls.SetChildIndex(resourceSearchButton, 3);", search)
+        self.assertIn("return;", search)
+        layout = self.source[self.source.index("private void LayoutAudioWindowChrome()"):self.source.index("private void LayoutResourceSearchChrome()")]
+        self.assertIn("titleBar.ClientSize.Width - 14", layout)
+        self.assertIn("chrome.Width = targetWidth;", layout)
+        self.assertIn("control.Width = regularButtonWidth;", layout)
+
+    def test_portal_window_and_cards_adapt_to_work_area_and_resize(self):
+        portal = self.source[self.source.index("private void BuildPortalShell()"):self.source.index("private void AttachBrandPopupEntry")]
+        self.assertIn("Rectangle portalWorkArea = Screen.FromControl(this).WorkingArea;", portal)
+        self.assertIn("portalWorkArea.Width - 24", portal)
+        resize = self.source[self.source.index("protected override void OnResize(EventArgs e)"):self.source.index("protected override void OnDeactivate")]
+        self.assertIn("if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId", resize)
+        self.assertIn("QueueContentResizeRender();", resize)
 
     def test_resource_search_input_has_no_outer_border(self):
         self.assertIn("resourceSearchHost.Padding = Padding.Empty;", self.source)
