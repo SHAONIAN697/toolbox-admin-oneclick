@@ -725,6 +725,8 @@ function New-ClientExecutable {
       "/reference:System.Windows.Forms.dll",
       "/reference:System.Drawing.dll",
       "/reference:System.Web.Extensions.dll",
+      "/reference:System.IO.Compression.dll",
+      "/reference:System.IO.Compression.FileSystem.dll",
       $sourcePath
     )
     $compileOutput = & $compiler $compilerArgs 2>&1

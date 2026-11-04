@@ -1863,6 +1863,8 @@ namespace ToolboxClient
                 Padding = new Padding(0, 16, 0, 20),
                 SuppressFocusAutoScroll = true
             };
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
             content.Resize += delegate
             {
                 if ((portalVariant || tunerVariant || studioVariant) && IsHandleCreated && !content.IsDisposed)
@@ -7490,8 +7492,11 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
 
         private int PortalContentWidth()
         {
-            if (content == null) return Math.Max(1, ClientSize.Width - 236 - 26 - 32 - 12);
-            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);
+            int shellWidth = ClientSize.Width - 236 - 26 - 32 - 4;
+            if (content == null) return Math.Max(1, shellWidth);
+
+            int panelWidth = content.ClientSize.Width - content.Padding.Horizontal - 4;
+            return Math.Max(1, Math.Min(panelWidth, shellWidth));
         }
 
         private static int PortalGridColumnCount(int available, int maxColumns, int preferredCardWidth, int marginRight)
@@ -16162,7 +16167,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (recordsList == null || recordsList.Columns.Count < 4) return;
             int width = recordsList.ClientSize.Width;
             if (width <= 0) return;
-            if (portalVariant && IsPortalRecordsList(recordsList))
+            if (portalVariant && IsPortalDownloadRecordsList(recordsList))
             {
                 int usable = Math.Max(4, width - 4);
                 int time = Math.Max(48, (int)(usable * 0.19));

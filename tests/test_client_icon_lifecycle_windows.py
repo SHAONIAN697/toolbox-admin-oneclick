@@ -230,6 +230,22 @@ LIFECYCLE_METHODS = r'''
             int rows = buttons.Select(b => b.Top).Distinct().Count();
             if (buttons.Count != count || rows != (count == 3 ? 1 : 2))
                 throw new Exception("Expected a three-column wrap boundary: count=" + count + ", rows=" + rows);
+            if (portalVariant)
+            {
+                if (content.HorizontalScroll.Enabled || content.HorizontalScroll.Visible)
+                    throw new Exception("Portal content horizontal scrolling is enabled");
+                foreach (TemplateActionButton button in buttons)
+                {
+                    FlowLayoutPanel panel = button.Parent as FlowLayoutPanel;
+                    if (panel == null || button.Right + button.Margin.Right > panel.ClientSize.Width + 1)
+                        throw new Exception("Portal action card exceeds its flow panel width");
+                }
+                foreach (Control child in content.Controls)
+                {
+                    if (child.Right > content.ClientSize.Width - content.Padding.Right + 1)
+                        throw new Exception("Portal content child exceeds the visible panel width: " + child.GetType().Name);
+                }
+            }
             FixtureSaveContent("wrap-" + count + "-before-icons");
             fixtureIconGate.Set();
             FixturePump(1250);

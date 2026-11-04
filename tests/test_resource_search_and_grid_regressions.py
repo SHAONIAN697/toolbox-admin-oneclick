@@ -48,6 +48,7 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         portal = self.source[self.source.index("private void BuildPortalShell()"):self.source.index("private void AttachBrandPopupEntry")]
         self.assertIn("Rectangle portalWorkArea = Screen.FromControl(this).WorkingArea;", portal)
         self.assertIn("portalWorkArea.Width - 24", portal)
+        self.assertIn("content.HorizontalScroll.Enabled = false;", portal)
         shown = self.source[self.source.index("Shown += delegate"):self.source.index("private int NextConfigRefreshInterval()")]
         self.assertIn("Rectangle workArea = Screen.FromControl(this).WorkingArea;", shown)
         self.assertIn("Location = new Point(workArea.Left + (workArea.Width - width) / 2", shown)
@@ -61,13 +62,16 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         resize = self.source[self.source.index("protected override void OnResize(EventArgs e)"):self.source.index("protected override void OnDeactivate")]
         self.assertIn("if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId", resize)
         self.assertIn("QueueContentResizeRender();", resize)
+        width = self.source[self.source.index("private int PortalContentWidth()"):self.source.index("private static int PortalGridColumnCount")]
+        self.assertIn("int shellWidth = ClientSize.Width - 236 - 26 - 32 - 4;", width)
+        self.assertIn("Math.Min(panelWidth, shellWidth)", width)
         scroll = self.source[self.source.index("private void UpdateContentScrolling()"):self.source.index("private void BuildResourceSearchChrome()")]
         self.assertIn("Size desiredMinSize = new Size(0, requiredScrollBottom);", scroll)
         self.assertIn("content.HorizontalScroll.Enabled = false;", scroll)
         download = self.source[self.source.index("private void BuildPortalDownloadTable"):self.source.index("private void AttachDownloadRecordContextMenu")]
         self.assertIn("WrapContents = true", download)
         columns = self.source[self.source.index("private void ResizeDownloadRecordColumns()"):self.source.index("private static Color DialogBodyBack()")]
-        self.assertIn("if (portalVariant && IsPortalRecordsList(recordsList))", columns)
+        self.assertIn("if (portalVariant && IsPortalDownloadRecordsList(recordsList))", columns)
         self.assertIn("int usable = Math.Max(4, width - 4);", columns)
 
     def test_resource_search_input_has_no_outer_border(self):
@@ -84,6 +88,11 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
             'resource_search_enabled = config_bool(features.get("resource_search_enabled"), False)',
             server_source,
         )
+
+    def test_powershell_client_builder_references_compression_assemblies(self):
+        server_source = (CLIENT_SOURCE.parents[1] / "server.ps1").read_text(encoding="utf-8")
+        self.assertIn('"/reference:System.IO.Compression.dll"', server_source)
+        self.assertIn('"/reference:System.IO.Compression.FileSystem.dll"', server_source)
 
     def test_admin_panel_reads_and_saves_the_search_switch(self):
         self.assertIn('id="resourceSearchEnabled"', self.admin_source)
