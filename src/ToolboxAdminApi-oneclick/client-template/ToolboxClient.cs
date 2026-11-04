@@ -1702,8 +1702,8 @@ namespace ToolboxClient
             ForeColor = Color.FromArgb(15, 23, 42);
             Rectangle portalWorkArea = Screen.FromControl(this).WorkingArea;
             MinimumSize = new Size(
-                Math.Min(980, Math.Max(760, portalWorkArea.Width - 24)),
-                Math.Min(640, Math.Max(520, portalWorkArea.Height - 24)));
+                Math.Max(480, Math.Min(980, portalWorkArea.Width - 24)),
+                Math.Max(360, Math.Min(640, portalWorkArea.Height - 24)));
             Size = new Size(
                 Math.Min(1280, Math.Max(MinimumSize.Width, portalWorkArea.Width - 24)),
                 Math.Min(840, Math.Max(MinimumSize.Height, portalWorkArea.Height - 24)));
@@ -7490,21 +7490,15 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
 
         private int PortalContentWidth()
         {
-            int width = content == null ? 0 : content.ClientSize.Width - content.Padding.Left - content.Padding.Right - 12;
-            if (width <= 0 && ClientSize.Width > 0)
-            {
-                width = ClientSize.Width - 236 - 26 - 32 - 12;
-            }
-            return Math.Max(280, width);
+            if (content == null) return Math.Max(1, ClientSize.Width - 236 - 26 - 32 - 12);
+            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);
         }
 
         private static int PortalGridColumnCount(int available, int maxColumns, int preferredCardWidth, int marginRight)
         {
-            for (int columns = Math.Max(1, maxColumns); columns > 1; columns--)
-            {
-                if (available >= columns * (preferredCardWidth + marginRight)) return columns;
-            }
-            return 1;
+            int requiredCardWidth = Math.Max(144, preferredCardWidth);
+            int columns = (available + marginRight) / (requiredCardWidth + marginRight);
+            return Math.Max(1, Math.Min(Math.Max(1, maxColumns), columns));
         }
 
         private static int PortalGridCardWidth(int available, int columns, int marginRight)
@@ -7577,6 +7571,8 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 AutoScroll = false,
                 BackColor = Bg
             };
+            cards.HorizontalScroll.Enabled = false;
+            cards.HorizontalScroll.Visible = false;
             if (buttons.Count == 0)
             {
                 cards.Height = 132;
@@ -7696,11 +7692,14 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             {
                 Width = available,
                 Margin = new Padding(0, 0, 0, 20),
+                Padding = Padding.Empty,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
                 AutoScroll = false,
                 BackColor = Bg
             };
+            cards.HorizontalScroll.Enabled = false;
+            cards.HorizontalScroll.Visible = false;
             int gap = 16;
             int columns = PortalGridColumnCount(available, 3, 260, gap);
             int cardWidth = PortalGridCardWidth(available, columns, gap);
@@ -7814,11 +7813,12 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 44,
+                Height = 76,
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
+                WrapContents = true,
+                AutoScroll = false,
                 BackColor = PanelBg,
-                Padding = new Padding(14, 8, 14, 0)
+                Padding = new Padding(14, 8, 14, 4)
             };
             Button openFolder = MakeTemplateTopButton(PortalText("打开目录", "Open Folder"), PortalSoftAccentBack(), Accent, Color.FromArgb(LightTheme ? 135 : 105, Accent), 72);
             Button deleteAll = MakeTemplateTopButton(PortalText("删除全部下载文件", "Delete All Files"), PanelBg2, TextColor, Color.FromArgb(LightTheme ? 100 : 78, Line), 124);
@@ -7848,7 +7848,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             };
             recordsProgressLabel = new EmptyStateLabel
             {
-                Width = Math.Max(520, activeDownloadsList.Width - 20),
+                Width = Math.Max(1, activeDownloadsList.Width - 20),
                 Height = Math.Max(82, activeDownloadsList.Height - activePadding.Top - activePadding.Bottom),
                 Text = PortalText("当前没有下载任务", "No active downloads"),
                 UseCustomColors = true,
@@ -8643,7 +8643,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private int SoftwareCatalogContentWidth()
         {
             int width = content == null ? 720 : content.ClientSize.Width - 12;
-            return Math.Max(640, width);
+            return portalVariant ? Math.Max(1, width) : Math.Max(640, width);
         }
 
         private Control CreateSoftwareCatalogHeading(int width)
@@ -10562,7 +10562,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             Label empty = new Label
             {
-                Width = Math.Max(580, content.ClientSize.Width - 36),
+                Width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 8),
                 Height = 64,
                 Margin = new Padding(0, 18, 0, 0),
                 Text = message,
@@ -11124,12 +11124,12 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 ClearChildControls(content);
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
-                int available = Math.Max(300, content.ClientSize.Width - content.Padding.Left - content.Padding.Right - 12);
+                int available = Math.Max(portalVariant ? 1 : 300, content.ClientSize.Width - content.Padding.Left - content.Padding.Right - 8);
                 FlowLayoutPanel heading = new FlowLayoutPanel { Width = available, Height = 42, WrapContents = false, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
                 Button back = new Button { Width = 64, Height = 30, FlatStyle = FlatStyle.Flat, Text = PortalText("\u8fd4\u56de", "Back"), ForeColor = TextColor, BackColor = PanelBg };
                 back.FlatAppearance.BorderColor = Line;
                 back.Click += delegate { ClearResourceSearch(); };
-                Label summary = new Label { AutoSize = false, Width = Math.Max(180, available - 78), Height = 34, TextAlign = ContentAlignment.MiddleLeft, ForeColor = TextColor, Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold), Text = PortalText("\u641c\u7d22\u7ed3\u679c", "Search Results") + "  \"" + resourceSearchQuery + "\"  " + PortalText("\u5171 " + resourceSearchResults.Count + " \u4e2a", resourceSearchResults.Count + " found") };
+                Label summary = new Label { AutoSize = false, Width = Math.Max(portalVariant ? 1 : 180, available - 78), Height = 34, TextAlign = ContentAlignment.MiddleLeft, ForeColor = TextColor, Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold), Text = PortalText("\u641c\u7d22\u7ed3\u679c", "Search Results") + "  \"" + resourceSearchQuery + "\"  " + PortalText("\u5171 " + resourceSearchResults.Count + " \u4e2a", resourceSearchResults.Count + " found") };
                 heading.Controls.Add(back);
                 heading.Controls.Add(summary);
                 content.Controls.Add(heading);
@@ -16162,6 +16162,18 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (recordsList == null || recordsList.Columns.Count < 4) return;
             int width = recordsList.ClientSize.Width;
             if (width <= 0) return;
+            if (portalVariant && IsPortalRecordsList(recordsList))
+            {
+                int usable = Math.Max(4, width - 4);
+                int time = Math.Max(48, (int)(usable * 0.19));
+                int result = Math.Max(40, (int)(usable * 0.14));
+                int name = Math.Max(48, (int)(usable * 0.27));
+                recordsList.Columns[0].Width = time;
+                recordsList.Columns[1].Width = result;
+                recordsList.Columns[2].Width = name;
+                recordsList.Columns[3].Width = Math.Max(1, usable - time - result - name);
+                return;
+            }
             recordsList.Columns[0].Width = 122;
             recordsList.Columns[1].Width = 86;
             recordsList.Columns[2].Width = Math.Max(220, width - 122 - 86 - 170);

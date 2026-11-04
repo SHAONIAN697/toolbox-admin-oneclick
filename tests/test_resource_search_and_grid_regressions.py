@@ -54,9 +54,21 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         cards = self.source[self.source.index("private void RenderPortalSections()"):self.source.index("private void RenderPortalLoadingState")]
         self.assertIn("WrapContents = true", cards)
         self.assertIn("AutoScroll = false", cards)
+        self.assertIn("cards.HorizontalScroll.Enabled = false;", cards)
+        section_cards = self.source[self.source.index("private Control CreatePortalCardsPanel"):self.source.index("private Control CreatePortalEmptyGroup")]
+        self.assertIn("cards.HorizontalScroll.Enabled = false;", section_cards)
+        self.assertIn("WrapContents = true", section_cards)
         resize = self.source[self.source.index("protected override void OnResize(EventArgs e)"):self.source.index("protected override void OnDeactivate")]
         self.assertIn("if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId", resize)
         self.assertIn("QueueContentResizeRender();", resize)
+        scroll = self.source[self.source.index("private void UpdateContentScrolling()"):self.source.index("private void BuildResourceSearchChrome()")]
+        self.assertIn("Size desiredMinSize = new Size(0, requiredScrollBottom);", scroll)
+        self.assertIn("content.HorizontalScroll.Enabled = false;", scroll)
+        download = self.source[self.source.index("private void BuildPortalDownloadTable"):self.source.index("private void AttachDownloadRecordContextMenu")]
+        self.assertIn("WrapContents = true", download)
+        columns = self.source[self.source.index("private void ResizeDownloadRecordColumns()"):self.source.index("private static Color DialogBodyBack()")]
+        self.assertIn("if (portalVariant && IsPortalRecordsList(recordsList))", columns)
+        self.assertIn("int usable = Math.Max(4, width - 4);", columns)
 
     def test_resource_search_input_has_no_outer_border(self):
         self.assertIn("resourceSearchHost.Padding = Padding.Empty;", self.source)
@@ -85,7 +97,8 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
     def test_grid_scroll_reserves_bottom_space_for_last_row(self):
         self.assertIn("content.PerformLayout();", self.source)
         self.assertIn("int requiredScrollBottom = requiredBottom + bottomPadding;", self.source)
-        self.assertIn("content.AutoScrollMinSize = new Size(0, requiredScrollBottom);", self.source)
+        self.assertIn("Size desiredMinSize = new Size(0, requiredScrollBottom);", self.source)
+        self.assertIn("content.HorizontalScroll.Enabled = false;", self.source)
 
 
 if __name__ == "__main__":
