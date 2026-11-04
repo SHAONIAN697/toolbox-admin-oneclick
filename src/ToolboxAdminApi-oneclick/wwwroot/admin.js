@@ -2670,9 +2670,7 @@ function ensureAuditView() {
 
 async function clearAuditLog() {
   if (!confirm('确定清空全部操作日志吗？清空后无法恢复。')) return;
-  const currentPassword = prompt('请输入当前管理员密码以确认清空日志：') || '';
-  if (!currentPassword) return;
-  const result = await api('/api/super/audit', { method: 'DELETE', body: JSON.stringify({ currentPassword }) });
+  const result = await api('/api/super/audit', { method: 'DELETE', body: JSON.stringify({}) });
   await loadAuditLog();
   setStatus(`已清理 ${Number(result.cleared || 0)} 条操作日志。`);
 }
@@ -2683,11 +2681,9 @@ async function clearFilteredAuditLog() {
   const items = filteredAuditItems();
   if (!items.length) { setStatus('当前筛选没有可清理的日志。', true); return; }
   if (!confirm(`确定清理当前筛选出的 ${items.length} 条日志吗？清理后无法恢复。`)) return;
-  const currentPassword = prompt('请输入当前管理员密码以确认清理筛选日志：') || '';
-  if (!currentPassword) return;
   const result = await api('/api/super/audit', {
     method: 'DELETE',
-    body: JSON.stringify({ currentPassword, filtered: true, eventKeys: items.map((item) => item.eventKey).filter(Boolean) })
+    body: JSON.stringify({ filtered: true, eventKeys: items.map((item) => item.eventKey).filter(Boolean) })
   });
   await loadAuditLog();
   setStatus(`已清理 ${Number(result.cleared || 0)} 条筛选日志。`);
@@ -7021,8 +7017,8 @@ async function promoteUserAgent(userId) {
   const user = state.users.find((item) => item.id === userId);
   if (!user) return;
   const levels = agentLevelRows().filter((level) => level.enabled !== false);
-  const levelHint = levels.map((level) => `${level.id}：${level.name}（${Number(level.price || 0).toFixed(2)}）`).join('\n');
-  const selectedLevelId = window.prompt(`请输入代理级别编号：\n${levelHint}`, user.agentLevelId || levels[0]?.id || '') || '';
+  const selectedLevelId = await chooseAgentLevel(user, levels);
+  if (selectedLevelId === null) return;
   if (!levels.some((level) => level.id === selectedLevelId)) {
     setStatus('请选择有效的代理级别。', true);
     return;
@@ -7036,6 +7032,27 @@ async function promoteUserAgent(userId) {
   await loadInvites();
   renderUserContext();
   setStatus('用户已设为代理。');
+}
+
+function chooseAgentLevel(user, levels) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('agentLevelPickerModal');
+    if (existing) existing.remove();
+    const modal = document.createElement('div');
+    modal.id = 'agentLevelPickerModal';
+    modal.className = 'modal-overlay agent-level-picker-modal';
+    modal.innerHTML = `<div class="modal-card agent-settings-card" role="dialog" aria-modal="true" aria-labelledby="agentLevelPickerTitle">
+      <div class="modal-head"><div><h2 id="agentLevelPickerTitle">设置代理级别</h2><p>${escapeHtml(user.displayName || user.username)}</p></div><button type="button" data-close aria-label="关闭">×</button></div>
+      <label>代理级别<select data-agent-level-picker>${levels.map((level) => `<option value="${escapeAttr(level.id)}" ${level.id === (user.agentLevelId || levels[0]?.id) ? 'selected' : ''}>${escapeHtml(level.name)}（${Number(level.price || 0).toFixed(2)}）</option>`).join('')}</select></label>
+      <div class="button-pair agent-settings-actions"><button type="button" data-cancel>取消</button><button type="button" class="primary" data-confirm>确定</button></div>
+    </div>`;
+    document.body.appendChild(modal);
+    const finish = (value) => { modal.remove(); resolve(value); };
+    modal.querySelector('[data-close]').onclick = () => finish(null);
+    modal.querySelector('[data-cancel]').onclick = () => finish(null);
+    modal.querySelector('[data-confirm]').onclick = () => finish(modal.querySelector('[data-agent-level-picker]').value);
+    modal.addEventListener('click', (event) => { if (event.target === modal) finish(null); });
+  });
 }
 
 async function cancelUserAgent(userId) {
@@ -7324,10 +7341,8 @@ async function copyCloudResolverDiagnostics() {
 async function clearCloudResolverDiagnostics() {
   if (!isSuper()) throw new Error('只有总管理员可以清空诊断日志。');
   if (!window.confirm('确认清空服务器上的全部网盘解析诊断日志吗？此操作不可恢复。')) return;
-  const currentPassword = window.prompt('请输入当前总管理员密码以确认清空日志：');
-  if (currentPassword === null) return;
   await api('/api/super/cloud-resolver-diagnostics', {
-    method: 'DELETE', body: JSON.stringify({ currentPassword })
+    method: 'DELETE', body: JSON.stringify({})
   });
   const content = $('cloudResolverDiagnosticsContent');
   if (content) { content.textContent = '当前没有诊断日志。'; content.hidden = false; }

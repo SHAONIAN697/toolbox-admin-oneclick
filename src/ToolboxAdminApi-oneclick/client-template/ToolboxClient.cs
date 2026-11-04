@@ -18338,7 +18338,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             try
             {
-                string text = NormalizeConfigJson(StripPasswordFromCachedConfig(raw));
+                // Cached and embedded configs must retain app.password so startup
+                // protection is enforced consistently when the network is unavailable.
+                string text = NormalizeConfigJson(raw);
                 EnsureConfigResponse(text);
                 return text;
             }
@@ -18432,30 +18434,13 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
 
         private void SaveCache(string json)
         {
-            File.WriteAllText(CachePath(), StripPasswordFromCachedConfig(json), Encoding.UTF8);
+            File.WriteAllText(CachePath(), json ?? "", Encoding.UTF8);
         }
 
         private string ReadCache()
         {
             string path = CachePath();
             return File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null;
-        }
-
-        private string StripPasswordFromCachedConfig(string json)
-        {
-            if (String.IsNullOrWhiteSpace(json)) return json;
-            try
-            {
-                object parsed = serializer.DeserializeObject(json);
-                Dictionary<string, object> dict = AsDict(parsed);
-                Dictionary<string, object> app = AsDict(Get(dict, "app"));
-                if (app.ContainsKey("password")) app["password"] = "";
-                return serializer.Serialize(dict);
-            }
-            catch
-            {
-                return json;
-            }
         }
 
         private bool IsPortalDemoPlaceholderConfig(string json)

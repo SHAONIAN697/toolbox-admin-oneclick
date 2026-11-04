@@ -6,6 +6,12 @@ from pathlib import Path
 
 
 class XingguiConfigTests(unittest.TestCase):
+    def test_cached_and_embedded_configs_keep_startup_password(self):
+        source = (Path(__file__).resolve().parents[1] / 'src/ToolboxAdminApi-oneclick/client-template/ToolboxClient.cs').read_text(encoding='utf-8')
+        self.assertIn('string text = NormalizeConfigJson(raw);', source)
+        self.assertIn('File.WriteAllText(CachePath(), json ?? "", Encoding.UTF8);', source)
+        self.assertNotIn('StripPasswordFromCachedConfig', source)
+
     @classmethod
     def setUpClass(cls):
         path = Path(__file__).resolve().parents[1] / 'src/ToolboxAdminApi-oneclick/app.py'

@@ -6640,8 +6640,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"enabled": settings.get("cloudResolverDiagnosticsEnabled") is True})
             if method == "DELETE":
                 body = self.read_body()
-                if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
-                    return self.send_json({"error": "当前管理员密码错误，未清空日志。"}, 403)
                 clear_cloud_resolver_diagnostics()
                 audit_event("cloud_resolver_diagnostics_cleared", actor=auth["user"], handler=self)
                 return self.send_json({"ok": True})
@@ -6650,9 +6648,6 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权清空操作日志。"}, 403)
             body = self.read_body()
-            if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
-                audit_event("audit_log_clear_failed", auth["user"], handler=self, success=False)
-                return self.send_json({"error": "当前管理员密码错误。"}, 403)
             event_keys = {str(value) for value in body.get("eventKeys", []) if str(value)}
             filtered = body.get("filtered") is True
             if filtered and not event_keys:
