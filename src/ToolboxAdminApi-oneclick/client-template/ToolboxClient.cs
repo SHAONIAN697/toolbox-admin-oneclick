@@ -4529,6 +4529,12 @@ namespace ToolboxClient
         [DllImport("user32.dll")]
         private static extern bool ShowScrollBar(IntPtr hWnd, int bar, bool show);
 
+        private static void HideNativeHorizontalScrollBar(Control control)
+        {
+            if (control == null || control.IsDisposed || !control.IsHandleCreated) return;
+            ShowScrollBar(control.Handle, 0, false);
+        }
+
         private static void HideNativeScrollBars(Control control)
         {
             if (control == null || control.IsDisposed || !control.IsHandleCreated) return;
@@ -5109,6 +5115,7 @@ namespace ToolboxClient
             {
                 scrollable.HorizontalScroll.Enabled = false;
                 scrollable.HorizontalScroll.Visible = false;
+                HideNativeHorizontalScrollBar(scrollable);
             }
             foreach (Control child in root.Controls) DisableHorizontalScrollbars(child);
         }
@@ -5941,7 +5948,10 @@ namespace ToolboxClient
         private int TunerContentWidth()
         {
             if (content == null || content.IsDisposed) return 1;
-            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 4);
+            // Reserve the native vertical scrollbar width up front. Without
+            // this, enabling vertical scrolling makes every child a few
+            // pixels wider than the viewport and creates a horizontal bar.
+            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
         }
 
         private Control CreateTunerSystemOptimizeGroup(int width)
@@ -7509,7 +7519,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             int shellWidth = ClientSize.Width - 236 - 26 - 32 - 4;
             if (content == null) return Math.Max(1, shellWidth);
 
-            int panelWidth = content.ClientSize.Width - content.Padding.Horizontal - 4;
+            int panelWidth = content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4;
             return Math.Max(1, Math.Min(panelWidth, shellWidth));
         }
 
@@ -7794,6 +7804,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             content.ResumeLayout();
             ApplyPortalThemeToShell();
             RenderActiveDownloads();
+            DisableHorizontalScrollbars(content);
         }
 
         private void RenderPortalSettingsPage()
@@ -10649,6 +10660,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private void UpdateContentScrolling()
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
+            DisableHorizontalScrollbars(content);
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             if ((tunerVariant || vst76Variant) && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
             {
@@ -15882,6 +15894,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 }
                 activeDownloadsList.Controls.Add(recordsProgressLabel);
                 activeDownloadsList.ResumeLayout();
+                DisableHorizontalScrollbars(activeDownloadsList);
                 RestoreActiveDownloadScroll(scrollPosition);
                 RestoreContentScrollSoon(pageScrollPosition);
                 return;
@@ -15928,6 +15941,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 activeDownloadRows.Remove(id);
             }
             activeDownloadsList.ResumeLayout();
+            DisableHorizontalScrollbars(activeDownloadsList);
             RestoreActiveDownloadScroll(scrollPosition);
             RestoreContentScrollSoon(pageScrollPosition);
             }
@@ -15971,10 +15985,13 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
             bool audioInline = audioVariant && currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
-            bool tunerInline = (tunerVariant || audioInline) && currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
+            int taskListWidth = activeDownloadsList == null ? 320 : activeDownloadsList.ClientSize.Width;
+            if (activeDownloadsList != null && activeDownloadsList.AutoScroll)
+                taskListWidth -= SystemInformation.VerticalScrollBarWidth;
+            int taskRowWidth = Math.Max(320, taskListWidth - 16);
             Panel row = new RoundedPanel
             {
-                Width = tunerInline ? Math.Max(320, activeDownloadsList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8) : Math.Max(540, activeDownloadsList.ClientSize.Width - 24),
+                Width = taskRowWidth,
                 Height = 84,
                 Margin = new Padding(0, 0, 0, 8),
                 BackColor = audioInline ? Color.White : (studioInline ? StudioRecordCardBack() : DialogCardBack()),
@@ -15989,7 +16006,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 Name = "taskFileLabel",
                 Left = 16,
                 Top = 12,
-                Width = Math.Max(220, row.Width - reservedRight - 18),
+                Width = Math.Max(60, row.Width - reservedRight - 18),
                 Height = 22,
                 ForeColor = audioInline ? Color.FromArgb(30, 30, 30) : TextColor,
                 BackColor = Color.Transparent,
@@ -16000,7 +16017,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 Name = "taskMetaLabel",
                 Left = 16,
                 Top = 34,
-                Width = Math.Max(220, row.Width - reservedRight - 18),
+                Width = Math.Max(60, row.Width - reservedRight - 18),
                 Height = 20,
                 ForeColor = audioInline ? Color.FromArgb(100, 106, 112) : Muted,
                 BackColor = Color.Transparent,
@@ -16011,7 +16028,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 Name = "taskBar",
                 Left = 16,
                 Top = 64,
-                Width = Math.Max(220, row.Width - reservedRight - 18),
+                Width = Math.Max(60, row.Width - reservedRight - 18),
                 Height = 10,
                 BackColor = audioInline ? Color.FromArgb(226, 232, 238) : (studioInline ? StudioRecordTableBack() : DialogFieldBack()),
                 FillColor = Accent
@@ -16085,7 +16102,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             row.Resize += delegate
             {
                 int rightSpace = (buttonWidth * 3) + (buttonGap * 2) + 26;
-                label.Width = meta.Width = bar.Width = Math.Max(220, row.Width - rightSpace - 18);
+                label.Width = meta.Width = bar.Width = Math.Max(60, row.Width - rightSpace - 18);
                 cancel.Left = row.Width - buttonWidth - 16;
                 resume.Left = cancel.Left - buttonWidth - buttonGap;
                 pause.Left = resume.Left - buttonWidth - buttonGap;
@@ -17238,7 +17255,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.BackColor = Bg;
 
                 int pageHeight = Math.Max(260, content.ClientSize.Height - 8);
-                int activeHeight = Math.Max(120, Math.Min(172, pageHeight / 3));
+                int activeHeight = Math.Max(172, Math.Min(220, pageHeight / 3));
 
                 int available = TunerContentWidth();
                 content.Controls.Add(CreateTunerDownloadsHeader(available));
@@ -17258,7 +17275,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                     Left = 12,
                     Top = 40,
                     Width = available - 24,
-                    Height = Math.Max(64, activeHeight - 50),
+                    Height = Math.Max(DownloadTaskRowHeight + DownloadTaskRowGap, activeHeight - 50),
                     FlowDirection = FlowDirection.TopDown,
                     WrapContents = false,
                     AutoScroll = false,
