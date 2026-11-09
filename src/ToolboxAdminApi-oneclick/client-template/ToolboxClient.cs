@@ -1411,6 +1411,11 @@ namespace ToolboxClient
                     // business card, which produced the same flash on every
                     // tuner/xinggui-style page.
                     content.Invalidate();
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (!IsDisposed && content != null && !content.IsDisposed && !contentRendering)
+                            UpdateContentScrolling();
+                    }));
                 }
             };
             main.Controls.Add(content);
