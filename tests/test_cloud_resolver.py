@@ -178,6 +178,45 @@ class CloudResolverTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.call("bob", f"/api/cloud-resolver/parse-tasks/{task['id']}", "GET")
 
+    def test_button_download_allows_legacy_provider_entitlement_through_qaiu(self):
+        self.grant("alice", providers=["123pan"])
+        button = APP.new_button({"name": "resolver button", "action": "download", "target": "https://example.test/file"})
+        button["action"] = "cloud_resolve_download"
+        button["cloudResolverLines"] = [{
+            "shareUrl": "https://1831129056.share.123pan.cn/s/demo",
+            "provider": "qaiu", "accessCodeEncrypted": "", "sort": 0, "enabled": True,
+        }]
+        APP.write_config({
+            "pages": {"p1": {"title": "page", "sections": [{"title": "downloads", "buttons": [button]}]}},
+            "toolbox_tabs": [],
+        }, "alice")
+        with patch.object(RESOLVER, "_provider_parse_configured", return_value=[{
+            "id": "file-1", "name": "demo.exe", "size": 12,
+            "downloadUrl": "https://download.example/demo.exe",
+        }]) as parse_mock:
+            status, payload = self.call("alice", "/api/cloud-resolver/button-download", "POST", {
+                "buttonId": button["id"],
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["files"][0]["name"], "demo.exe")
+        self.assertEqual(parse_mock.call_args.args[0], "qaiu")
+        self.assertEqual(parse_mock.call_args.args[3], self.qaiu_key)
+
+    def test_button_download_without_entitlement_does_not_call_provider(self):
+        button = APP.new_button({"name": "unentitled", "action": "download", "target": "https://example.test/file"})
+        button["action"] = "cloud_resolve_download"
+        button["cloudResolverLines"] = [{
+            "shareUrl": "https://1831129056.share.123pan.cn/s/demo",
+            "provider": "qaiu", "sort": 0, "enabled": True,
+        }]
+        APP.write_config({
+            "pages": {"p1": {"title": "page", "sections": [{"title": "downloads", "buttons": [button]}]}},
+            "toolbox_tabs": [],
+        }, "bob")
+        with patch.object(RESOLVER, "_provider_parse_configured") as parse_mock:
+            with self.assertRaises(PermissionError):
+                self.call("bob", "/api/cloud-resolver/button-download", "POST", {"buttonId": button["id"]})
+        parse_mock.assert_not_called()
     def test_cloud_resolver_diagnostics_default_off_and_redact_credentials(self):
         self.assertFalse(APP.cloud_resolver_diagnostic_enabled())
         self.assertFalse(APP.cloud_resolver_diagnostic_log("must_not_write", {"value": "ignored"}))

@@ -28,7 +28,7 @@ LANZOU_HOSTS = {"lanzou.com", "lanzout.com", "lanzoui.com", "lanzoux.com", "lanz
 
 FEATURE = "cloud_resolver"
 PROVIDERS = {
-    "123pan": {"label": "123 云盘", "domains": ("123pan.com", "123684.com"), "status": "已接入"},
+    "123pan": {"label": "123 云盘", "domains": ("123pan.com", "123pan.cn", "123684.com"), "status": "已接入"},
     "xiaofeiji": {"label": "小飞机网盘", "domains": ("xiaofeiji.com", "feijipan.com"), "status": "已接入"},
     "lanzou": {"label": "蓝奏云优享", "domains": tuple(sorted(LANZOU_HOSTS)), "status": "已接入"},
     "tianyi": {"label": "天翼云盘", "domains": ("cloud.189.cn", "189.cn"), "status": "已接入"},
@@ -1477,20 +1477,26 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers, api_ba
                 continue
             name = html.unescape(str(item.get("fileName") or item.get("name") or "未命名文件").strip())[:240]
             path = (folder_path.rstrip("/") + "/" + name) if folder_path else "/" + name
-            parser_url = str(item.get("parserUrl") or item.get("downloadUrl") or "").strip()
+            # QAIU uses parserUrl for directory traversal, but file rows may
+            # also expose a real hotlink as directLink/downloadUrl. A parser
+            # endpoint can return JSON or a guarded 403 when used as a file URL.
+            direct_url = str(item.get("directLink") or item.get("downloadUrl") or "").strip()
+            parser_url = str(item.get("parserUrl") or "").strip()
             # The documented QAIU response uses `fileType` (`folder` for
             # directories). A few deployments expose the same value as
             # `type`, so accept that as a compatibility fallback.
             kind = str(item.get("fileType") or item.get("type") or "").strip().lower()
             if kind == "folder":
-                if parser_url:
-                    if not _qaiu_safe_https_url(parser_url):
+                folder_target = parser_url or direct_url
+                if folder_target:
+                    if not _qaiu_safe_https_url(folder_target):
                         raise ProviderError("QAIU_BAD_DOWNLOAD_URL")
-                    visit(parser_url, path, depth + 1)
+                    visit(folder_target, path, depth + 1)
                 continue
-            if not parser_url:
+            file_target = direct_url or parser_url
+            if not file_target:
                 continue
-            if not _qaiu_safe_https_url(parser_url):
+            if not _qaiu_safe_https_url(file_target):
                 raise ProviderError("QAIU_BAD_DOWNLOAD_URL")
             try:
                 size = max(0, int(item.get("size") or 0))
@@ -1498,9 +1504,9 @@ def _qaiu_folder_files(url, access_code, api_key, provider_name, headers, api_ba
                 size = 0
             file_id = str(item.get("fileId") or item.get("id") or "")[:160]
             if not file_id:
-                file_id = hashlib.sha256((path + "|" + parser_url).encode("utf-8")).hexdigest()[:24]
+                file_id = hashlib.sha256((path + "|" + file_target).encode("utf-8")).hexdigest()[:24]
             files.append({"id": file_id, "name": name, "path": path, "size": size, "type": "file",
-                          "downloadUrl": parser_url, "backupUrl": "", "browserUrl": url,
+                          "downloadUrl": file_target, "backupUrl": "", "browserUrl": url,
                           "providerName": provider_name, "resolverType": "qaiu", "downloadHeaders": dict(headers)})
             if len(files) >= 1000:
                 raise ProviderError("PROVIDER_RESPONSE_TOO_LARGE")
@@ -1521,17 +1527,39 @@ def _qaiu_parse(url, access_code="", api_key="", provider="", api_base=None):
         "credentialPresent": bool(api_key), "apiBase": api_base or QAIU_API_BASE,
     }, redact_values=[access_code, api_key])
     details = {}
-    try:
-        details = _qaiu_request_at_base("/v2/linkInfo", {"url": url, "pwd": access_code}, "", api_base,
-                                        require_api_key=False)
-    except ProviderError as exc:
-        # linkInfo is an optional, unmetered hint; the actual JSON parser below
-        # remains authoritative for whether a share is supported and usable.
-        _diag("link_info_hint_failed", {"errorCode": str(exc), "continuing": True}, redact_values=[access_code, api_key])
-        details = {}
+    # 123pan file-list responses already contain parser URLs; skip optional linkInfo.
+    if provider != "123pan":
+        try:
+            details = _qaiu_request_at_base("/v2/linkInfo", {"url": url, "pwd": access_code}, "", api_base,
+                                            require_api_key=False)
+        except ProviderError as exc:
+            _diag("link_info_hint_failed", {"errorCode": str(exc), "continuing": True}, redact_values=[access_code, api_key])
+            details = {}
     provider_name, provider_type, other_param = _qaiu_link_details(details)
     provider_name = provider_name or PROVIDERS.get(provider, {}).get("label") or "其他网盘"
     download_headers = _qaiu_download_headers(other_param, provider_type)
+
+    # 123pan single-file shares expose the real hotlink through /json/parser.
+    # The file-list endpoint may instead return parserUrl, which is an
+    # aggregate redirect marker and is not a downloadable file URL.
+    if provider == "123pan":
+        try:
+            payload = _qaiu_request_at_base("/json/parser", {"url": url, "pwd": access_code}, api_key, api_base)
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            direct = str(data.get("directLink") or data.get("downloadUrl") or "").strip()
+            info = data.get("fileInfo") if isinstance(data.get("fileInfo"), dict) else {}
+            if direct and _qaiu_safe_https_url(direct):
+                name = html.unescape(str(info.get("fileName") or "未命名文件").strip())[:240]
+                try:
+                    size = max(0, int(info.get("size") or 0))
+                except (TypeError, ValueError):
+                    size = 0
+                file_id = str(data.get("shareKey") or info.get("fileId") or hashlib.sha256(url.encode("utf-8")).hexdigest()[:24])[:160]
+                return [{"id": file_id, "name": name, "path": "/" + name, "size": size, "type": "file",
+                         "downloadUrl": direct, "backupUrl": "", "browserUrl": url,
+                         "providerName": provider_name, "resolverType": "qaiu", "downloadHeaders": download_headers}]
+        except ProviderError as exc:
+            _diag("single_file_fast_path_failed", {"provider": provider, "errorCode": str(exc), "continuing": True}, redact_values=[access_code, api_key])
     try:
         if api_base is None:
             files = _qaiu_folder_files(url, access_code, api_key, provider_name, download_headers)
@@ -2325,6 +2353,89 @@ def _sell_agent_code(handler, app, store, user):
     return handler.send_json({"ok": True, "message": "卡密已售出，需由成员本人兑换。", "balance": balance})
 
 
+def _find_config_button(app, user_id, button_id):
+    cfg = app.read_config(user_id)
+    for page in (cfg.get("pages") or {}).values():
+        for section in page.get("sections") or []:
+            for button in section.get("buttons") or []:
+                if str(button.get("id")) == str(button_id): return button
+    for tab in cfg.get("toolbox_tabs") or []:
+        for section in tab.get("sections") or []:
+            for button in section.get("buttons") or []:
+                if str(button.get("id")) == str(button_id): return button
+    return None
+
+
+def _resolve_button_download(handler, app, user):
+    store = _load(app)
+    entitlement = _require_entitlement(app, store, user)
+    body = handler.read_body()
+    button = _find_config_button(app, user.get("id"), body.get("buttonId"))
+    if not button or button.get("action") != "cloud_resolve_download" or button.get("enabled") is False:
+        raise ValueError("BUTTON_UNAVAILABLE")
+    failures = []
+    for line in sorted(button.get("cloudResolverLines") or [], key=lambda x: int(x.get("sort") or 0)):
+        if line.get("enabled") is False: continue
+        try:
+            url = str(line.get("shareUrl") or "").strip()
+            configured_provider = str(line.get("provider") or "").strip()
+            try:
+                provider, _ = _provider_for(url, configured_provider)
+            except ValueError as exc:
+                # Older buttons could persist the aggregate provider for a
+                # recognized provider URL. Re-detect the URL so those buttons
+                # keep working without requiring users to recreate them.
+                if configured_provider == "qaiu":
+                    provider, _ = _provider_for(url, "")
+                else:
+                    raise exc
+            allowed_providers = set(entitlement.get("allowedProviders") or [])
+            try:
+                share_provider, _ = _provider_for(url, "")
+            except ValueError:
+                share_provider = provider
+            provider_allowed = provider in allowed_providers or share_provider in allowed_providers or (
+                provider == "qaiu" and QAIU_LEGACY_CLOUD_PROVIDERS.issubset(allowed_providers)
+            )
+            if not provider_allowed: raise ProviderError("PROVIDER_DISABLED")
+            code = _unprotect(app, line.get("accessCodeEncrypted"))
+            files = _provider_parse_configured(provider, url, code, _qaiu_api_key(app, store), _qaiu_configured_api_base(store))
+            for item in files:
+                if isinstance(item, dict) and not str(item.get("downloadUrl") or "").strip():
+                    item["downloadUrl"] = str(item.get("directLink") or item.get("parserUrl") or "").strip()
+            downloadable = [item for item in files if isinstance(item, dict) and item.get("type") != "folder" and str(item.get("downloadUrl") or "").strip()]
+            if not downloadable: raise ProviderError("DOWNLOAD_URL_UNAVAILABLE")
+            public_files = []
+            user_id = user.get("id")
+            api_key = str(user.get("apiKey") or "").strip()
+            for item in downloadable:
+                file_id = str(item.get("id") or hashlib.sha256((url + "|" + str(item.get("name") or "download")).encode("utf-8")).hexdigest()[:24])
+                source_key = hashlib.sha256((str(button.get("id")) + "|" + url + "|" + file_id).encode("utf-8")).hexdigest()
+                source = next((row for row in store.get("sources", []) if row.get("ownerUserId") == user_id and row.get("sourceKey") == source_key), None)
+                if source is None:
+                    source = {"id": app.new_id("crsrc"), "ownerUserId": user_id, "ownerRole": user.get("role"),
+                              "resourceScope": "personal", "buttonId": button.get("id"), "provider": provider,
+                              "providerName": item.get("providerName") or provider, "resolverType": item.get("resolverType") or "qaiu",
+                              "shareUrl": url, "shareId": hashlib.sha256(url.encode("utf-8")).hexdigest()[:24],
+                              "accessCodeEncrypted": line.get("accessCodeEncrypted") or "", "fileId": file_id,
+                              "filePath": item.get("path") or "", "fileName": item.get("name") or "download",
+                              "fileSize": item.get("size", 0), "priority": int(line.get("sort") or 0),
+                              "enabled": True, "status": "draft", "isPrimary": not public_files,
+                              "sourceKey": source_key, "createdBy": user_id, "updatedBy": user_id,
+                              "createdAt": _iso(_now()), "updatedAt": _iso(_now())}
+                    store.setdefault("sources", []).append(source)
+                source.update({"downloadUrl": item.get("downloadUrl") or "", "backupUrl": item.get("backupUrl") or "",
+                               "downloadHeaders": item.get("downloadHeaders") or {}, "updatedAt": _iso(_now()), "status": "draft"})
+                source["resolvedAt"] = time.time()
+                public_files.append({"name": str(item.get("name") or "download"),
+                                     "url": _cloud_proxy_url(handler, source["id"], api_key), "size": item.get("size", 0)})
+            _save(app, store)
+            return handler.send_json({"files": public_files})
+        except Exception as exc:
+            failures.append(str(exc).split(":", 1)[0][:80])
+    _diag("button_resolve_failed", {"buttonId": body.get("buttonId"), "failureCount": len(failures), "errors": failures})
+    return handler.send_json({"error": "所有解析线路均失败，请检查线路或稍后重试。", "code": "ALL_LINES_FAILED"}, 502)
+
 def route(handler, app, path, method, auth):
     user = auth["user"]
     user_id = user.get("id")
@@ -2333,6 +2444,8 @@ def route(handler, app, path, method, auth):
     _diag("resolver_api_route_started", {
         "method": method, "path": path, "query": getattr(handler, "query", {}),
     })
+    if path == "/api/cloud-resolver/button-download" and method == "POST":
+        return _resolve_button_download(handler, app, user)
     if path in ("/api/agent/cloud-resolver/codes", "/api/agent/cloud-resolver/sell-code") and method == "POST":
         if not app.is_agent(user):
             return handler.send_json({"error": "仅代理可访问。"}, 403)

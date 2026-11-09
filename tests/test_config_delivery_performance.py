@@ -29,6 +29,22 @@ class ConfigDeliveryPerformanceTests(unittest.TestCase):
             self.assertIn("Restart=on-failure", service)
             self.assertIn("RestartSec=10", service)
             self.assertNotIn("Restart=always", service)
+    def test_client_sync_refreshes_visible_page_when_render_signature_changes(self):
+        for source_dir in SOURCE_DIRS:
+            client = (
+                ROOT / "src" / source_dir / "client-template" / "ToolboxClient.cs"
+            ).read_text(encoding="utf-8")
+            start = client.index("private void ApplyConfig()")
+            end = client.index("private void RefreshVisibleActionTargets", start)
+            apply_config = client[start:end]
+            self.assertIn("PageRenderSignature(currentPage)", apply_config)
+            self.assertIn("lastRenderedPageSignature", apply_config)
+            self.assertIn("RefreshVisibleActionTargets();", apply_config)
+            self.assertIn("ShowPage(currentPage);", apply_config)
+            self.assertLess(
+                apply_config.index("RefreshVisibleActionTargets();"),
+                apply_config.index("ShowPage(currentPage);"),
+            )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 少年科技工作室. All rights reserved.
+// Copyright (c) 2026 少年科技工作室. All rights reserved.
 const state = {
   token: localStorage.getItem('toolbox_session_token') || '',
   currentUser: null,
@@ -76,6 +76,7 @@ applyAdminTheme();
 const ACTIONS = [
   ['link', '打开网页'],
   ['download', '下载文件'],
+  ['cloud_resolve_download', '解析并下载'],
   ['cmd', '运行命令'],
   ['script', '内置功能'],
   ['winget', '安装软件']
@@ -993,6 +994,8 @@ function logout() {
 }
 
 const CLOUD_ERROR_MESSAGES = {
+  'cloud resolver entitlement required': '当前账号尚未开通网盘解析，请先开通或续费网盘解析授权。',
+  cloud_resolver_entitlement_required: '当前账号尚未开通网盘解析，请先开通或续费网盘解析授权。',
   USER_ENTITLEMENT_REQUIRED: '当前账号尚未开通网盘解析，请购买套餐或兑换激活码。',
   PROVIDER_DISABLED: '当前网盘平台暂未开放。',
   INVALID_SHARE_URL: '网盘分享链接格式不正确。',
@@ -1065,7 +1068,7 @@ function cloudSourceLabel(value) {
 function cloudErrorMessage(error) {
   const raw = String(error?.message || error || '网盘资源操作失败。');
   const code = raw.match(/[A-Z][A-Z0-9_]{3,}/)?.[0];
-  return CLOUD_ERROR_MESSAGES[code] || raw;
+  return CLOUD_ERROR_MESSAGES[code] || CLOUD_ERROR_MESSAGES[raw.trim().toLowerCase()] || raw;
 }
 
 function localDateTimeValue(value) {
@@ -5224,6 +5227,22 @@ function renderButtons() {
   const sectionFilter = $('buttonSectionFilter')?.value || '';
   const actionFilter = $('buttonActionFilter')?.value || '';
   tbody.innerHTML = '';
+  if (!tbody.dataset.actionDelegated) {
+    tbody.dataset.actionDelegated = '1';
+    tbody.addEventListener('click', (event) => {
+      const actionButton = event.target.closest('[data-action]');
+      if (!actionButton || !tbody.contains(actionButton)) return;
+      const row = actionButton.closest('tr');
+      const ref = state.buttons.find((item) => String(item.id) === String(row?.dataset.buttonId));
+      if (!ref) return;
+      event.preventDefault();
+      const action = actionButton.dataset.action;
+      if (action === 'edit') return renderButtonEditRow(row, ref);
+      if (action === 'cancel') return renderButtonPreviewRow(row, ref);
+      const task = action === 'save' ? saveButton(ref, row) : action === 'toggle-enabled' ? toggleButtonEnabled(ref) : action === 'delete' ? deleteButton(ref) : null;
+      if (task?.catch) task.catch((error) => setStatus(error.message || '操作失败', true));
+    });
+  }
 
   state.buttons
     .slice()
@@ -5257,6 +5276,7 @@ function renderButtonPreviewRow(tr, button) {
   const isScript = button.action === 'script';
   const enabled = button.enabled !== false;
   tr.className = enabled ? '' : 'button-disabled-row';
+  tr.dataset.buttonId = button.id || '';
   tr.innerHTML = `
     <td><strong>${escapeHtml(button.area || '')}</strong><small>${escapeHtml(button.section || '')}</small></td>
     <td>${escapeHtml(String(button.sort ?? button.raw?.sort ?? 0))}</td>
@@ -5266,15 +5286,15 @@ function renderButtonPreviewRow(tr, button) {
     <td>${escapeHtml(ACTION_LABELS[button.action] || button.action || '')}</td>
     <td><span class="target-preview" title="${escapeAttr(displayTarget(button))}">${escapeHtml(displayTarget(button) || '-')}</span></td>
     <td class="actions">
-      <button data-action="edit">编辑</button>
-      <button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
-      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}
+      <button type="button" data-action="edit">编辑</button>
+      <button type="button" data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>
+      ${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button type="button" class="danger" data-action="delete">删除</button>'}
     </td>
   `;
   tr.querySelector('[data-action="edit"]').onclick = () => renderButtonEditRow(tr, button);
-  tr.querySelector('[data-action="toggle-enabled"]').onclick = () => toggleButtonEnabled(button);
+  tr.querySelector('[data-action="toggle-enabled"]').onclick = (event) => { event.preventDefault(); event.stopPropagation(); toggleButtonEnabled(button).catch(error => setStatus(error.message || '操作失败', true)); };
   const deleteBtn = tr.querySelector('[data-action="delete"]');
-  if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
+  if (deleteBtn) deleteBtn.onclick = (event) => { event.preventDefault(); event.stopPropagation(); deleteButton(button).catch(error => setStatus(error.message || '删除失败', true)); };
 }
 
 function initButtonIconPicker(root, input, preview) {
@@ -5325,9 +5345,11 @@ function renderButtonEditRow(tr, button) {
   const isScript = button.action === 'script';
   const enabled = button.enabled !== false;
   const moveScopeValue = positionValueForButton(button);
+  const editActions = `<button type="button" data-action="save">保存</button><button type="button" data-action="cancel">取消</button><button type="button" data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button type="button" class="danger" data-action="delete">删除</button>'}`;
   tr.className = enabled ? 'button-edit-row' : 'button-edit-row button-disabled-row';
   tr.innerHTML = `<td colspan="8"><div class="button-edit-panel">
     <div class="button-edit-title"><strong>编辑按钮：${escapeHtml(button.name || '未命名')}</strong><span>${escapeHtml(button.area || '')} / ${escapeHtml(button.section || '')}</span></div>
+    <div class="button-edit-actions button-edit-actions-top">${editActions}</div>
     <div class="button-edit-grid">
       <label>页面<select data-field="moveScope">${positionOptionsHtml(moveScopeValue)}</select></label>
       <label>分组<select data-field="moveSection">${sectionOptionsHtml(moveScopeValue, button.sectionIndex)}</select></label>
@@ -5338,7 +5360,7 @@ function renderButtonEditRow(tr, button) {
       <label>动作<select data-field="action">${ACTIONS.map(([action, label]) => `<option value="${action}" ${action === button.action ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     </div>
     <label class="button-edit-target">下载 / 目标<span class="target-control">${targetControlHtml(button.action, button.target, button.raw || button)}</span><small class="target-note"></small></label>${buttonGuardHtml(button.raw || button)}
-    <div class="button-edit-actions"><button data-action="save">保存</button><button data-action="cancel">取消</button><button data-action="toggle-enabled" class="${enabled ? 'danger' : ''}">${enabled ? '停用' : '启用'}</button>${isScript ? '<span class="muted-action">内置功能不可删除</span>' : '<button class="danger" data-action="delete">删除</button>'}</div>
+    <div class="button-edit-actions">${editActions}</div>
   </div></td>`;
 
   updateRowTargetState(tr, button);
@@ -5352,11 +5374,11 @@ function renderButtonEditRow(tr, button) {
     tr.querySelector('[data-field="icon"]').value = '';
     updateIconPreview(tr);
   };
-  tr.querySelector('[data-action="save"]').onclick = () => saveButton(button, tr);
-  tr.querySelector('[data-action="cancel"]').onclick = () => renderButtonPreviewRow(tr, button);
-  tr.querySelector('[data-action="toggle-enabled"]').onclick = () => toggleButtonEnabled(button);
+  tr.querySelector('[data-action="save"]').onclick = (event) => { event.preventDefault(); event.stopPropagation(); saveButton(button, tr).catch(error => setStatus(error.message || '保存失败', true)); };
+  tr.querySelector('[data-action="cancel"]').onclick = (event) => { event.preventDefault(); event.stopPropagation(); renderButtonPreviewRow(tr, button); };
+  tr.querySelector('[data-action="toggle-enabled"]').onclick = (event) => { event.preventDefault(); event.stopPropagation(); toggleButtonEnabled(button).catch(error => setStatus(error.message || '操作失败', true)); };
   const deleteBtn = tr.querySelector('[data-action="delete"]');
-  if (deleteBtn) deleteBtn.onclick = () => deleteButton(button);
+  if (deleteBtn) deleteBtn.onclick = (event) => { event.preventDefault(); event.stopPropagation(); deleteButton(button).catch(error => setStatus(error.message || '删除失败', true)); };
 }
 
 function ensureButtonSortUi() {
@@ -5517,6 +5539,7 @@ function downloadControlHtml(target = '', data = {}) {
   const downloadDirectory = data.download_directory || data.download_path || '';
   const deleteOnExit = data.download_delete_on_exit === true || data.delete_download_on_exit === true;
   const configuredBackups = Array.isArray(data.backup_urls) ? data.backup_urls : (Array.isArray(data.backupUrls) ? data.backupUrls : (data.backup_url ? [data.backup_url] : []));
+  if (data.cloudOnly) return '<div class="download-target-control cloud-only-download-options"><input data-field="backup-page-url" value="' + escapeAttr(data.backup_page_url || data.backup_webpage || '') + '" placeholder="备用网页地址（下载失败时打开）"><label>自定义下载位置<input data-download-directory value="' + escapeAttr(downloadDirectory) + '" placeholder="留空使用工具箱默认下载目录"></label><label class="checkline"><input type="checkbox" data-download-delete-on-exit ' + (deleteOnExit ? 'checked' : '') + '> 关闭工具箱时删除此按钮下载的文件</label></div>';
   const backupUrls = configuredBackups.slice();
   while (backupUrls.length < 2) backupUrls.push('');
   return `<div class="download-target-control">
@@ -5605,6 +5628,7 @@ function readDownloadConfig(root) {
   const downloadDirectory = control.querySelector('[data-download-directory]')?.value.trim() || '';
   const deleteOnExit = control.querySelector('[data-download-delete-on-exit]')?.checked === true;
   const result = { download_directory: downloadDirectory, download_delete_on_exit: deleteOnExit };
+  if (control.classList.contains('cloud-only-download-options')) return { download_directory: downloadDirectory, download_delete_on_exit: deleteOnExit, backup_page_url: control.querySelector('[data-field="backup-page-url"]')?.value.trim() || '' };
   const backupUrls = [...control.querySelectorAll('[data-field="backup-url-item"]')].map((input) => input.value.trim()).filter(Boolean);
   const backupPageUrl = control.querySelector('[data-field="backup-page-url"]')?.value.trim() || '';
   if (backupUrls.length) { result.backup_urls = backupUrls; result.backup_url = backupUrls[0]; }
@@ -5630,7 +5654,82 @@ function targetControlHtml(action, target = '', data = {}) {
     `;
   }
   if (action === 'download') return downloadControlHtml(target, data);
+  if (action === 'cloud_resolve_download') {
+    const lines = Array.isArray(data.cloudResolverLines) && data.cloudResolverLines.length ? data.cloudResolverLines : [{ shareUrl: '', label: '', enabled: true, hasAccessCode: false }];
+    const routeRows = lines.map((line, index) => '<div class="cloud-line-row" data-cloud-line><input data-cloud-label value="' + escapeAttr(line.label || '') + '" placeholder="线路名称 / 备注"><input data-cloud-url ' + (index === 0 ? 'id="addTarget"' : '') + ' value="' + escapeAttr(line.shareUrl || line.share_url || '') + '" placeholder="网盘分享链接"><input data-cloud-code type="text" value="' + escapeAttr(line.accessCode || '') + '" placeholder="提取码（可选，留空表示没有）"><label><input data-cloud-enabled type="checkbox"' + (line.enabled === false ? '' : ' checked') + '>启用</label><button type="button" data-cloud-remove>删除</button></div>').join('');
+    return '<div class="cloud-resolver-button-control"><div class="cloud-resolver-routes" data-cloud-lines>' + routeRows + '</div><button type="button" data-cloud-add>添加解析线路</button><div class="cloud-resolver-download-config">' + downloadControlHtml('', { ...data, cloudOnly: true }) + '</div></div>';
+  }
   return `<input class="target-input" value="${escapeAttr(target || '')}" data-field="target" title="${escapeAttr(target || '')}">`;
+}
+
+function bindCloudLines(root) {
+  const wrap = root.querySelector('.cloud-resolver-button-control');
+  if (!wrap || wrap.dataset.bound) return;
+  wrap.dataset.bound = '1';
+  const routes = () => wrap.querySelector('[data-cloud-lines]');
+  const addRoute = () => {
+    routes()?.insertAdjacentHTML('beforeend', '<div class="cloud-line-row" data-cloud-line><input data-cloud-label placeholder="线路名称 / 备注"><input data-cloud-url placeholder="网盘分享链接"><input data-cloud-code type="text" placeholder="提取码（可选，留空表示没有）"><label><input data-cloud-enabled type="checkbox" checked>启用</label><button type="button" data-cloud-remove>删除</button></div>');
+  };
+  wrap.addEventListener('click', (event) => {
+    const addButton = event.target.closest('[data-cloud-add]');
+    if (addButton && wrap.contains(addButton)) {
+      event.preventDefault();
+      event.stopPropagation();
+      addRoute();
+      return;
+    }
+    const removeButton = event.target.closest('[data-cloud-remove]');
+    if (!removeButton || !wrap.contains(removeButton)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const row = removeButton.closest('[data-cloud-line]');
+    const rows = wrap.querySelectorAll('[data-cloud-line]');
+    if (rows.length > 1) row?.remove();
+    else row?.querySelectorAll('input').forEach((input) => input.type === 'checkbox' ? input.checked = true : input.value = '');
+  });
+  bindDownloadControl(wrap);
+}
+
+// Handle resolver-line buttons at the document capture phase so a rebuilt
+// edit row cannot lose its controls to another delegated click handler.
+function bindCloudLineDocumentEvents() {
+  if (document.documentElement.dataset.cloudLineEventsBound) return;
+  document.documentElement.dataset.cloudLineEventsBound = '1';
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const addButton = target?.closest('[data-cloud-add]');
+    const removeButton = target?.closest('[data-cloud-remove]');
+    const control = (addButton || removeButton)?.closest('.cloud-resolver-button-control');
+    if (!control) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (addButton) {
+      control.querySelector('[data-cloud-lines]')?.insertAdjacentHTML('beforeend', '<div class="cloud-line-row" data-cloud-line><input data-cloud-label placeholder="线路名称 / 备注"><input data-cloud-url placeholder="网盘分享链接"><input data-cloud-code type="text" placeholder="提取码（可选，留空表示没有）"><label><input data-cloud-enabled type="checkbox" checked>启用</label><button type="button" data-cloud-remove>删除</button></div>');
+      return;
+    }
+    const row = removeButton.closest('[data-cloud-line]');
+    const rows = control.querySelectorAll('[data-cloud-line]');
+    if (rows.length > 1) row?.remove();
+    else row?.querySelectorAll('input').forEach((input) => input.type === 'checkbox' ? input.checked = true : input.value = '');
+  }, true);
+}
+function readCloudLines(root) {
+  const lines=[...root.querySelectorAll('[data-cloud-line]')].map((r)=>({share_url:r.querySelector('[data-cloud-url]').value.trim(),access_code:r.querySelector('[data-cloud-code]').value.trim(),label:r.querySelector('[data-cloud-label]').value.trim(),enabled:r.querySelector('[data-cloud-enabled]').checked}));
+  const seen=new Set(); for(const x of lines){if(!x.share_url)throw new Error('请填写网盘分享链接。');if(!/^https?:\/\//i.test(x.share_url))throw new Error('分享链接格式不正确。');if(seen.has(x.share_url))throw new Error('解析线路不能重复。');seen.add(x.share_url);} if(!lines.some(x=>x.enabled))throw new Error('请至少启用一条解析线路。');return lines;
+}
+
+function resetAddCloudResolverForm() {
+  const label = $('addTarget')?.closest('label');
+  if (!label || $('addAction')?.value !== 'cloud_resolve_download') return;
+  label.querySelectorAll('[data-cloud-line]').forEach((row, index) => {
+    if (index > 0) row.remove();
+    else row.querySelectorAll('input').forEach((input) => {
+      if (input.type === 'checkbox') input.checked = true;
+      else input.value = '';
+    });
+  });
+  label.querySelectorAll('[data-download-directory], [data-field="backup-page-url"]').forEach((input) => { input.value = ''; });
+  label.querySelectorAll('[data-download-delete-on-exit]').forEach((input) => { input.checked = false; });
 }
 
 function updateRowTargetState(row, button) {
@@ -5641,6 +5740,7 @@ function updateRowTargetState(row, button) {
   if (holder) holder.innerHTML = targetControlHtml(action, currentTarget, button.raw || button);
   bindScriptTargetControl(row);
   bindDownloadControl(row);
+  bindCloudLines(row);
   if (note && action !== 'script') note.textContent = '';
 }
 
@@ -5662,42 +5762,31 @@ function bindScriptTargetControl(root) {
 
 function updateAddTargetState() {
   const action = $('addAction')?.value || 'link';
+  const grid = $('addAction')?.closest('.form-grid');
+  const label = grid?.querySelector('[data-add-target-container]');
+  if (!label) return;
   const target = $('addTarget') || $('addScriptControl');
-  if (!target) return;
-  const label = target.closest('label');
   const help = $('buttonScriptHelp');
-  label.classList.toggle('download-config-field', action === 'download');
+  const previous = $('addTarget')?.value?.trim() || '';
+  label.classList.toggle('download-config-field', action === 'download' || action === 'cloud_resolve_download');
+  if (action === 'cloud_resolve_download') { label.innerHTML = '解析线路与下载配置' + targetControlHtml(action, '', {}); bindCloudLines(label); if (help) help.hidden = true; return; }
   if (action === 'download') {
-    const current = target?.value?.trim() || '';
-    label.innerHTML = `下载配置${downloadControlHtml(current, {})}`;
-    const singleInput = label.querySelector('[data-field="target"]');
-    if (singleInput) singleInput.id = 'addTarget';
-    bindDownloadControl(label);
-    if (help) help.hidden = true;
-  } else if (action === 'script') {
-    const selected = normalizeScriptTarget(readAddTarget()) || SCRIPT_OPTIONS[0]?.value || '';
-    const custom = selected && !SCRIPT_LABELS[selected] && !selected.startsWith('builtin:');
-    label.innerHTML = `
-      内置功能
-      <div id="addScriptControl" class="script-target-control">
-        <select id="addTarget">${scriptOptionsHtml(selected)}</select>
-        <input id="addCustomScript" value="${custom ? escapeAttr(selected) : ''}" placeholder="输入要执行的命令" ${custom ? '' : 'hidden'}>
-      </div>
-    `;
-    bindAddScriptTargetControl();
-    if (label?.firstChild?.nodeType === Node.TEXT_NODE) label.firstChild.textContent = '内置功能';
-  } else if (label.querySelector('.download-target-control')) {
-    label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
-    if (help) help.hidden = true;
-  } else if (target.tagName === 'SELECT') {
-    label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
-    if (help) help.hidden = true;
-  } else if (target.id === 'addScriptControl') {
-    label.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">';
-    if (help) help.hidden = true;
+    label.innerHTML = '下载配置' + downloadControlHtml(previous, {});
+    const input = label.querySelector('[data-field="target"]'); if (input) input.id = 'addTarget';
+    bindDownloadControl(label); if (help) help.hidden = true; return;
   }
+  if (action === 'script') {
+    const selected = normalizeScriptTarget(previous) || SCRIPT_OPTIONS[0]?.value || '';
+    const custom = selected && !SCRIPT_LABELS[selected] && !selected.startsWith('builtin:');
+    label.innerHTML = '内置功能<div id="addScriptControl" class="script-target-control"><select id="addTarget">' + scriptOptionsHtml(selected) + '</select><input id="addCustomScript" value="' + (custom ? escapeAttr(selected) : '') + '" placeholder="输入要执行的命令" ' + (custom ? '' : 'hidden') + '></div>';
+    bindAddScriptTargetControl(); return;
+  }
+  const text = action === 'cmd' ? '运行命令' : action === 'winget' ? '软件包 ID' : '网页地址';
+  const placeholder = action === 'cmd' ? '输入要执行的命令' : action === 'winget' ? '输入软件包 ID' : '粘贴网页地址';
+  const control = action === 'cmd' ? '<textarea id="addTarget" class="target-input command-target-input" placeholder="' + placeholder + '">' + escapeHtml(previous) + '</textarea>' : '<input id="addTarget" value="' + escapeAttr(previous) + '" placeholder="' + placeholder + '">';
+  label.innerHTML = text + control;
+  if (help) help.hidden = true;
 }
-
 function bindAddScriptTargetControl() {
   const select = $('addTarget');
   const custom = $('addCustomScript');
@@ -5714,6 +5803,9 @@ function bindAddScriptTargetControl() {
 }
 
 function readAddTarget() {
+  if ($('addAction')?.value === 'cloud_resolve_download') {
+    return $('addTarget')?.value.trim() || '';
+  }
   if ($('addAction')?.value === 'script') {
     const select = $('addTarget');
     if (select?.value === CUSTOM_SCRIPT_VALUE) return $('addCustomScript')?.value.trim() || '';
@@ -6165,12 +6257,13 @@ async function addButton() {
   };
   request.button.guard = { requirePassword: $('addGuardPassword')?.checked === true, password: $('addGuardPasswordValue')?.value.trim() || '', requireConfirm: $('addGuardConfirm')?.checked === true, confirmMessage: $('addGuardMessage')?.value.trim() || '确定要继续执行此操作吗？' };
   if (action === 'download') Object.assign(request.button, readDownloadConfig($('addTarget').closest('label')));
+  if (action === 'cloud_resolve_download') { const root=$('addTarget').closest('label'); request.button.cloud_resolver_lines=readCloudLines(root); Object.assign(request.button,readDownloadConfig(root)); }
   if (request.button.download_mode === 'multiple' && request.button.files.length < 2) { setStatus('多文件安装包请至少填写两个有效下载地址。', true); return; }
 
   if (scope === 'toolbox') request.tabIndex = Number(id);
   else request.pageId = id;
 
-  await api(buttonsApiPath(), {
+  const updatedButtons = await api(buttonsApiPath(), {
     method: 'POST',
     body: JSON.stringify(request)
   });
@@ -6185,7 +6278,10 @@ async function addButton() {
   const addTargetLabel = $('addTarget')?.closest('label');
   if (addTargetLabel && $('addAction').value === 'download') { addTargetLabel.innerHTML = '网址 / 内容<input id="addTarget" placeholder="粘贴网页或下载地址">'; updateAddTargetState(); }
   else if ($('addTarget')) $('addTarget').value = '';
-  await reloadConfigAndButtons('按钮已新增。');
+  resetAddCloudResolverForm();
+  if (Array.isArray(updatedButtons)) state.buttons = updatedButtons;
+  renderAll();
+  setStatus('按钮已新增。');
 }
 
 async function saveButton(ref, row) {
@@ -6208,13 +6304,16 @@ async function saveButton(ref, row) {
     }
   };
   if (request.button.action === 'download') Object.assign(request.button, readDownloadConfig(row));
+  if (request.button.action === 'cloud_resolve_download') { request.button.cloud_resolver_lines=readCloudLines(row); Object.assign(request.button,readDownloadConfig(row)); }
   request.button.guard = readButtonGuard(row, ref.raw || {});
 
-  await api(buttonsApiPath(), {
+  const updatedButtons = await api(buttonsApiPath(), {
     method: 'PATCH',
     body: JSON.stringify(request)
   });
-  await reloadConfigAndButtons('按钮已保存。');
+  if (Array.isArray(updatedButtons)) state.buttons = updatedButtons;
+  renderAll();
+  setStatus('按钮已保存。');
 }
 
 function readRowTarget(row) {
@@ -6255,11 +6354,13 @@ async function toggleButtonEnabled(ref) {
   request.button.guard = ref.raw?.guard || {};
   if (ref.action === 'download') { request.button.download_mode = ref.raw?.download_mode || 'single'; request.button.package_name = ref.raw?.package_name || ''; request.button.files = ref.raw?.files || []; request.button.download_directory = ref.raw?.download_directory || ref.raw?.download_path || ''; request.button.download_delete_on_exit = ref.raw?.download_delete_on_exit === true || ref.raw?.delete_download_on_exit === true; request.button.backup_url = ref.raw?.backup_url || ref.raw?.backup_download_url || ''; request.button.backup_page_url = ref.raw?.backup_page_url || ref.raw?.backup_webpage || ''; }
 
-  await api(buttonsApiPath(), {
+  const updatedButtons = await api(buttonsApiPath(), {
     method: 'PATCH',
     body: JSON.stringify(request)
   });
-  await reloadConfigAndButtons(nextEnabled ? '按钮已启用。' : '按钮已停用。');
+  if (Array.isArray(updatedButtons)) state.buttons = updatedButtons;
+  renderAll();
+  setStatus(nextEnabled ? '按钮已启用。' : '按钮已停用。');
 }
 
 async function deleteButton(ref) {
@@ -6269,7 +6370,7 @@ async function deleteButton(ref) {
   }
   if (!confirm(`删除按钮「${ref.name}」？`)) return;
 
-  await api(buttonsApiPath(), {
+  const updatedButtons = await api(buttonsApiPath(), {
     method: 'DELETE',
     body: JSON.stringify({
       scope: ref.scope,
@@ -6279,7 +6380,9 @@ async function deleteButton(ref) {
       buttonIndex: ref.buttonIndex
     })
   });
-  await reloadConfigAndButtons('按钮已删除。');
+  if (Array.isArray(updatedButtons)) state.buttons = updatedButtons;
+  renderAll();
+  setStatus('按钮已删除。');
 }
 
 async function addUser() {
@@ -8653,5 +8756,7 @@ document.querySelectorAll('input[name="buttonContentLayout"]').forEach((input) =
   });
 });
 
+bindCloudLineDocumentEvents();
 loadAll().catch((error) => handleLoadFailure(error, isAuthFailure(error)));
 updateAddTargetState();
+

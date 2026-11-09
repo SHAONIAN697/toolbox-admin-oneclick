@@ -103,6 +103,28 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         self.assertIn("if (resourceSearchActive && !refreshCurrentSearchPage)", self.source)
         self.assertIn("ExecuteResourceSearch();", self.source)
 
+    def test_search_result_dispatches_cloud_resolver_as_a_dedicated_action(self):
+        start = self.source.index("private void ExecuteResourceSearchResult(ResourceSearchEntry entry)")
+        end = self.source.index("private void RunResourceItemAction(", start)
+        method = self.source[start:end]
+        self.assertIn('if (action == "cloud_resolve_download")', method)
+        self.assertIn('StartCloudResolverButtonDownload(GetText(entry.Item, "id", ""), entry.Name);', method)
+        self.assertLess(method.index('if (action == "cloud_resolve_download")'), method.index("RunAction("))
+        self.assertIn('MessageBox.Show(', method)
+    def test_cloud_resolver_post_has_upstream_timeout_budget(self):
+        start = self.source.index("private string PostJson(string url, string json)")
+        end = self.source.index("private static string CurrentExecutableSha256", start)
+        method = self.source[start:end]
+        self.assertIn("request.Timeout = cloudResolverRequest ? 45000 : 10000;", method)
+        self.assertIn("request.ReadWriteTimeout = cloudResolverRequest ? 45000 : 10000;", method)
+        self.assertIn('if (cloudResolverRequest)', method)
+    def test_xinggui_empty_target_guard_allows_cloud_resolver_action(self):
+        start = self.source.index("private void RunResourceItemAction(Dictionary<string, object> item, ActionInfo info)")
+        end = self.source.index("private void StartCloudResolverButtonDownload(", start)
+        method = self.source[start:end]
+        self.assertIn('info.Action != "cloud_resolve_download"', method)
+        self.assertLess(method.index('info.Action != "cloud_resolve_download"'), method.index('if (info.Action == "cloud_resolve_download")'))
+        self.assertIn('StartCloudResolverButtonDownload(info.ItemId, info.Name);', method)
     def test_grid_scroll_reserves_bottom_space_for_last_row(self):
         self.assertIn("content.PerformLayout();", self.source)
         self.assertIn("int requiredScrollBottom = requiredBottom + bottomPadding;", self.source)

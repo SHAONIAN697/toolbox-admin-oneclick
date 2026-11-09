@@ -1287,7 +1287,18 @@ def write_json(path, value):
                 json.dump(value, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(str(tmp), str(path))
+            replace_error = None
+            for attempt in range(6):
+                try:
+                    os.replace(str(tmp), str(path))
+                    replace_error = None
+                    break
+                except PermissionError as exc:
+                    replace_error = exc
+                    if attempt < 5:
+                        time.sleep(0.05 * (attempt + 1))
+            if replace_error is not None:
+                raise replace_error
         finally:
             if tmp and tmp.exists():
                 try:
@@ -2637,6 +2648,7 @@ def _invalidate_cloud_download_cache(source):
     source["backupUrl"] = ""
 
 
+
 def proxy_cloud_download(handler):
     """Stream a cloud-resolver source through the server after solving provider guards."""
     api_key = (handler.query.get("key", [""])[0] or handler.headers.get("X-Client-Api-Key", "")).strip()
@@ -2675,7 +2687,9 @@ def proxy_cloud_download(handler):
     }
     if handler.headers.get("Range"):
         headers["Range"] = handler.headers.get("Range")
-    if source.get("provider") == "lanzou" and source.get("shareUrl"):
+    if source.get("provider") in ("lanzou", "qaiu", "123pan", "xiaofeiji", "tianyi", "weiyun") and source.get("shareUrl"):
+        # Aggregate providers commonly enforce hotlink checks on the original
+        # share page. Preserve the configured provider-specific headers below.
         headers["Referer"] = source.get("shareUrl")
     request_method = handler.command.upper()
     upstream = None
@@ -2686,7 +2700,13 @@ def proxy_cloud_download(handler):
         for candidate in source_rows:
             if refresh_round:
                 _invalidate_cloud_download_cache(candidate)
-            candidate = _refresh_cloud_download_source(candidate, store, resolver, force=bool(refresh_round))
+            fresh = False
+            try:
+                fresh = time.time() - float(candidate.get("resolvedAt") or 0) < 20
+            except (TypeError, ValueError):
+                pass
+            if not fresh:
+                candidate = _refresh_cloud_download_source(candidate, store, resolver, force=bool(refresh_round))
             urls = [candidate.get("downloadUrl") or "", candidate.get("backupUrl") or ""]
             for target_url in urls:
                 if not target_url:
@@ -3661,7 +3681,7 @@ def write_system_settings(body):
                 raise ValueError("内置功能 ID 不能重复。")
             name = str(source.get("name") or "").strip()
             action = str(source.get("action") or ("script" if function_id in SCRIPT_LABELS else "download"))
-            if action not in ("link", "download", "cmd", "script", "winget"):
+            if action not in ("link", "download", "cloud_resolve_download", "cmd", "script", "winget"):
                 raise ValueError("不支持的内置功能动作。")
             target = str(source.get("target") or source.get("downloadUrl") or "").strip()
             if action in ("link", "download") and target and not http_url(target):
@@ -5258,6 +5278,8 @@ def fulfill_balance_recharge_order(order, paid=False, external_trade_no=""):
 
 def get_target(button):
     action = button.get("action", "link")
+    if action == "cloud_resolve_download":
+        return ""
     if action == "download":
         return button.get("download_url") or button.get("url") or button.get("target") or ""
     if action == "cmd":
@@ -5307,6 +5329,48 @@ def normalize_download_files(value):
 
 def new_button(body):
     action = body.get("action", "link")
+    if action == "cloud_resolve_download":
+        lines = body.get("cloud_resolver_lines")
+        if not isinstance(lines, list):
+            raise ValueError("请至少配置一条网盘解析线路。")
+        normalized = []
+        seen = set()
+        for raw in lines[:20]:
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("share_url") or raw.get("shareUrl") or "").strip()
+            if not url:
+                raise ValueError("解析线路缺少分享链接。")
+            if url in seen:
+                raise ValueError("解析线路不能重复。")
+            seen.add(url)
+            if cloud_resolver:
+                provider, _ = cloud_resolver._provider_for(url, str(raw.get("provider") or ""))
+            else:
+                raise ValueError("网盘解析模块未加载。")
+            code = str(raw.get("access_code") or raw.get("accessCode") or "").strip()
+            normalized.append({"shareUrl": url, "provider": provider,
+                               "accessCodeEncrypted": cloud_resolver._protect(_app_context(), code) or str(raw.get("access_code_encrypted") or ""),
+                               "label": str(raw.get("label") or raw.get("remark") or "").strip()[:100],
+                               "enabled": raw.get("enabled", True) is not False,
+                               "sort": len(normalized)})
+        if not any(row["enabled"] for row in normalized):
+            raise ValueError("请至少启用一条解析线路。")
+        item = {"name": body.get("name", "未命名"), "icon": body.get("icon", ""), "action": action,
+                "id": body.get("id") or new_id("btn"), "enabled": body.get("enabled", True) is not False,
+                "cloudResolverLines": normalized}
+        if body.get("description") or body.get("intro") or body.get("remark"):
+            item["description"] = body.get("description") or body.get("intro") or body.get("remark")
+        try: item["sort"] = int(body.get("sort") or 0)
+        except Exception: item["sort"] = 0
+        backup_page_url = get_backup_url(body, True)
+        if backup_page_url:
+            item["backup_page_url"] = backup_page_url
+        download_directory = str(body.get("download_directory") or body.get("download_path") or "" ).strip()[:1000]
+        if download_directory:
+            item["download_directory"] = download_directory
+            item["download_delete_on_exit"] = body.get("download_delete_on_exit") is True
+        return item
     target = body.get("target") or body.get("url") or ""
     if action == "script":
         target = normalize_script_target(target)
@@ -5380,7 +5444,7 @@ def apply_xinggui_home_patch(config, body):
         for raw in section["buttons"]:
             if not isinstance(raw, dict) or not str(raw.get("name") or "").strip():
                 raise ValueError("请填写按钮文字。")
-            if raw.get("action", "link") not in ("link", "download", "cmd", "script", "winget"):
+            if raw.get("action", "link") not in ("link", "download", "cloud_resolve_download", "cmd", "script", "winget"):
                 raise ValueError("按钮动作无效。")
             button = new_button(raw)
             previous = previous_buttons.get(button["id"]) or {}
@@ -5403,7 +5467,7 @@ def button_sort_value(button):
         return 0
 
 
-def button_rows(config):
+def button_rows(config, include_access_codes=False):
     rows = []
     changed = False
     for page_id, page in (config.get("pages") or {}).items():
@@ -5422,7 +5486,7 @@ def button_rows(config):
                              "area": page.get("title") or page.get("name") or page_id, "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
-                             "sort": button_sort_value(button), "target": get_target(button), "raw": button})
+                             "sort": button_sort_value(button), "target": get_target(button), "lineCount": len(button.get("cloudResolverLines") or []) if button.get("action") == "cloud_resolve_download" else 0, "raw": ({**button, "cloudResolverLines": [{"shareUrl": line.get("shareUrl", ""), "label": line.get("label", ""), "enabled": line.get("enabled", True), "sort": line.get("sort", 0), "hasAccessCode": bool(line.get("accessCodeEncrypted")), "accessCode": (cloud_resolver._unprotect(_app_context(), line.get("accessCodeEncrypted", "")) if include_access_codes and cloud_resolver else "")} for line in button.get("cloudResolverLines", [])]} if button.get("action") == "cloud_resolve_download" else button)})
     for ti, tab in enumerate(config.get("toolbox_tabs") or []):
         for si, section in enumerate(tab.get("sections") or []):
             buttons = section.get("buttons") or []
@@ -5439,7 +5503,7 @@ def button_rows(config):
                              "area": tab.get("name", ""), "section": section.get("title", ""),
                              "name": button.get("name", ""), "icon": button.get("icon", ""), "action": button.get("action", "link"),
                              "enabled": button.get("enabled", True) is not False,
-                             "sort": button_sort_value(button), "target": get_target(button), "raw": button})
+                             "sort": button_sort_value(button), "target": get_target(button), "lineCount": len(button.get("cloudResolverLines") or []) if button.get("action") == "cloud_resolve_download" else 0, "raw": ({**button, "cloudResolverLines": [{"shareUrl": line.get("shareUrl", ""), "label": line.get("label", ""), "enabled": line.get("enabled", True), "sort": line.get("sort", 0), "hasAccessCode": bool(line.get("accessCodeEncrypted"))} for line in button.get("cloudResolverLines", [])]} if button.get("action") == "cloud_resolve_download" else button)})
     rows.sort(key=lambda row: (row.get("area") or "", row.get("section") or "", int(row.get("sort") or 0), int(row.get("buttonIndex") or 0)))
     return rows, changed
 
@@ -6549,6 +6613,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/"):
                 auth = get_auth(self)
+                if not auth and path == "/api/cloud-resolver/button-download" and method == "POST":
+                    client_key = (self.query.get("key", [""])[0] or self.headers.get("X-Client-Api-Key", "")).strip()
+                    client_user = find_user_by_api_key(client_key)
+                    if client_user:
+                        auth = {"token": "", "user": client_user, "clientApiKey": client_key}
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
                 cloud_resolver_path = (
@@ -6640,6 +6709,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"enabled": settings.get("cloudResolverDiagnosticsEnabled") is True})
             if method == "DELETE":
                 body = self.read_body()
+                if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+                    return self.send_json({"error": "清空诊断日志前必须验证当前管理员密码。"}, 403)
                 clear_cloud_resolver_diagnostics()
                 audit_event("cloud_resolver_diagnostics_cleared", actor=auth["user"], handler=self)
                 return self.send_json({"ok": True})
@@ -7320,11 +7391,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/buttons":
             cfg = read_config(user_id)
             if method == "GET":
-                rows, changed = button_rows(cfg)
+                rows, changed = button_rows(cfg, include_access_codes=True)
                 if changed:
                     write_config_for_actor(cfg, user_id, auth["user"])
                 return self.send_json(rows)
             body = self.read_body()
+            requested_button = body.get("button") if isinstance(body.get("button"), dict) else body
+            if str(requested_button.get("action") or "") == "cloud_resolve_download" and method in ("POST", "PATCH"):
+                resolver_store = cloud_resolver._load(_app_context()) if cloud_resolver else {}
+                if not cloud_resolver or not cloud_resolver._effective_entitlement(resolver_store, auth["user"]):
+                    return self.send_json({"error": "cloud resolver entitlement required"}, 403)
             before_row = find_button_audit_row(cfg, body)
             operation = "update"
             if method == "POST":

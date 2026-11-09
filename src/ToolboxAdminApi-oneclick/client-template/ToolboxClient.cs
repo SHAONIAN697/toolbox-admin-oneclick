@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 少年科技工作室. All rights reserved.
+// Copyright (c) 2026 少年科技工作室. All rights reserved.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -158,6 +158,7 @@ namespace ToolboxClient
         private readonly object startupLoadingLock = new object();
         private Thread startupLoadingThread;
         private StartupLoadingWindow startupLoadingWindow;
+        private int cloudResolverRequestActive;
         private bool startupLoadingCloseRequested;
         private System.Windows.Forms.Timer tunerClockTimer;
         private System.Windows.Forms.Timer studioOverviewTimer;
@@ -2769,7 +2770,15 @@ namespace ToolboxClient
                 // metadata can change without changing the rendered cards. Keep
                 // those values for the next explicit page render and hot-update
                 // only live action payloads in the existing controls.
-                RefreshVisibleActionTargets();
+                if (String.Equals(PageRenderSignature(currentPage), lastRenderedPageSignature, StringComparison.Ordinal))
+                {
+                    RefreshVisibleActionTargets();
+                }
+                else
+                {
+                    // Reflect button structure and state changes on the current page immediately.
+                    ShowPage(currentPage);
+                }
                 lastConfigJson = serializer.Serialize(config);
                 HideStartupOverlay();
                 return;
@@ -10590,6 +10599,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private string TemplateActionIcon(string action)
         {
             if (action == "download") return "↓";
+            if (action == "cloud_resolve_download") return "⇩";
             if (action == "cmd" || action == "script") return "⚙";
             if (action == "winget") return "▦";
             return "⌂";
@@ -11196,6 +11206,16 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (entry == null || !EnsurePageUnlocked(entry.PageId)) return;
             if (!ConfirmButtonGuard(AsDict(Get(entry.Item, "guard")), entry.Name)) return;
             string action = GetText(entry.Item, "action", Has(entry.Item, "url") ? "link" : "cmd").ToLowerInvariant();
+            if (!new string[] { "link", "download", "cmd", "script", "winget", "cloud_resolve_download" }.Contains(action))
+            {
+                MessageBox.Show("此按钮动作需要更新工具箱客户端。", "客户端版本过旧", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (action == "cloud_resolve_download")
+            {
+                StartCloudResolverButtonDownload(GetText(entry.Item, "id", ""), entry.Name);
+                return;
+            }
             if (action == "download" && String.Equals(GetText(entry.Item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase) && StartPackageDownload(entry.Item, entry.Name)) return;
             RunAction(
                 action,
@@ -11215,8 +11235,14 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (!String.IsNullOrWhiteSpace(pageId) && !EnsurePageUnlocked(pageId)) return;
             string sourcePageId = GetText(item, "source_page_id", "");
             if (pageId == XingguiHomePageId && !String.IsNullOrWhiteSpace(sourcePageId) && !EnsurePageUnlocked(sourcePageId)) return;
-            if (GetText(item, "__search_page_id", "") == XingguiHomePageId && String.IsNullOrWhiteSpace(info.Target) && String.IsNullOrWhiteSpace(info.CustomScript) && AsList(Get(item, "files")).Count == 0) return;
+            if (!new string[] { "link", "download", "cmd", "script", "winget", "cloud_resolve_download" }.Contains(info.Action)) { MessageBox.Show("此按钮动作需要更新工具箱客户端。", "客户端版本过旧", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            if (GetText(item, "__search_page_id", "") == XingguiHomePageId && info.Action != "cloud_resolve_download" && String.IsNullOrWhiteSpace(info.Target) && String.IsNullOrWhiteSpace(info.CustomScript) && AsList(Get(item, "files")).Count == 0) return;
             if (!ConfirmButtonGuard(AsDict(Get(item, "guard")), info.Name)) return;
+            if (info.Action == "cloud_resolve_download")
+            {
+                StartCloudResolverButtonDownload(info.ItemId, info.Name);
+                return;
+            }
             if (info.Action == "download" && String.Equals(GetText(item, "download_mode", ""), "multiple", StringComparison.OrdinalIgnoreCase))
             {
                 if (StartPackageDownload(item, info.Name)) return;
@@ -11233,6 +11259,43 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 info.DownloadKey);
         }
 
+        private void StartCloudResolverButtonDownload(string buttonId, string displayName)
+        {
+            if (Interlocked.Exchange(ref cloudResolverRequestActive, 1) == 1)
+            {
+                status.Text = "正在解析，请稍候…";
+                return;
+            }
+            status.Text = "正在解析：" + displayName;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string json = PostJson(ResolveServerUrl("/api/cloud-resolver/button-download"), serializer.Serialize(new Dictionary<string, object> { { "buttonId", buttonId } }));
+                    Dictionary<string, object> root = AsDict(serializer.DeserializeObject(json));
+                    IList<object> files = AsList(Get(root, "files"));
+                    if (files.Count == 0) throw new InvalidOperationException(GetText(root, "error", "解析失败。"));
+                    BeginInvokeIfReady(delegate
+                    {
+                        foreach (object raw in files)
+                        {
+                            Dictionary<string, object> file = AsDict(raw);
+                            string url = GetText(file, "url", "");
+                            if (!String.IsNullOrWhiteSpace(url)) DownloadFile(url, SafeDownloadFileName(GetText(file, "name", "download.bin")), "", "", "", false, BuildActionDownloadKey(new Dictionary<string, object> { { "id", buttonId } }));
+                        }
+                        status.Text = "已加入解析下载队列：" + displayName;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    BeginInvokeIfReady(delegate { MessageBox.Show(ex.Message, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning); });
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref cloudResolverRequestActive, 0);
+                }
+            });
+        }
         private bool StartPackageDownload(Dictionary<string, object> item, string displayName)
         {
             IList<object> rawFiles = AsList(Get(item, "files"));
@@ -18159,12 +18222,23 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             byte[] payload = Encoding.UTF8.GetBytes(json ?? "{}");
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "POST";
-            request.Timeout = 10000;
-            request.ReadWriteTimeout = 10000;
+            bool cloudResolverRequest = false;
+            Uri requestUri;
+            if (Uri.TryCreate(url, UriKind.Absolute, out requestUri))
+            {
+                cloudResolverRequest = String.Equals(requestUri.AbsolutePath, "/api/cloud-resolver/button-download", StringComparison.OrdinalIgnoreCase);
+            }
+            request.Timeout = cloudResolverRequest ? 45000 : 10000;
+            request.ReadWriteTimeout = cloudResolverRequest ? 45000 : 10000;
             request.UserAgent = "ToolboxClient";
             request.ContentType = "application/json; charset=utf-8";
             request.ContentLength = payload.Length;
             request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+            if (cloudResolverRequest)
+            {
+                string clientApiKey = ApiKeyFromConfigUrl();
+                if (!String.IsNullOrWhiteSpace(clientApiKey)) request.Headers["X-Client-Api-Key"] = clientApiKey;
+            }
             ApplyIntegrityHeaders(request);
             using (Stream stream = request.GetRequestStream())
             {
@@ -18650,6 +18724,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (action == "cmd") return GetText(item, "command", GetText(item, "target", ""));
             if (action == "winget") return GetText(item, "winget", GetText(item, "package", GetText(item, "command", GetText(item, "target", ""))));
             if (action == "download") return GetText(item, "download_url", GetText(item, "url", GetText(item, "target", "")));
+            if (action == "cloud_resolve_download") return "";
             return GetText(item, "url", GetText(item, "command", GetText(item, "target", "")));
         }
 
@@ -18711,6 +18786,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private static string ActionLabel(string action)
         {
             if (action == "download") return "下载";
+            if (action == "cloud_resolve_download") return "解析并下载";
             if (action == "cmd") return "命令";
             if (action == "script") return "脚本";
             if (action == "winget") return "安装";

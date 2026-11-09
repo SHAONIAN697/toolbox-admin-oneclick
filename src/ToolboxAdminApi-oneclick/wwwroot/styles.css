@@ -5140,3 +5140,55 @@ body.theme-dayblue #invitePaymentOverlay .payment-confirm {
   background: #106eaf;
   border-color: #106eaf;
 }
+
+/* Cloud resolver routes use a full-width editor so share links remain inspectable. */
+#view-buttons .cloud-resolver-config-field,
+#view-buttons .button-edit-target:has(.cloud-resolver-button-control),
+#view-buttons .target-control:has(.cloud-resolver-button-control) {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+}
+.cloud-resolver-button-control {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.cloud-resolver-routes { display: grid; gap: 12px; }
+.cloud-resolver-download-config { display: grid; gap: 8px; width: 100%; }
+.cloud-resolver-download-config .download-target-control { min-width: 0; width: 100%; }
+.cloud-resolver-button-control [data-cloud-lines] {
+  display: grid;
+  gap: 10px;
+}
+.cloud-line-row {
+  display: grid;
+  grid-template-columns: minmax(220px, .95fr) minmax(420px, 2.2fr) minmax(180px, .9fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.cloud-line-row input { min-width: 0; width: 100%; min-height: 40px; }
+.cloud-line-row label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cloud-line-row label input[type="checkbox"] { width: 16px; min-width: 16px; }
+.cloud-line-row button { white-space: nowrap; min-height: 40px; }
+.cloud-resolver-button-control > [data-cloud-add] { min-height: 42px; width: 100%; }
+@media (max-width: 900px) {
+  .cloud-line-row { grid-template-columns: 1fr 1fr; }
+  .cloud-line-row [data-cloud-url] { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .cloud-line-row { grid-template-columns: 1fr; }
+  .cloud-line-row [data-cloud-url] { grid-column: auto; }
+  .cloud-line-row button { width: 100%; }
+}
