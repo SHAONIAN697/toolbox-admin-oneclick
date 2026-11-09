@@ -1007,7 +1007,17 @@ namespace ToolboxClient
             chrome.Controls.Add(settingsButton);
             chrome.Controls.Add(downloadTasksButton);
 
-            Panel main = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(248, 249, 250), Padding = new Padding(14, 8, 10, 4) };
+            TableLayoutPanel main = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = Color.FromArgb(248, 249, 250),
+                Padding = new Padding(14, 8, 10, 4)
+            };
+            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
             root.Controls.Add(main, 1, 1);
             content = new BufferedFlowLayoutPanel
             {
@@ -1035,7 +1045,7 @@ namespace ToolboxClient
                     });
                 }
             };
-            main.Controls.Add(content);
+            main.Controls.Add(content, 0, 0);
 
             progressPanel = new Panel
             {
@@ -1075,8 +1085,7 @@ namespace ToolboxClient
                 audioOverallProgress.Top = Math.Max(0, (progressPanel.ClientSize.Height - audioOverallProgress.Height) / 2);
                 PositionAudioProgressPercent();
             };
-            main.Controls.Add(progressPanel);
-            progressPanel.BringToFront();
+            main.Controls.Add(progressPanel, 0, 1);
 
             Panel bottom = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
             root.Controls.Add(bottom, 1, 2);
