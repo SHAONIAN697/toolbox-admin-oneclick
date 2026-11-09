@@ -5110,6 +5110,14 @@ namespace ToolboxClient
             DisableHorizontalScrollbars(content);
             contentRendering = false;
             if (content != null && !content.IsDisposed) content.Invalidate();
+            if (content != null && !content.IsDisposed)
+            {
+                BeginInvokeIfReady(delegate
+                {
+                    if (!IsDisposed && content != null && !content.IsDisposed)
+                        DisableHorizontalScrollbars(content);
+                });
+            }
             if (!String.IsNullOrWhiteSpace(pendingPageId) && pageSwitchTimer != null)
             {
                 pageSwitchTimer.Stop();
@@ -10729,7 +10737,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                     if (!child.Visible) continue;
                     requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
                 }
-                int bottomPadding = Math.Max(16, content.Padding.Bottom + 12);
+                int bottomPadding = audioVariant
+                    ? Math.Max(48, content.Padding.Bottom + 24)
+                    : Math.Max(16, content.Padding.Bottom + 12);
                 int requiredScrollBottom = requiredBottom + bottomPadding;
                 bool needsVerticalScroll = requiredScrollBottom > content.ClientSize.Height + 2;
                 if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
