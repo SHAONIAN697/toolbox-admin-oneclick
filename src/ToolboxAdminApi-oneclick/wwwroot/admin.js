@@ -3146,6 +3146,7 @@ function renderUsers() {
     panel.appendChild(cards);
   }
   if (!cards) return;
+  const agentOptions = (state.users || []).filter((item) => item.role === 'agent' && item.active !== false);
   cards.classList.add('collapsible-body');
   cards.hidden = !!panel?.classList.contains('is-collapsed');
   cards.innerHTML = '';
@@ -3207,6 +3208,12 @@ function renderUsers() {
               ${user.role === 'agent' ? agentLevelOptionsHtml(user.agentLevelId || '') : '<option value="">仅代理账号可选</option>'}
             </select>
           </label>
+          <label>直属代理
+            <select data-field="parentAgentId" ${!isSuper() || user.role !== 'user' ? 'disabled' : ''}>
+              <option value="">暂不绑定</option>
+              ${agentOptions.map((agent) => `<option value="${escapeAttr(agent.id)}" ${String(agent.id) === String(user.parentAgentId || '') ? 'selected' : ''}>${escapeHtml(displayNameOf(agent, agent.username))}</option>`).join('')}
+            </select>
+          </label>
           <label>新密码<input data-field="password" type="password" placeholder="留空不修改" ${!isSuper() ? 'disabled' : ''}></label>
           <label>代理余额<input data-field="detailBalance" type="number" step="0.01" value="${Number(user.balance || 0)}" ${!isSuper() || user.role !== 'agent' ? 'disabled' : ''}></label>
           <label class="toggle-line">JSON 管理<span><input data-field="canViewJson" type="checkbox" ${user.canViewJson !== false ? 'checked' : ''} ${user.role === 'super' || !isSuper() ? 'disabled' : ''}> 可查看</span></label>
@@ -3237,6 +3244,8 @@ function renderUsers() {
         const isAgentRole = roleInput.value === 'agent';
         levelInput.innerHTML = isAgentRole ? agentLevelOptionsHtml(levelInput.value || '') : '<option value="">仅代理账号可选</option>';
         levelInput.disabled = !isSuper() || !isAgentRole;
+        const parentInput = card.querySelector('[data-field="parentAgentId"]');
+        if (parentInput) parentInput.disabled = !isSuper() || isAgentRole;
       };
     }
     card.querySelector('[data-action="download"]').onclick = () => downloadClient(user.id);
@@ -7088,6 +7097,7 @@ async function saveUser(userId, row) {
     displayName: row.querySelector('[data-field="displayName"]').value.trim(),
     role: row.querySelector('[data-field="role"]').value,
     agentLevelId: row.querySelector('[data-field="agentLevelId"]')?.value || '',
+    parentAgentId: row.querySelector('[data-field="parentAgentId"]')?.value || '',
     canViewJson: row.querySelector('[data-field="canViewJson"]')?.checked !== false,
     balance: Number(balanceInput?.value || 0)
   };

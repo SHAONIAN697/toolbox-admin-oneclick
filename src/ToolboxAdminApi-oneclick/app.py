@@ -4221,6 +4221,16 @@ def validate_agent_parent(user_id, parent_id, store):
     return parent_id
 
 
+def validate_user_parent(parent_id, store):
+    parent_id = str(parent_id or "").strip()
+    if not parent_id:
+        return ""
+    parent = next((row for row in store.get("users", []) if str(row.get("id")) == parent_id), None)
+    if not parent or parent.get("role") != "agent" or parent.get("active", True) is False:
+        raise ValueError("直属代理不存在或已停用。")
+    return parent_id
+
+
 def read_agent_ledger():
     return read_json(AGENT_LEDGER_PATH, {"entries": [], "adjustments": []})
 
@@ -4873,6 +4883,8 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
         level = resolve_agent_level(user, read_system_settings(), body.get("agentLevelId"), enabled_only=True)
         user["agentLevelId"] = level.get("id")
         user["agentLevelName"] = level.get("name")
+    if super_edit and user.get("role") == "user" and "parentAgentId" in body:
+        user["parentAgentId"] = validate_user_parent(body.get("parentAgentId"), store)
     if super_edit and "active" in body:
         user["active"] = bool(body.get("active"))
     if super_edit and user.get("role") == "agent" and "parentAgentId" in body:
