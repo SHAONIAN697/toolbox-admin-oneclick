@@ -3318,6 +3318,13 @@ def route(handler, app, path, method, auth):
                 return handler.send_json(_public_code(row))
         if path.startswith("/api/agent/cloud-resolver/"):
             if not app.is_agent(user): return handler.send_json({"error": "仅代理可访问。"}, 403)
+            if path == "/api/agent/cloud-resolver/members" and method == "GET":
+                # The admin user list can be cached or scoped differently; use the
+                # authoritative store for the direct-member sales selector.
+                members = [app.public_user(row, app.read_users()) for row in app.read_users().get("users", [])
+                           if row.get("role") == "user" and row.get("active", True) is not False
+                           and str(row.get("parentAgentId") or "") == str(user_id)]
+                return handler.send_json({"members": members})
             if path == "/api/agent/cloud-resolver/codes/quote" and method == "POST":
                 return handler.send_json(_agent_code_quote(app, store, user, handler.read_body()))
             if path in ("/api/agent/cloud-resolver/code-inventory", "/api/agent/cloud-resolver/codes") and method == "GET":

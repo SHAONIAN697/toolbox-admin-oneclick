@@ -1204,6 +1204,7 @@ async function loadCloudResolver() {
     await loadUserCloudEntitlements();
   }
   if (isAgent()) {
+    try { feature.agentMembers = (await api('/api/agent/cloud-resolver/members')).members || []; } catch { feature.agentMembers = []; }
     try { feature.agentCodes = (await api('/api/agent/cloud-resolver/code-inventory')).codes || []; } catch { feature.agentCodes = []; }
     try { feature.agentSales = (await api('/api/agent/cloud-resolver/sales')).sales || []; } catch { feature.agentSales = []; }
     try { feature.agentCodeOrders = (await api('/api/agent/cloud-resolver/code-orders')).orders || []; } catch { feature.agentCodeOrders = []; }
@@ -1340,7 +1341,7 @@ function renderCloudAgentPanel() {
   renderAgentPlanCards(plans);
   const codeRows = $('cloudResolverAgentCodeRows');
   const codes = feature.agentCodes || [];
-  const members = (state.users || []).filter((user) => user.parentAgentId === state.currentUser?.id && user.active !== false);
+  const members = feature.agentMembers || [];
   const planSelect = $('cloudResolverAgentCodePlan');
   if (planSelect) {
     const selectedPlanId = planSelect.value;

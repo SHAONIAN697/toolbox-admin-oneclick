@@ -178,6 +178,19 @@ class CloudResolverTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.call("bob", f"/api/cloud-resolver/parse-tasks/{task['id']}", "GET")
 
+    def test_agent_member_selector_uses_authoritative_direct_members(self):
+        users = APP.read_users()
+        users["users"].extend([
+            {"id": "direct", "username": "direct", "role": "user", "active": True, "parentAgentId": "agent"},
+            {"id": "disabled", "username": "disabled", "role": "user", "active": False, "parentAgentId": "agent"},
+            {"id": "other", "username": "other", "role": "user", "active": True, "parentAgentId": "other-agent"},
+            {"id": "child-agent", "username": "child-agent", "role": "agent", "active": True, "parentAgentId": "agent"},
+        ])
+        APP.write_users(users)
+        status, payload = self.call("agent", "/api/agent/cloud-resolver/members", "GET")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["id"] for row in payload["members"]], ["direct"])
+
     def test_button_download_allows_legacy_provider_entitlement_through_qaiu(self):
         self.grant("alice", providers=["123pan"])
         button = APP.new_button({"name": "resolver button", "action": "download", "target": "https://example.test/file"})
