@@ -6263,10 +6263,15 @@ async function addButton() {
   if (scope === 'toolbox') request.tabIndex = Number(id);
   else request.pageId = id;
 
-  const updatedButtons = await api(buttonsApiPath(), {
-    method: 'POST',
-    body: JSON.stringify(request)
-  });
+  let updatedButtons;
+  try {
+    updatedButtons = await api(buttonsApiPath(), {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  } catch (error) {
+    throw new Error(cloudErrorMessage(error));
+  }
 
   $('addName').value = '';
   if ($('addSort')) $('addSort').value = '0';

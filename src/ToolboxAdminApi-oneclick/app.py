@@ -7400,7 +7400,7 @@ class Handler(BaseHTTPRequestHandler):
             if str(requested_button.get("action") or "") == "cloud_resolve_download" and method in ("POST", "PATCH"):
                 resolver_store = cloud_resolver._load(_app_context()) if cloud_resolver else {}
                 if not cloud_resolver or not cloud_resolver._effective_entitlement(resolver_store, auth["user"]):
-                    return self.send_json({"error": "cloud resolver entitlement required"}, 403)
+                    return self.send_json({"error": "当前账号尚未开通网盘解析，请先开通或续费网盘解析授权。", "code": "USER_ENTITLEMENT_REQUIRED"}, 403)
             before_row = find_button_audit_row(cfg, body)
             operation = "update"
             if method == "POST":
