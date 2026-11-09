@@ -7827,6 +7827,11 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private void RenderPortalDownloadsPage()
         {
             RestorePausedDownloadTasksOnce();
+            ResetContentScrollState();
+            content.AutoScroll = true;
+            content.VerticalScroll.Enabled = true;
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
             content.SuspendLayout();
             ClearChildControls(content);
             content.FlowDirection = FlowDirection.TopDown;
@@ -7853,6 +7858,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             content.ResumeLayout();
             ApplyPortalThemeToShell();
             RenderActiveDownloads();
+            UpdateContentScrolling();
             DisableHorizontalScrollbars(content);
         }
 

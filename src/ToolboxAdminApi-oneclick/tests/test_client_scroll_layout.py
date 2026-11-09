@@ -33,6 +33,15 @@ class ClientScrollLayoutTests(unittest.TestCase):
     def test_download_task_row_does_not_have_fixed_overflow_width(self):
         self.assertIn("int taskRowWidth = Math.Max(1, taskListWidth - 16);", self.source)
 
+    def test_portal_download_page_recalculates_outer_scroll_after_render(self):
+        start = self.source.index("private void RenderPortalDownloadsPage()")
+        end = self.source.index("private void RenderPortalSettingsPage()", start)
+        page = self.source[start:end]
+
+        self.assertIn("content.AutoScroll = true;", page)
+        self.assertIn("RenderActiveDownloads();\n            UpdateContentScrolling();", page)
+        self.assertIn("DisableHorizontalScrollbars(content);", page)
+
 
 if __name__ == "__main__":
     unittest.main()
