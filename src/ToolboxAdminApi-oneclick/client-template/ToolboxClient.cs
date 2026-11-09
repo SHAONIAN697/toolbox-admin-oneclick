@@ -5600,9 +5600,8 @@ namespace ToolboxClient
             try
             {
                 ClearChildControls(content);
-                content.AutoScroll = false;
-                content.VerticalScroll.Enabled = false;
-                content.VerticalScroll.Visible = false;
+                content.AutoScroll = true;
+                content.VerticalScroll.Enabled = true;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
@@ -10662,7 +10661,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
             DisableHorizontalScrollbars(content);
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            if ((tunerVariant || vst76Variant) && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
+            if (vst76Variant && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
             {
                 content.AutoScroll = false;
                 content.AutoScrollPosition = Point.Empty;
@@ -15988,7 +15987,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             int taskListWidth = activeDownloadsList == null ? 320 : activeDownloadsList.ClientSize.Width;
             if (activeDownloadsList != null && activeDownloadsList.AutoScroll)
                 taskListWidth -= SystemInformation.VerticalScrollBarWidth;
-            int taskRowWidth = Math.Max(320, taskListWidth - 16);
+            // Keep the task row inside the actual list viewport. A fixed
+            // minimum width can create a horizontal scrollbar on small windows.
+            int taskRowWidth = Math.Max(1, taskListWidth - 16);
             Panel row = new RoundedPanel
             {
                 Width = taskRowWidth,
@@ -17245,9 +17246,8 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             try
             {
                 ClearChildControls(content);
-                content.AutoScroll = false;
-                content.VerticalScroll.Enabled = false;
-                content.VerticalScroll.Visible = false;
+                content.AutoScroll = true;
+                content.VerticalScroll.Enabled = true;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
