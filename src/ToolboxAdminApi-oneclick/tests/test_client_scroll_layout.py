@@ -201,6 +201,11 @@ class ClientScrollLayoutTests(unittest.TestCase):
         self.assertIn('navConfig["pages"] = pageNavigation;', signature)
         self.assertIn('navConfig["toolboxTabs"] = toolboxNavigation;', signature)
 
+    def test_original_variant_reflows_cards_after_initial_window_layout(self):
+        self.assertIn("else if (!studioVariant && !tunerVariant && !audioVariant && !vst76Variant && !xingguiVariant)", self.source)
+        self.assertIn("bool originalVariant = !portalVariant && !tunerVariant && !studioVariant && !audioVariant && !vst76Variant && !xingguiVariant;", self.source)
+        self.assertIn("portalVariant || audioVariant || tunerVariant || vst76Variant || xingguiVariant || originalVariant", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -433,6 +433,13 @@ namespace ToolboxClient
                     Location = new Point(workArea.Left + (workArea.Width - width) / 2, workArea.Top + (workArea.Height - height) / 2);
                     QueueContentResizeRender();
                 }
+                else if (!studioVariant && !tunerVariant && !audioVariant && !vst76Variant && !xingguiVariant)
+                {
+                    // The initial page may render before the window's final
+                    // client size is settled. Recompute its card widths once
+                    // the first visible layout has completed.
+                    QueueContentResizeRender();
+                }
                 // Render the embedded snapshot first, then refresh without competing for the first paint.
                 ShowStartupLoadingWindow();
                 startupRenderTimer.Start();
@@ -615,7 +622,8 @@ namespace ToolboxClient
             if (portalVariant) UpdatePortalWindowRegion();
             else if ((tunerVariant || xingguiVariant) && FormBorderStyle == FormBorderStyle.None)
                 EnsureRoundedRegion(this, xingguiVariant ? 14 : 12, ref toolboxWindowRegionSize, ref toolboxWindowRegionRadius);
-            if ((portalVariant || tunerVariant || studioVariant || audioVariant || vst76Variant || xingguiVariant) && IsHandleCreated && content != null && !content.IsDisposed)
+            bool originalVariant = !portalVariant && !tunerVariant && !studioVariant && !audioVariant && !vst76Variant && !xingguiVariant;
+            if ((portalVariant || tunerVariant || studioVariant || audioVariant || vst76Variant || xingguiVariant || originalVariant) && IsHandleCreated && content != null && !content.IsDisposed)
             {
                 // A resize must not rebuild the current business page. Recreating
                 // every card here exposes an empty/reflowed frame on all variants.
@@ -623,7 +631,7 @@ namespace ToolboxClient
                 // the common pages; special pages retain their own explicit refresh.
                 content.PerformLayout();
                 content.Invalidate();
-                if ((portalVariant || audioVariant || tunerVariant || vst76Variant || xingguiVariant ||
+                if ((portalVariant || audioVariant || tunerVariant || vst76Variant || xingguiVariant || originalVariant ||
                     currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) &&
                     !softwareCatalogLayoutUpdating)
                 {
