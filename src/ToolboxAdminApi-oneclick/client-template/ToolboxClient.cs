@@ -17174,7 +17174,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.BackColor = Color.FromArgb(248, 249, 250);
                 int available = Math.Max(560, content.ClientSize.Width - 8);
                 int pageHeight = Math.Max(300, content.ClientSize.Height - 8);
-                int activeHeight = Math.Max(112, Math.Min(154, (int)(pageHeight * 0.34)));
+                int activeHeight = Math.Max(140, Math.Min(154, (int)(pageHeight * 0.34)));
                 int recordHeight = Math.Max(92, pageHeight - activeHeight - 122);
                 content.Controls.Add(new Label
                 {
@@ -17197,7 +17197,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 });
                 activeDownloadsList = new BufferedFlowLayoutPanel
                 {
-                    Left = 10, Top = 38, Width = available - 20, Height = Math.Max(68, activeHeight - 48),
+                    Left = 10, Top = 38, Width = available - 20, Height = Math.Max(DownloadTaskRowHeight + DownloadTaskRowGap, activeHeight - 48),
                     FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
                     BackColor = Color.White, Padding = Padding.Empty, SuppressFocusAutoScroll = true,
                     Tag = "audio_active_downloads"
