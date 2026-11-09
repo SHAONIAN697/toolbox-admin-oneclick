@@ -892,7 +892,17 @@ namespace ToolboxClient
             };
             content.Resize += delegate
             {
-                // Avoid recursive FlowLayoutPanel resize/render loops while switching pages.
+                if (IsHandleCreated && !content.IsDisposed)
+                {
+                    BeginInvokeIfReady(delegate
+                    {
+                        if (!IsDisposed && content != null && !content.IsDisposed)
+                        {
+                            content.PerformLayout();
+                            UpdateContentScrolling();
+                        }
+                    });
+                }
             };
             mainLayout.Controls.Add(content, 0, 2);
             BuildRecordsPanel();
@@ -1010,6 +1020,21 @@ namespace ToolboxClient
                 SuppressFocusAutoScroll = true
             };
             content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
+            content.Resize += delegate
+            {
+                if (IsHandleCreated && !content.IsDisposed)
+                {
+                    BeginInvokeIfReady(delegate
+                    {
+                        if (!IsDisposed && content != null && !content.IsDisposed)
+                        {
+                            content.PerformLayout();
+                            UpdateContentScrolling();
+                        }
+                    });
+                }
+            };
             main.Controls.Add(content);
 
             progressPanel = new Panel
@@ -5607,7 +5632,7 @@ namespace ToolboxClient
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int width = Math.Max(600, content.ClientSize.Width - 4);
+                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
                 bool expandedLayout = false;
                 foreach (object pageSectionObj in currentSections)
                 {
@@ -5754,12 +5779,16 @@ namespace ToolboxClient
                 panel.Controls.Add(button);
                 QueueButtonIconLoad(displayIconUrl, button);
             }
+            int actualBottom = 0;
+            foreach (Control child in panel.Controls)
+                actualBottom = Math.Max(actualBottom, child.Bottom);
+            panel.Height = Math.Max(panel.Height, actualBottom + 8);
             return panel;
         }
 
         private void AddAudioEmptyMessage()
         {
-            int width = Math.Max(520, content.ClientSize.Width - 8);
+            int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
             RoundedPanel empty = new RoundedPanel
             {
                 Width = width,
@@ -6143,6 +6172,10 @@ namespace ToolboxClient
                     RegisterVst76InlineDownloadProgress(progress);
                 }
             }
+            int actualBottom = 0;
+            foreach (Control child in panel.Controls)
+                actualBottom = Math.Max(actualBottom, child.Bottom);
+            panel.Height = Math.Max(panel.Height, actualBottom + 16);
             return panel;
         }
 
@@ -10659,7 +10692,6 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private void UpdateContentScrolling()
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
-            DisableHorizontalScrollbars(content);
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
             if (vst76Variant && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
             {
@@ -10670,6 +10702,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.VerticalScroll.Visible = false;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
+                DisableHorizontalScrollbars(content);
                 return;
             }
             if ((xingguiVariant && currentPage == XingguiHomePageId) || (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage)))))
@@ -10680,6 +10713,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.VerticalScroll.Visible = false;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
+                DisableHorizontalScrollbars(content);
                 return;
             }
             // Layout/scrollbar changes can synchronously invalidate the parent and
@@ -10717,6 +10751,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             {
                 content.ResumeLayout(false);
             }
+            DisableHorizontalScrollbars(content);
         }
 
         private void BuildResourceSearchChrome()
@@ -17039,7 +17074,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int available = Math.Max(560, content.ClientSize.Width - 8);
+                int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
                 int bodyHeight = Math.Max(300, content.ClientSize.Height - 52);
                 ClientSettings settings = LoadClientSettings();
 
