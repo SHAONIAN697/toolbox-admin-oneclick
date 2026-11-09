@@ -26,6 +26,12 @@ class CloudEntitlementMessageTests(unittest.TestCase):
             ADMIN_SOURCE,
         )
 
+    def test_client_maps_expired_entitlement_code_to_chinese(self):
+        client_source = (ROOT / "client-template" / "ToolboxClient.cs").read_text(encoding="utf-8")
+        self.assertIn("private string CloudResolverErrorMessage(Exception ex)", client_source)
+        self.assertIn("当前账号网盘解析已到期，请先开通或续费网盘解析授权。", client_source)
+        self.assertIn("USER_ENTITLEMENT_REQUIRED", client_source)
+
 
 if __name__ == "__main__":
     unittest.main()

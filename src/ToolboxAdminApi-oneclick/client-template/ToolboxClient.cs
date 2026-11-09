@@ -11395,7 +11395,8 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 }
                 catch (Exception ex)
                 {
-                    BeginInvokeIfReady(delegate { MessageBox.Show(ex.Message, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning); });
+                    string message = CloudResolverErrorMessage(ex);
+                    BeginInvokeIfReady(delegate { MessageBox.Show(message, "工具箱", MessageBoxButtons.OK, MessageBoxIcon.Warning); });
                 }
                 finally
                 {
@@ -11403,6 +11404,30 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 }
             });
         }
+
+        private string CloudResolverErrorMessage(Exception ex)
+        {
+            string raw = (ex == null ? "" : ex.Message) ?? "";
+            string code = raw.Trim();
+            try
+            {
+                Dictionary<string, object> error = AsDict(serializer.DeserializeObject(raw));
+                code = GetText(error, "code", GetText(error, "error", code));
+            }
+            catch
+            {
+            }
+
+            if (String.Equals(code, "USER_ENTITLEMENT_REQUIRED", StringComparison.OrdinalIgnoreCase) ||
+                code.IndexOf("entitlement required", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                raw.IndexOf("USER_ENTITLEMENT_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "当前账号网盘解析已到期，请先开通或续费网盘解析授权。";
+            }
+            if (String.IsNullOrWhiteSpace(raw)) return "网盘解析失败，请稍后重试。";
+            return raw;
+        }
+
         private bool StartPackageDownload(Dictionary<string, object> item, string displayName)
         {
             IList<object> rawFiles = AsList(Get(item, "files"));
