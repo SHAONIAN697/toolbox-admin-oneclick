@@ -623,7 +623,8 @@ namespace ToolboxClient
                 // the common pages; special pages retain their own explicit refresh.
                 content.PerformLayout();
                 content.Invalidate();
-                if ((portalVariant || currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) &&
+                if ((portalVariant || audioVariant || tunerVariant || vst76Variant || xingguiVariant ||
+                    currentPage.Equals(SoftwareCatalogPageId, StringComparison.OrdinalIgnoreCase)) &&
                     !softwareCatalogLayoutUpdating)
                 {
                     QueueContentResizeRender();
@@ -1017,7 +1018,7 @@ namespace ToolboxClient
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             main.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 54F));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
             root.Controls.Add(main, 1, 1);
             content = new BufferedFlowLayoutPanel
             {
@@ -1050,9 +1051,9 @@ namespace ToolboxClient
             progressPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 54,
+                Height = 36,
                 BackColor = Color.FromArgb(248, 249, 250),
-                Padding = new Padding(0, 16, 0, 16)
+                Padding = new Padding(0, 8, 0, 8)
             };
             audioOverallProgress = new SmoothProgressBar
             {
@@ -1082,7 +1083,7 @@ namespace ToolboxClient
             progressPanel.Resize += delegate
             {
                 audioOverallProgress.Width = Math.Max(180, Math.Min(570, progressPanel.ClientSize.Width - 64));
-                audioOverallProgress.Top = Math.Max(0, (progressPanel.ClientSize.Height - audioOverallProgress.Height) / 2);
+                    audioOverallProgress.Top = Math.Max(0, (progressPanel.ClientSize.Height - audioOverallProgress.Height) / 2);
                 PositionAudioProgressPercent();
             };
             main.Controls.Add(progressPanel, 0, 1);
@@ -2802,7 +2803,13 @@ namespace ToolboxClient
             // control tree and update its action payloads in place. Running the
             // full shell/theme/layout path here briefly exposes the reflowed
             // four-button page and is the source of the recurring flash.
-            if (configApplied && !String.IsNullOrWhiteSpace(currentPage))
+            // A sync can add/remove pages or toolbox tabs without changing the
+            // current page's rendered cards. In that case the existing early
+            // return would keep a stale navigation tree until the user clicked
+            // another page. Only use the lightweight refresh when navigation
+            // is unchanged as well.
+            if (configApplied && !String.IsNullOrWhiteSpace(currentPage) &&
+                String.Equals(NavigationSignature(), lastNavigationSignature, StringComparison.Ordinal))
             {
                 // Automatic sync must never rebuild the page currently visible
                 // to the user. Besides signed URLs, module fields and backend
@@ -3391,13 +3398,12 @@ namespace ToolboxClient
             try
             {
                 ClearChildControls(content);
-                content.AutoScroll = false;
+                content.AutoScroll = true;
                 ResetContentScrollState();
-                content.VerticalScroll.Enabled = false;
-                content.VerticalScroll.Visible = false;
+                content.VerticalScroll.Enabled = true;
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
-                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 2);
+                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
                 int availableHeight = Math.Max(1, content.ClientSize.Height - content.Padding.Vertical - 2);
                 int heroHeight = Math.Min(280, Math.Max(180, availableHeight * 42 / 100));
                 RoundedPanel hero = new RoundedPanel { Width = width, Height = heroHeight, Radius = 14, BackColor = PanelBg2, BorderColor = Line, Margin = new Padding(0, 0, 0, 14) };
@@ -5500,6 +5506,29 @@ namespace ToolboxClient
             {
                 Dictionary<string, object> navConfig = new Dictionary<string, object>();
                 navConfig["sidebar"] = Get(config, "sidebar");
+                Dictionary<string, object> pages = AsDict(Get(config, "pages"));
+                List<object> pageNavigation = new List<object>();
+                foreach (string pageId in pages.Keys.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                {
+                    Dictionary<string, object> page = AsDict(pages[pageId]);
+                    pageNavigation.Add(new Dictionary<string, object>
+                    {
+                        { "id", pageId },
+                        { "label", PageLabel(page, pageId) }
+                    });
+                }
+                navConfig["pages"] = pageNavigation;
+                List<object> toolboxNavigation = new List<object>();
+                foreach (object tabObject in AsList(Get(config, "toolbox_tabs")))
+                {
+                    Dictionary<string, object> tab = AsDict(tabObject);
+                    toolboxNavigation.Add(new Dictionary<string, object>
+                    {
+                        { "name", GetText(tab, "name", "") },
+                        { "id", GetText(tab, "id", "") }
+                    });
+                }
+                navConfig["toolboxTabs"] = toolboxNavigation;
                 // Only navigation-affecting module fields belong here. The
                 // module object can contain runtime/download values that change
                 // during sync and must not rebuild the sidebar or current page.
@@ -5644,12 +5673,13 @@ namespace ToolboxClient
                 ClearChildControls(content);
                 content.AutoScroll = true;
                 content.VerticalScroll.Enabled = true;
+                content.VerticalScroll.Visible = true;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
+                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
                 bool expandedLayout = false;
                 foreach (object pageSectionObj in currentSections)
                 {
@@ -5805,7 +5835,7 @@ namespace ToolboxClient
 
         private void AddAudioEmptyMessage()
         {
-            int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
+            int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
             RoundedPanel empty = new RoundedPanel
             {
                 Width = width,
@@ -5849,7 +5879,7 @@ namespace ToolboxClient
                     return;
                 }
 
-                int available = Math.Max(640, content.ClientSize.Width - 12);
+                int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 12);
                 for (int i = 0; i < sections.Count; i++)
                 {
                     Dictionary<string, object> section = sections[i];
@@ -5880,6 +5910,11 @@ namespace ToolboxClient
             try
             {
                 ClearChildControls(content);
+                content.AutoScroll = true;
+                content.VerticalScroll.Enabled = true;
+                content.VerticalScroll.Visible = true;
+                content.HorizontalScroll.Enabled = false;
+                content.HorizontalScroll.Visible = false;
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
@@ -5996,7 +6031,7 @@ namespace ToolboxClient
             // Reserve the native vertical scrollbar width up front. Without
             // this, enabling vertical scrolling makes every child a few
             // pixels wider than the viewport and creates a horizontal bar.
-            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
+            return Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
         }
 
         private Control CreateTunerSystemOptimizeGroup(int width)
@@ -6593,11 +6628,11 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Bg;
-                content.AutoScroll = false;
+                content.AutoScroll = true;
+                content.VerticalScroll.Enabled = true;
                 content.HorizontalScroll.Enabled = false;
                 content.HorizontalScroll.Visible = false;
-                content.VerticalScroll.Visible = false;
-                int width = Math.Max(780, content.ClientSize.Width - 8);
+                int width = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 10);
                 content.Controls.Add(CreateVst76HomeHeader(width));
                 content.Controls.Add(CreateVst76MetricRow(width));
                 content.Controls.Add(CreateVst76ActionPanel(width));
@@ -7193,7 +7228,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.WrapContents = false;
                 content.BackColor = Bg;
 
-            int available = Math.Max(640, content.ClientSize.Width - 12);
+            int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - 12);
                 ClientSettings currentSettings = LoadClientSettings();
 
                 content.Controls.Add(CreateStudioSettingsCard(available, currentSettings));
@@ -7565,10 +7600,10 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
 
         private int PortalContentWidth()
         {
-            int shellWidth = ClientSize.Width - 236 - 26 - 32 - 4;
+            int shellWidth = ClientSize.Width - 236 - 26 - 32 - 12;
             if (content == null) return Math.Max(1, shellWidth);
 
-            int panelWidth = content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4;
+            int panelWidth = content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10;
             return Math.Max(1, Math.Min(panelWidth, shellWidth));
         }
 
@@ -7592,6 +7627,11 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             content.SuspendLayout();
             ClearChildControls(content);
+            content.AutoScroll = true;
+            content.VerticalScroll.Enabled = true;
+            content.VerticalScroll.Visible = true;
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
             content.FlowDirection = FlowDirection.TopDown;
             content.WrapContents = false;
             content.BackColor = Bg;
@@ -7830,6 +7870,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             ResetContentScrollState();
             content.AutoScroll = true;
             content.VerticalScroll.Enabled = true;
+            content.VerticalScroll.Visible = true;
             content.HorizontalScroll.Enabled = false;
             content.HorizontalScroll.Visible = false;
             content.SuspendLayout();
@@ -7882,7 +7923,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         private void BuildPortalDownloadTable(int width)
         {
             Padding activePadding = new Padding(10);
-            int activeHeight = DownloadTaskListHeight(activePadding);
+            int activeTaskCount;
+            lock (activeDownloadsLock) activeTaskCount = activeDownloads.Count;
+            int activeHeight = DownloadTaskListHeight(activePadding, activeTaskCount);
             int listTop = 48 + activeHeight + 12;
             int minPanelHeight = listTop + 190 + 18;
             RoundedPanel panel = new RoundedPanel
@@ -7922,6 +7965,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 Top = 48,
                 Width = width - 24,
                 Height = activeHeight,
+                MinimumSize = new Size(Math.Max(1, width - 24), DownloadTaskListHeight(activePadding, activeTaskCount)),
                 BackColor = PortalRecordSurfaceBack(),
                 BorderColor = Color.FromArgb(LightTheme ? 100 : 82, Line),
                 UseCustomBorderColor = true,
@@ -10716,29 +10760,6 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            if (vst76Variant && String.Equals(currentPage, "downloads", StringComparison.OrdinalIgnoreCase))
-            {
-                content.AutoScroll = false;
-                content.AutoScrollPosition = Point.Empty;
-                content.AutoScrollMinSize = Size.Empty;
-                content.VerticalScroll.Enabled = false;
-                content.VerticalScroll.Visible = false;
-                content.HorizontalScroll.Enabled = false;
-                content.HorizontalScroll.Visible = false;
-                DisableHorizontalScrollbars(content);
-                return;
-            }
-            if ((xingguiVariant && currentPage == XingguiHomePageId) || (vst76Variant && IsVst76HomePage(currentPage, AsDict(Get(pages, currentPage)))))
-            {
-                content.AutoScroll = false;
-                content.AutoScrollPosition = Point.Empty;
-                content.AutoScrollMinSize = Size.Empty;
-                content.VerticalScroll.Visible = false;
-                content.HorizontalScroll.Enabled = false;
-                content.HorizontalScroll.Visible = false;
-                DisableHorizontalScrollbars(content);
-                return;
-            }
             // Layout/scrollbar changes can synchronously invalidate the parent and
             // cause a visible blank frame while a page is being rebuilt. Calculate
             // the desired state first, then apply only actual changes as one batch.
@@ -10747,21 +10768,31 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             {
                 content.PerformLayout();
                 int requiredBottom = content.Padding.Top;
+                int sequentialContentHeight = content.Padding.Vertical;
                 foreach (Control child in content.Controls)
                 {
                     if (!child.Visible) continue;
                     requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
+                    sequentialContentHeight += child.Height + child.Margin.Vertical;
                 }
                 int bottomPadding = audioVariant
                     ? Math.Max(48, content.Padding.Bottom + 24)
                     : Math.Max(16, content.Padding.Bottom + 12);
-                int requiredScrollBottom = requiredBottom + bottomPadding;
-                bool needsVerticalScroll = requiredScrollBottom > content.ClientSize.Height + 2;
+                int requiredScrollBottom = Math.Max(requiredBottom, sequentialContentHeight) + bottomPadding + 8;
+                bool forceAudioSectionsScroll = audioVariant && currentSections != null && currentSections.Count > 0 &&
+                    !currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase) &&
+                    !currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase);
+                bool needsVerticalScroll = forceAudioSectionsScroll || requiredScrollBottom > content.ClientSize.Height + 2;
                 if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
                 if (needsVerticalScroll)
                 {
-                    Size desiredMinSize = new Size(0, requiredScrollBottom);
+                    int minimumScrollableHeight = forceAudioSectionsScroll
+                        ? content.ClientSize.Height + 1
+                        : requiredScrollBottom;
+                    Size desiredMinSize = new Size(0, Math.Max(requiredScrollBottom, minimumScrollableHeight));
                     if (content.AutoScrollMinSize != desiredMinSize) content.AutoScrollMinSize = desiredMinSize;
+                    content.VerticalScroll.Enabled = true;
+                    content.VerticalScroll.Visible = true;
                 }
                 else
                 {
@@ -15694,6 +15725,12 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             return padding.Top + padding.Bottom + MaxVisibleDownloadTaskRows * DownloadTaskRowHeight + Math.Max(0, MaxVisibleDownloadTaskRows - 1) * DownloadTaskRowGap;
         }
 
+        private static int DownloadTaskListHeight(Padding padding, int taskCount)
+        {
+            int visibleRows = Math.Min(MaxVisibleDownloadTaskRows, Math.Max(1, taskCount));
+            return padding.Top + padding.Bottom + visibleRows * (DownloadTaskRowHeight + DownloadTaskRowGap);
+        }
+
         private Vst76InlineDownloadProgress CreateVst76InlineProgress(string downloadName, bool compact, string downloadKey = "")
         {
             return new Vst76InlineDownloadProgress
@@ -15909,20 +15946,54 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             }
             List<DownloadTask> tasks;
             lock (activeDownloadsLock) tasks = new List<DownloadTask>(activeDownloads);
+            if (portalVariant && tasks.Count <= MaxVisibleDownloadTaskRows)
+            {
+                ResetPortalActiveDownloadScroll();
+            }
+            UpdatePortalActiveDownloadLayout(tasks.Count);
             Point scrollPosition = activeDownloadsList.AutoScrollPosition;
+            if (portalVariant)
+            {
+                // Rebuilding the portal task area can leave FlowLayoutPanel with
+                // the previous page's negative offset, clipping the first row.
+                activeDownloadsList.AutoScrollPosition = Point.Empty;
+                activeDownloadsList.AutoScrollMinSize = Size.Empty;
+                activeDownloadsList.PerformLayout();
+                scrollPosition = Point.Empty;
+            }
             Point pageScrollPosition = CaptureContentScroll();
             try
             {
             activeDownloadsList.SuspendLayout();
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
-            activeDownloadsList.AutoScroll = !studioInline || tasks.Count > 1;
+            // Do not keep an inner scrollbar for a task that already fits in
+            // the active panel. Restoring a stale offset in that case clips
+            // the top of the task card after switching to the downloads page.
+            activeDownloadsList.PerformLayout();
+            int taskViewportHeight = Math.Max(1, activeDownloadsList.ClientSize.Height - activeDownloadsList.Padding.Vertical);
+            int visibleTaskRows = Math.Max(1, (taskViewportHeight + DownloadTaskRowGap) / (DownloadTaskRowHeight + DownloadTaskRowGap));
+            bool needsTaskScroll = studioInline ? tasks.Count > 1 : tasks.Count > visibleTaskRows;
+            if (portalVariant && tasks.Count <= MaxVisibleDownloadTaskRows) needsTaskScroll = false;
+            if (!needsTaskScroll && activeDownloadsList.AutoScroll)
+            {
+                activeDownloadsList.AutoScrollPosition = Point.Empty;
+                activeDownloadsList.PerformLayout();
+                scrollPosition = Point.Empty;
+            }
+            activeDownloadsList.AutoScroll = needsTaskScroll;
+            if (portalVariant && !needsTaskScroll)
+            {
+                ResetPortalActiveDownloadScroll();
+            }
             if (tasks.Count == 0)
             {
                 activeDownloadsList.Controls.Clear();
                 activeDownloadRows.Clear();
-                int emptyHeight = studioInline ? Math.Max(62, activeDownloadsList.ClientSize.Height) : 82;
+                int emptyHeight = studioInline || portalVariant
+                    ? Math.Max(62, activeDownloadsList.ClientSize.Height - activeDownloadsList.Padding.Vertical)
+                    : 82;
                 recordsProgressLabel = CreateDownloadEmptyState(
-                    Math.Max(520, studioInline ? activeDownloadsList.ClientSize.Width : activeDownloadsList.ClientSize.Width - 20),
+                    Math.Max(1, activeDownloadsList.ClientSize.Width - 20),
                     emptyHeight,
                     PortalText("当前没有下载任务", "No active downloads"),
                     studioInline);
@@ -15964,6 +16035,12 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 activeDownloadsList.Controls.Remove(recordsProgressLabel);
             }
 
+            activeDownloadsList.PerformLayout();
+            int liveTaskWidth = activeDownloadsList.ClientSize.Width - 20;
+            if (activeDownloadsList.AutoScroll && activeDownloadsList.VerticalScroll.Visible)
+                liveTaskWidth -= SystemInformation.VerticalScrollBarWidth;
+            liveTaskWidth = Math.Max(1, liveTaskWidth);
+
             HashSet<string> liveIds = new HashSet<string>();
             foreach (DownloadTask task in tasks)
             {
@@ -15979,6 +16056,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                     if (row.Parent != null) row.Parent.Controls.Remove(row);
                     activeDownloadsList.Controls.Add(row);
                 }
+                if (row.Width != liveTaskWidth) row.Width = liveTaskWidth;
                 UpdateDownloadTaskRow(task, row);
             }
 
@@ -15999,7 +16077,28 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             {
                 activeDownloadRows.Remove(id);
             }
+            activeDownloadsList.PerformLayout();
+            if (portalVariant && !needsTaskScroll)
+            {
+                ResetPortalActiveDownloadScroll();
+            }
+            int finalTaskWidth = activeDownloadsList.ClientSize.Width - 20;
+            if (activeDownloadsList.AutoScroll && activeDownloadsList.VerticalScroll.Visible)
+                finalTaskWidth -= SystemInformation.VerticalScrollBarWidth;
+            finalTaskWidth = Math.Max(1, finalTaskWidth);
+            foreach (DownloadTask task in tasks)
+            {
+                Panel row;
+                if (activeDownloadRows.TryGetValue(task.Id, out row) && row != null && !row.IsDisposed && row.Width != finalTaskWidth)
+                    row.Width = finalTaskWidth;
+            }
+            activeDownloadsList.PerformLayout();
             activeDownloadsList.ResumeLayout();
+            if (portalVariant && !needsTaskScroll)
+            {
+                ResetPortalActiveDownloadScroll();
+                scrollPosition = Point.Empty;
+            }
             DisableHorizontalScrollbars(activeDownloadsList);
             RestoreActiveDownloadScroll(scrollPosition);
             RestoreContentScrollSoon(pageScrollPosition);
@@ -16014,6 +16113,49 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             if (activeDownloadsList == null || !activeDownloadsList.AutoScroll) return;
             activeDownloadsList.AutoScrollPosition = new Point(Math.Abs(scrollPosition.X), Math.Abs(scrollPosition.Y));
+        }
+
+        private void UpdatePortalActiveDownloadLayout(int taskCount)
+        {
+            if (!portalVariant || !IsPortalActiveDownloadsList(activeDownloadsList)) return;
+            RoundedPanel panel = activeDownloadsList.Parent as RoundedPanel;
+            if (panel == null || panel.IsDisposed) return;
+
+            int activeHeight = DownloadTaskListHeight(activeDownloadsList.Padding, taskCount);
+            activeDownloadsList.Height = activeHeight;
+            activeDownloadsList.MinimumSize = new Size(Math.Max(1, activeDownloadsList.Width), activeHeight);
+            activeDownloadsList.AutoScrollPosition = Point.Empty;
+
+            ListView history = null;
+            foreach (Control child in panel.Controls)
+            {
+                ListView candidate = child as ListView;
+                if (candidate != null && IsPortalDownloadRecordsList(candidate))
+                {
+                    history = candidate;
+                    break;
+                }
+            }
+            if (history == null) return;
+
+            int listTop = activeDownloadsList.Top + activeHeight + 12;
+            int minPanelHeight = listTop + 190 + 18;
+            panel.Height = Math.Max(minPanelHeight, content.ClientSize.Height - 180);
+            history.Top = listTop;
+            history.Height = Math.Max(190, panel.ClientSize.Height - listTop - 18);
+            panel.PerformLayout();
+        }
+
+        private void ResetPortalActiveDownloadScroll()
+        {
+            if (!portalVariant || !IsPortalActiveDownloadsList(activeDownloadsList) || activeDownloadsList.IsDisposed) return;
+            activeDownloadsList.AutoScroll = true;
+            activeDownloadsList.PerformLayout();
+            activeDownloadsList.AutoScrollPosition = Point.Empty;
+            activeDownloadsList.AutoScrollMinSize = Size.Empty;
+            activeDownloadsList.PerformLayout();
+            activeDownloadsList.AutoScroll = false;
+            activeDownloadsList.PerformLayout();
         }
 
         private Point CaptureContentScroll()
@@ -16045,15 +16187,18 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             bool studioInline = IsStudioActiveDownloadsList(activeDownloadsList);
             bool audioInline = audioVariant && currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
             int taskListWidth = activeDownloadsList == null ? 320 : activeDownloadsList.ClientSize.Width;
-            if (activeDownloadsList != null && activeDownloadsList.AutoScroll)
+            bool hasVerticalScroll = activeDownloadsList != null && activeDownloadsList.AutoScroll &&
+                activeDownloadsList.VerticalScroll.Visible;
+            if (hasVerticalScroll)
                 taskListWidth -= SystemInformation.VerticalScrollBarWidth;
             // Keep the task row inside the actual list viewport. A fixed
             // minimum width can create a horizontal scrollbar on small windows.
-            int taskRowWidth = Math.Max(1, taskListWidth - 16);
+            int taskRowWidth = Math.Max(1, taskListWidth - 20);
             Panel row = new RoundedPanel
             {
                 Width = taskRowWidth,
-                Height = 84,
+                Height = Math.Max(DownloadTaskRowHeight, 84),
+                MinimumSize = new Size(taskRowWidth, DownloadTaskRowHeight),
                 Margin = new Padding(0, 0, 0, 8),
                 BackColor = audioInline ? Color.White : (studioInline ? StudioRecordCardBack() : DialogCardBack()),
                 Padding = Padding.Empty
@@ -16245,6 +16390,16 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             if (!audioVariant || audioOverallProgress == null || audioOverallProgress.IsDisposed) return;
             List<DownloadTask> tasks;
             lock (activeDownloadsLock) tasks = new List<DownloadTask>(activeDownloads);
+            if (progressPanel != null && !progressPanel.IsDisposed)
+            {
+                bool hasQueuedAudioTask = tasks.Any(delegate(DownloadTask item)
+                {
+                    return item != null && !item.Finished && !item.CancelRequested;
+                });
+                progressPanel.Visible = currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase)
+                    ? false
+                    : hasQueuedAudioTask;
+            }
             long received = 0;
             long total = 0;
             bool hasActiveTask = false;
@@ -16325,10 +16480,14 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 recordsList.Columns[3].Width = Math.Max(1, usable - time - result - name);
                 return;
             }
-            recordsList.Columns[0].Width = 122;
-            recordsList.Columns[1].Width = 86;
-            recordsList.Columns[2].Width = Math.Max(220, width - 122 - 86 - 170);
-            recordsList.Columns[3].Width = Math.Max(170, width - recordsList.Columns[0].Width - recordsList.Columns[1].Width - recordsList.Columns[2].Width);
+            int available = Math.Max(4, width - 4);
+            int timeWidth = Math.Max(1, (int)(available * 0.18));
+            int resultWidth = Math.Max(1, (int)(available * 0.13));
+            int nameWidth = Math.Max(1, (int)(available * 0.31));
+            recordsList.Columns[0].Width = timeWidth;
+            recordsList.Columns[1].Width = resultWidth;
+            recordsList.Columns[2].Width = nameWidth;
+            recordsList.Columns[3].Width = Math.Max(1, available - timeWidth - resultWidth - nameWidth);
         }
 
         private static Color DialogBodyBack()
@@ -16740,7 +16899,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.BackColor = Bg;
                 content.AutoScroll = true;
 
-                int available = Math.Max(560, TunerContentWidth() - 4);
+                int available = Math.Max(1, TunerContentWidth() - 4);
                 ClientSettings settings = LoadClientSettings();
                 RoundedPanel page = new RoundedPanel
                 {
@@ -17099,7 +17258,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 4);
+                int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
                 int bodyHeight = Math.Max(300, content.ClientSize.Height - 52);
                 ClientSettings settings = LoadClientSettings();
 
@@ -17197,9 +17356,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 content.FlowDirection = FlowDirection.TopDown;
                 content.WrapContents = false;
                 content.BackColor = Color.FromArgb(248, 249, 250);
-                int available = Math.Max(560, content.ClientSize.Width - 8);
+                int available = Math.Max(1, content.ClientSize.Width - content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 10);
                 int pageHeight = Math.Max(300, content.ClientSize.Height - 8);
-                int activeHeight = Math.Max(140, Math.Min(154, (int)(pageHeight * 0.34)));
+                int activeHeight = Math.Max(172, Math.Min(190, (int)(pageHeight * 0.38)));
                 int recordHeight = Math.Max(92, pageHeight - activeHeight - 122);
                 content.Controls.Add(new Label
                 {
@@ -17305,6 +17464,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             content.SuspendLayout();
             try
             {
+                ResetContentScrollState();
                 ClearChildControls(content);
                 content.AutoScroll = true;
                 content.VerticalScroll.Enabled = true;
@@ -17408,12 +17568,15 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 FillDownloadRecordsIntoList(recordsList);
                 HideNativeScrollBars(recordsList);
                 RenderActiveDownloads();
+                ResizeDownloadRecordColumns();
                 status.Text = "下载页面";
             }
             finally
             {
                 content.ResumeLayout();
                 EndContentRender();
+                UpdateContentScrolling();
+                DisableHorizontalScrollbars(content);
             }
         }
 
