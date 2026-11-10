@@ -1270,7 +1270,9 @@ namespace ToolboxClient
                 recordsButton.Visible = false;
                 topMostButton.Visible = false;
                 contactButton.Visible = false;
-                themeButton.Visible = false;
+                // Xinggui keeps the compact chrome, but exposes the theme switch so
+                // users can move between the original midnight palette and its light counterpart.
+                themeButton.Visible = true;
                 minButton.Margin = new Padding(0, 0, 2, 0);
                 maxButton.Visible = false;
             }
@@ -3611,7 +3613,6 @@ namespace ToolboxClient
         private void ApplyTunerThemeToShell()
         {
             if (!tunerVariant && !vst76Variant) return;
-            if (xingguiVariant) ApplyXingguiPalette(!LightTheme);
             BackColor = Bg;
             ForeColor = TextColor;
             ApplyTunerThemeToControlTree(this);
@@ -5631,7 +5632,7 @@ namespace ToolboxClient
                     return;
                 }
 
-                int available = Math.Max(360, content.ClientSize.Width - 10);
+                int available = Math.Max(360, content.ClientSize.Width - content.Padding.Horizontal - 10);
                 if (portalVariant && !listMode)
                 {
                     Dictionary<string, object> app = AsDict(Get(config, "app"));
@@ -5647,8 +5648,9 @@ namespace ToolboxClient
                 }
                 int columns = (portalVariant || studioVariant) ? 3 : 4;
                 const int gap = 12;
-                int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 150);
-                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - gap * columns) / columns);
+                int minCardWidth = portalVariant ? 230 : (studioVariant ? 190 : 1);
+                int cardHorizontalMargin = listMode ? 0 : 12;
+                int cardWidth = listMode ? available : Math.Max(minCardWidth, (available - (gap + cardHorizontalMargin) * columns) / columns);
                 int cardHeight = listMode ? 52 : (portalVariant ? 118 : (studioVariant ? 42 : 52));
                 for (int i = 0; i < buttons.Count; i++)
                 {
@@ -14970,7 +14972,8 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             settings.Theme = nextDark ? "dark" : "light";
             SaveClientSettings(settings);
             string pageBeforeThemeChange = currentPage;
-            ApplyTunerPalette(nextDark);
+            if (xingguiVariant) ApplyXingguiPalette(nextDark);
+            else ApplyTunerPalette(nextDark);
             ApplyTunerThemeToShell();
             ApplyResourceSearchTheme();
             currentPage = String.IsNullOrWhiteSpace(pageBeforeThemeChange) ? TunerHomePageId : pageBeforeThemeChange;
@@ -20505,14 +20508,21 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
                 if (XingguiBusinessMode)
                 {
                     Rectangle row = new Rectangle(0, 0, Width - 1, Height - 1);
+                    Color rowFill = LightTheme
+                        ? (hovered ? Color.FromArgb(232, 245, 244) : Color.FromArgb(242, 248, 247))
+                        : (hovered ? Color.FromArgb(54, 52, 70) : Color.FromArgb(43, 42, 57));
+                    Color rowBorder = LightTheme ? Color.FromArgb(213, 230, 227) : Color.FromArgb(43, 42, 57);
+                    Color rowText = LightTheme ? Color.FromArgb(31, 55, 59) : TextColor;
                     using (GraphicsPath rowPath = RoundRect(row, 9))
-                    using (SolidBrush rowBrush = new SolidBrush(hovered ? Color.FromArgb(54, 52, 70) : Color.FromArgb(43, 42, 57)))
+                    using (SolidBrush rowBrush = new SolidBrush(rowFill))
+                    using (Pen rowPen = new Pen(rowBorder, 1F))
                     {
                         g.FillPath(rowBrush, rowPath);
+                        g.DrawPath(rowPen, rowPath);
                     }
-                    using (SolidBrush dot = new SolidBrush(Color.FromArgb(0, 211, 235)))
+                    using (SolidBrush dot = new SolidBrush(LightTheme ? Color.FromArgb(0, 130, 153) : Color.FromArgb(0, 211, 235)))
                         g.FillEllipse(dot, new Rectangle(Width / 2 - 70, Height / 2 - 3, 6, 6));
-                    TextRenderer.DrawText(g, Title, new Font(Font.FontFamily, 8.5F, FontStyle.Regular), new Rectangle(Width / 2 - 58, 0, Math.Min(Width - 68, 310), Height), TextColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    TextRenderer.DrawText(g, Title, new Font(Font.FontFamily, 8.5F, FontStyle.Regular), new Rectangle(Width / 2 - 58, 0, Math.Min(Width - 68, 310), Height), rowText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
                     return;
                 }
                 if (XingguiHomeMode)

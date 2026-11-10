@@ -2458,7 +2458,7 @@ function renderApp() {
 
 function normalizeAdminTheme(value) {
   const theme = String(value || '').toLowerCase();
-  return ['light', 'dark', 'dayblue'].includes(theme) ? theme : 'light';
+  return ['light', 'dark', 'dayblue'].includes(theme) ? theme : 'dark';
 }
 
 function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) {
@@ -2487,7 +2487,7 @@ function applyAdminTheme(theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY)) 
 
 function toggleAdminTheme() {
   const current = normalizeAdminTheme(localStorage.getItem(ADMIN_THEME_STORAGE_KEY));
-  const next = { light: 'dark', dark: 'dayblue', dayblue: 'light' }[current];
+  const next = { dark: 'light', light: 'dayblue', dayblue: 'dark' }[current];
   localStorage.setItem(ADMIN_THEME_STORAGE_KEY, next);
   applyAdminTheme(next);
 }
