@@ -206,6 +206,7 @@ class CloudResolverTests(unittest.TestCase):
         with patch.object(RESOLVER, "_provider_parse_configured", return_value=[{
             "id": "file-1", "name": "demo.exe", "size": 12,
             "downloadUrl": "https://download.example/demo.exe",
+            "downloadHeaders": {"Referer": "https://share.example/", "X-Download-Token": "fixture"},
         }]) as parse_mock:
             status, payload = self.call("alice", "/api/cloud-resolver/button-download", "POST", {
                 "buttonId": button["id"],
@@ -213,6 +214,7 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["files"][0]["name"], "demo.exe")
         self.assertEqual(payload["files"][0]["url"], "https://download.example/demo.exe")
+        self.assertEqual(payload["files"][0]["headers"], {"Referer": "https://share.example/", "X-Download-Token": "fixture"})
         self.assertNotIn("backup_url", payload["files"][0])
         self.assertNotIn("download-file", payload["files"][0]["url"])
         self.assertEqual(parse_mock.call_args.args[0], "qaiu")

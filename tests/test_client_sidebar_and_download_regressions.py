@@ -33,6 +33,17 @@ class ClientSidebarAndDownloadRegressionTests(unittest.TestCase):
         self.assertIn("LooksLikeDirectDownloadFile(originalUrl)", self.source)
         self.assertIn("int timeout = 12000;", self.source)
 
+    def test_cloud_resolver_button_forwards_provider_headers_through_redirect_downloads(self):
+        start = self.method("private void StartCloudResolverButtonDownload", "private string CloudResolverErrorMessage")
+        self.assertIn('AsStringDictionary(Get(file, "headers"))', start)
+        self.assertIn("PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary, downloadHeaders)", self.source)
+        self.assertIn("result.DownloadHeaders = downloadHeaders == null", self.source)
+        self.assertIn("task.DownloadHeaders[header.Key] = header.Value", self.source)
+        request = self.method("private static HttpWebRequest CreateDownloadHttpRequest(DownloadTask task", "private static void TrySetReferer")
+        self.assertIn("foreach (KeyValuePair<string, string> header in task.DownloadHeaders)", request)
+        self.assertIn("TrySetReferer(request, header.Value)", request)
+        self.assertIn('request.Headers[header.Key] = header.Value', request)
+
     @classmethod
     def setUpClass(cls):
         cls.source = CLIENT_SOURCE.read_text(encoding="utf-8")

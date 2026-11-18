@@ -2432,7 +2432,10 @@ def _resolve_button_download(handler, app, user):
                 direct_url = str(item.get("downloadUrl") or "").strip()
                 public_files.append({"name": str(item.get("name") or "download"),
                                      "url": direct_url,
-                                     "size": item.get("size", 0)})
+                                     "size": item.get("size", 0),
+                                     # Some QAIU 302 endpoints require the
+                                     # provider referer/header on every hop.
+                                     "headers": dict(item.get("downloadHeaders") or {})})
             _save(app, store)
             return handler.send_json({"files": public_files})
         except Exception as exc:

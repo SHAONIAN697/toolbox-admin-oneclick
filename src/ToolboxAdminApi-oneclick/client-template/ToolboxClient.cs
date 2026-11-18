@@ -11407,7 +11407,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                         {
                             Dictionary<string, object> file = AsDict(raw);
                             string url = GetText(file, "url", "");
-                            if (!String.IsNullOrWhiteSpace(url)) DownloadFile(url, SafeDownloadFileName(GetText(file, "name", "download.bin")), "", "", "", false, BuildActionDownloadKey(new Dictionary<string, object> { { "id", buttonId } }));
+                            if (!String.IsNullOrWhiteSpace(url)) DownloadFile(url, SafeDownloadFileName(GetText(file, "name", "download.bin")), "", "", "", false, BuildActionDownloadKey(new Dictionary<string, object> { { "id", buttonId } }), "", false, AsStringDictionary(Get(file, "headers")));
                         }
                         status.Text = "已加入解析下载队列：" + displayName;
                     });
@@ -12526,7 +12526,7 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             DownloadFile(url, displayName, backupUrl, backupPageUrl, customDirectory, deleteOnExit, downloadKey, "", false);
         }
 
-        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary)
+        private void DownloadFile(string url, string displayName, string backupUrl, string backupPageUrl, string customDirectory, bool deleteOnExit, string downloadKey, string packageGroupId, bool packagePrimary, Dictionary<string, string> downloadHeaders = null)
         {
             string originalUrl = (url ?? "").Trim();
             if (String.IsNullOrWhiteSpace(originalUrl)) return;
@@ -12537,10 +12537,10 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
                 : PortalText("正在解析下载地址...", "Preparing download...");
             customDirectory = (customDirectory ?? "").Trim();
             if (String.IsNullOrWhiteSpace(customDirectory)) deleteOnExit = false;
-            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary); });
+            ThreadPool.QueueUserWorkItem(delegate { PrepareDownloadRequestWorker(originalUrl, displayName, customDirectory, deleteOnExit, backupUrl, backupPageUrl, downloadKey, packageGroupId, packagePrimary, downloadHeaders); });
         }
 
-        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey, string packageGroupId, bool packagePrimary)
+        private void PrepareDownloadRequestWorker(string originalUrl, string displayName, string customDirectory, bool deleteOnExit, string backupUrl, string backupPageUrl, string downloadKey, string packageGroupId, bool packagePrimary, Dictionary<string, string> downloadHeaders = null)
         {
             DownloadPrepareResult result = new DownloadPrepareResult();
             result.OriginalUrl = originalUrl;
@@ -12552,6 +12552,9 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             result.DeleteOnExit = deleteOnExit;
             result.BackupUrl = (backupUrl ?? "").Trim();
             result.BackupPageUrl = (backupPageUrl ?? "").Trim();
+            result.DownloadHeaders = downloadHeaders == null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(downloadHeaders, StringComparer.OrdinalIgnoreCase);
             try
             {
                 result.Download = ResolveDownloadRequest(originalUrl);
@@ -12682,6 +12685,13 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             task.BackupUrl = result.BackupUrl;
             task.BackupPageUrl = result.BackupPageUrl;
             task.FastStartDirectDownload = download.FastStartDirectDownload;
+            if (result.DownloadHeaders != null)
+            {
+                foreach (KeyValuePair<string, string> header in result.DownloadHeaders)
+                {
+                    if (!String.IsNullOrWhiteSpace(header.Key) && !String.IsNullOrWhiteSpace(header.Value)) task.DownloadHeaders[header.Key] = header.Value;
+                }
+            }
             if (File.Exists(path)) task.Received = new FileInfo(path).Length;
             task.StateText = PortalText("等待中", "Queued");
             lock (activeDownloadsLock) activeDownloads.Add(task);
@@ -14069,6 +14079,34 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             request.ServicePoint.ConnectionLimit = Math.Max(request.ServicePoint.ConnectionLimit, MaxSegmentedDownloadConnections + 8);
             request.ServicePoint.UseNagleAlgorithm = false;
             try { request.Headers[HttpRequestHeader.AcceptEncoding] = "identity"; } catch { }
+            if (task != null)
+            {
+                foreach (KeyValuePair<string, string> header in task.DownloadHeaders)
+                {
+                    if (String.Equals(header.Key, "Referer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        TrySetReferer(request, header.Value);
+                    }
+                    else if (String.Equals(header.Key, "User-Agent", StringComparison.OrdinalIgnoreCase))
+                    {
+                        request.UserAgent = header.Value;
+                    }
+                    else if (String.Equals(header.Key, "Accept", StringComparison.OrdinalIgnoreCase))
+                    {
+                        request.Accept = header.Value;
+                    }
+                    else if (String.Equals(header.Key, "Accept-Language", StringComparison.OrdinalIgnoreCase) ||
+                             String.Equals(header.Key, "Origin", StringComparison.OrdinalIgnoreCase) ||
+                             String.Equals(header.Key, "X-Requested-With", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { request.Headers[header.Key] = header.Value; } catch { }
+                    }
+                    else
+                    {
+                        try { request.Headers[header.Key] = header.Value; } catch { }
+                    }
+                }
+            }
             string referer = task == null ? "" : task.Referer;
             if (String.IsNullOrWhiteSpace(referer) && task != null && !String.IsNullOrWhiteSpace(task.OriginalUrl) && !String.Equals(task.OriginalUrl, url, StringComparison.OrdinalIgnoreCase))
             {
@@ -18964,6 +19002,18 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
             return dict ?? new Dictionary<string, object>();
         }
 
+        private static Dictionary<string, string> AsStringDictionary(object value)
+        {
+            Dictionary<string, string> result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (KeyValuePair<string, object> pair in AsDict(value))
+            {
+                if (pair.Value == null) continue;
+                string text = Convert.ToString(pair.Value);
+                if (!String.IsNullOrWhiteSpace(pair.Key) && !String.IsNullOrWhiteSpace(text)) result[pair.Key] = text;
+            }
+            return result;
+        }
+
         private static IList<object> AsList(object value)
         {
             List<object> list = new List<object>();
@@ -21408,6 +21458,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public string BackupUrl = "";
             public string BackupPageUrl = "";
             public string DownloadKey = "";
+            public Dictionary<string, string> DownloadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             public string PackageGroupId = "";
             public bool PackagePrimary;
         }
@@ -21499,6 +21550,7 @@ double scale = Math.Min((double)iconBox / Math.Max(1, IconImage.Width), (double)
             public volatile string PartPath = "";
             public volatile string LastResolvedUrl = "";
             public volatile string Referer = "";
+            public readonly Dictionary<string, string> DownloadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             public readonly object RedirectLock = new object();
             public volatile bool RestoredPaused;
             public int WorkerRunning;
