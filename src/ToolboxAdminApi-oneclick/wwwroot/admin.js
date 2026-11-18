@@ -242,7 +242,7 @@ const VIEW_TITLES = {
   users: ['用户管理', '管理账号、邀请码和用户专属对接地址。'],
   agents: ['代理管理', '管理代理层级、分支开通限制与订单分账。'],
   audit: ['操作日志', '查看所有账号的后台登录和操作记录。'],
-  system: ['系统管理', '配置邮箱、通知、支付、模板和隐藏入口。'],
+  system: ['系统管理', '配置品牌、邮箱、通知、支付与模板。'],
   json: ['JSON 管理', '直接编辑当前用户的完整配置 JSON。'],
   exchange: ['配置交换', '导出、导入配置文件，或生成云端链接分享给别人。'],
   dock: ['工具箱对接', '选择工具箱 UI 版本并下载当前用户专属 EXE。'],
@@ -790,6 +790,7 @@ async function loadAll() {
     await loadBuiltinFunctions();
     await loadClientVariants();
     state.config = await api(configApiPath());
+    await loadPublicBrand();
     state.buttons = await api(buttonsApiPath());
     await loadCloudResolver();
     renderAll();
@@ -853,7 +854,9 @@ function showApp() {
 async function loadPublicBrand() {
   try {
     const brand = await api('/api/public/brand');
+    state.adminBrand = brand;
     $('loginTitle').textContent = brand.title || '工具箱后台登录';
+    applyAdminBrand(brand);
     const hint = (brand.hint || '').trim();
     $('loginHint').textContent = hint;
     $('loginHint').hidden = !hint;
@@ -2422,8 +2425,12 @@ function renderApp() {
   refreshImageUrlPreviews();
   ensureExeIconField();
   $('appExeIcon').value = app.exe_icon || app.exe_icon_url || '';
-  $('loginTitleInput').value = app.admin_title || '工具箱后台登录';
-  $('loginHintInput').value = app.login_hint || '';
+  const brand = state.adminBrand || {};
+  $('loginTitleInput').value = brand.title || '工具箱后台登录';
+  $('loginHintInput').value = brand.hint || '';
+  Object.entries(ADMIN_BRAND_INPUTS).forEach(([id, key]) => { if ($(id)) $(id).value = brand[key] || ''; });
+  applyAdminBrand(brand);
+  renderAdminBrandPreview();
   const loginPanel = $('appLoginPanel');
   const isSuper = state.currentUser?.role === 'super';
   document.body.classList.toggle('is-super-admin', isSuper);
@@ -2509,7 +2516,10 @@ function organizeOverviewCards() {
 
   const stats = view.querySelector('.stats');
   const passwordPanel = createOverviewPanel('启动密码', 'appPasswordPanel', 'saveAppPasswordBtn', '保存启动密码');
-  const loginPanel = createOverviewPanel('登录页设置', 'appLoginPanel', 'saveAppLoginBtn', '保存登录页');
+  const loginPanel = createOverviewPanel('品牌与登录页', 'appLoginPanel', 'saveAppLoginBtn', '保存品牌设置');
+  loginPanel.classList.add('collapsible-panel', 'is-collapsed');
+  loginPanel.dataset.collapsiblePanel = '';
+  loginPanel.dataset.defaultCollapsed = '1';
   const propertyPanel = createOverviewPanel('EXE 属性', 'appPropertyPanel', 'saveAppExeBtn', '保存 EXE');
   const pageAccessPanel = ensurePageAccessPanel();
   const updatePanel = createOverviewPanel('更新入口', 'appUpdatePanel', 'saveAppUpdateBtn', '保存更新入口');
@@ -2517,7 +2527,7 @@ function organizeOverviewCards() {
   updatePanel.dataset.collapsiblePanel = '';
   updatePanel.dataset.defaultCollapsed = '1';
   const popupPanel = createPopupOverviewPanel();
-  view.insertBefore(loginPanel, stats);
+  $('view-system')?.prepend(loginPanel);
   view.insertBefore(passwordPanel, stats);
   view.insertBefore(propertyPanel, stats);
   view.insertBefore(updatePanel, stats);
@@ -2527,7 +2537,14 @@ function organizeOverviewCards() {
   bindOverviewSaveActions();
   bindPopupSettingsActions();
 
-  moveLabels(grid, loginPanel.querySelector('.form-grid'), ['loginTitleInput', 'loginHintInput']);
+  moveLabels(grid, loginPanel.querySelector('.form-grid'), ['adminBrandName', 'adminBrandSubtitle', 'adminBrandIcon', 'adminBrandMark', 'adminTabTitle', 'adminTabIconUrl', 'loginTitleInput', 'loginHintInput']);
+  const brandHelp = document.createElement('p');
+  brandHelp.className = 'muted brand-settings-help collapsible-body';
+  brandHelp.hidden = loginPanel.classList.contains('is-collapsed');
+  brandHelp.textContent = '全站后台共用，保存后立即生效。留空恢复项目默认值；品牌图标留空显示品牌文字。下方预览尚未保存的侧栏效果。此处仅设置显示品牌，项目版权声明与作者署名保持原样。';
+  loginPanel.querySelector('.panel-head').after(brandHelp);
+  loginPanel.querySelector('.form-grid').appendChild($('adminBrandPreview'));
+  Object.keys(ADMIN_BRAND_INPUTS).forEach((id) => $(id)?.addEventListener('input', renderAdminBrandPreview));
   moveLabels(grid, passwordPanel.querySelector('.form-grid'), ['appPasswordEnabled', 'appPassword']);
   moveLabels(grid, propertyPanel.querySelector('.form-grid'), ['appExeTitle', 'appExeDescription', 'appExeProduct', 'appExeVersion', 'appExeCompany', 'appExeCopyright']);
   const updateVariants = $('appUpdateVariants');
@@ -3613,7 +3630,6 @@ function renderSystemSettings() {
   if ($('payAlipayOrder')) $('payAlipayOrder').value = Number(pay.alipayOrder || 20);
   renderPayGatewayCards();
   renderClientVariantSettings();
-  renderEsportsAudioModuleSettings();
   renderOrders();
   renderBuiltinFunctions();
   renderMenuIcons();
@@ -3865,6 +3881,7 @@ function renderEsportsAudioModuleSettings() {
   if ($('esportsAudioAdminPrompt')) $('esportsAudioAdminPrompt').value = module.adminPrompt || '';
   if ($('esportsAudioUpdateNotes')) $('esportsAudioUpdateNotes').value = module.updateNotes || '';
 }
+
 
 async function saveEsportsAudioModule() {
   const value = (id) => $(id)?.value.trim() || '';
@@ -5986,15 +6003,74 @@ async function saveButtonContentLayout(nextValue) {
   }
 }
 
+const ADMIN_BRAND_INPUTS = {
+  adminBrandName: 'admin_brand_name', adminBrandSubtitle: 'admin_brand_subtitle',
+  adminBrandIcon: 'admin_brand_icon', adminBrandMark: 'admin_brand_mark',
+  adminTabTitle: 'admin_tab_title', adminTabIconUrl: 'admin_tab_icon'
+};
+
+function adminBrandDraft() {
+  return Object.fromEntries(Object.entries(ADMIN_BRAND_INPUTS).map(([id, key]) => [key, $(id)?.value.trim() || '']));
+}
+
+function paintAdminBrandIcon(element, icon, mark) {
+  if (!element) return;
+  element.replaceChildren();
+  element.style.backgroundImage = '';
+  element.classList.toggle('has-brand-image', !!icon);
+  element.textContent = mark;
+  if (icon) {
+    const img = document.createElement('img');
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => { element.replaceChildren(img); };
+    img.onerror = () => { element.classList.remove('has-brand-image'); };
+    img.src = icon;
+  }
+}
+
+function renderAdminBrandPreview() {
+  const draft = adminBrandDraft();
+  if (!$('adminBrandPreview')) return;
+  $('adminBrandPreviewName').textContent = draft.admin_brand_name || '工具箱后台';
+  $('adminBrandPreviewSubtitle').textContent = draft.admin_brand_subtitle || '少年科技工作室 · 配置中心';
+  const icon = /^(https:\/\/|\/(?!\/))/.test(draft.admin_brand_icon) ? draft.admin_brand_icon : '';
+  paintAdminBrandIcon($('adminBrandPreviewIcon'), icon, draft.admin_brand_mark || '少');
+}
+
 async function saveAppLoginSettings() {
   if (state.currentUser?.role !== 'super') {
     setStatus('只有总管理员可以保存登录页设置。', true);
     return;
   }
-  await saveAppPatch({
-    admin_title: $('loginTitleInput')?.value.trim() || '工具箱后台登录',
-    login_hint: $('loginHintInput').value.trim()
-  }, '登录页设置已保存。');
+  const button = $('saveAppLoginBtn');
+  const patch = { ...adminBrandDraft(), admin_title: $('loginTitleInput').value.trim(), login_hint: $('loginHintInput').value.trim() };
+  button.disabled = true;
+  button.textContent = '正在保存…';
+  try {
+    const brand = await api('/api/super/brand', { method: 'PATCH', body: JSON.stringify(patch) });
+    state.adminBrand = brand;
+    renderApp();
+    setStatus('后台品牌设置已保存，显示已更新。');
+  } finally {
+    button.disabled = false;
+    button.textContent = '保存品牌设置';
+  }
+}
+
+function applyAdminBrand(app = {}) {
+  const name = String(app.brandName || app.admin_brand_name || '工具箱后台').trim();
+  const subtitle = String(app.brandSubtitle || app.admin_brand_subtitle || '少年科技工作室 · 配置中心').trim();
+  const icon = String(app.admin_brand_icon || app.brandIcon || '').trim();
+  const mark = String(app.admin_brand_mark || '少').trim();
+  ['brandName', 'loginBrandName'].forEach((id) => { if ($(id)) $(id).textContent = name; });
+  const loginKicker = document.querySelector('.login-context-kicker'); if (loginKicker) loginKicker.textContent = name;
+  ['brandSubtitle', 'loginBrandSubtitle'].forEach((id) => { if ($(id)) $(id).textContent = subtitle; });
+  ['brandMark', 'loginProductMark'].forEach((id) => paintAdminBrandIcon($(id), icon, mark));
+  ['adminFavicon', 'adminTabIcon'].forEach((id) => { if ($(id)) $(id).href = app.admin_tab_icon || '/assets/toolbox-default-icon.png'; });
+  document.title = app.admin_tab_title || '工具箱后台 | 少年科技工作室';
+  if ($('loginTitle')) $('loginTitle').textContent = app.title || app.admin_title || '工具箱后台登录';
+  if ($('loginHint')) { $('loginHint').textContent = app.hint || app.login_hint || ''; $('loginHint').hidden = !$('loginHint').textContent; }
 }
 
 async function saveAppPasswordSettings() {

@@ -5183,6 +5183,15 @@ body.theme-dayblue #invitePaymentOverlay .payment-confirm {
 .cloud-line-row label input[type="checkbox"] { width: 16px; min-width: 16px; }
 .cloud-line-row button { white-space: nowrap; min-height: 40px; }
 .cloud-resolver-button-control > [data-cloud-add] { min-height: 42px; width: 100%; }
+.brand-mark.has-brand-image, .login-product-mark.has-brand-image { overflow: hidden; }
+.brand-mark img, .login-product-mark img, #adminBrandPreviewIcon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.brand-settings-help { margin: 0 0 20px; max-width: 880px; line-height: 1.7; }
+.admin-brand-preview { display: flex; align-items: center; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+#adminBrandPreviewIcon { display: grid; place-items: center; flex: 0 0 40px; height: 40px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-weight: 700; }
+.admin-brand-preview > div { min-width: 0; }
+.admin-brand-preview strong, .admin-brand-preview small { display: block; overflow-wrap: anywhere; }
+.admin-brand-preview small { margin-top: 4px; color: var(--muted); }
+.brand strong, .brand span { overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .cloud-line-row { grid-template-columns: 1fr 1fr; }
   .cloud-line-row [data-cloud-url] { grid-column: 1 / -1; }

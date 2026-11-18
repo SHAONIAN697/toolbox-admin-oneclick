@@ -2427,8 +2427,12 @@ def _resolve_button_download(handler, app, user):
                 source.update({"downloadUrl": item.get("downloadUrl") or "", "backupUrl": item.get("backupUrl") or "",
                                "downloadHeaders": item.get("downloadHeaders") or {}, "updatedAt": _iso(_now()), "status": "draft"})
                 source["resolvedAt"] = time.time()
+                # Return only the upstream URL; the client follows provider redirects
+                # and downloads directly without routing file bytes through this server.
+                direct_url = str(item.get("downloadUrl") or "").strip()
                 public_files.append({"name": str(item.get("name") or "download"),
-                                     "url": _cloud_proxy_url(handler, source["id"], api_key), "size": item.get("size", 0)})
+                                     "url": direct_url,
+                                     "size": item.get("size", 0)})
             _save(app, store)
             return handler.send_json({"files": public_files})
         except Exception as exc:

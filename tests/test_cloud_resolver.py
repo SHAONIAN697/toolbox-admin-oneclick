@@ -212,6 +212,9 @@ class CloudResolverTests(unittest.TestCase):
             })
         self.assertEqual(status, 200)
         self.assertEqual(payload["files"][0]["name"], "demo.exe")
+        self.assertEqual(payload["files"][0]["url"], "https://download.example/demo.exe")
+        self.assertNotIn("backup_url", payload["files"][0])
+        self.assertNotIn("download-file", payload["files"][0]["url"])
         self.assertEqual(parse_mock.call_args.args[0], "qaiu")
         self.assertEqual(parse_mock.call_args.args[3], self.qaiu_key)
 

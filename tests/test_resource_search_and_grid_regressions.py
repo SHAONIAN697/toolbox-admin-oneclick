@@ -1,3 +1,7 @@
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -130,6 +134,92 @@ class ResourceSearchAndGridRegressionTests(unittest.TestCase):
         self.assertIn("int requiredScrollBottom = requiredBottom + bottomPadding;", self.source)
         self.assertIn("Size desiredMinSize = new Size(0, requiredScrollBottom);", self.source)
         self.assertIn("content.HorizontalScroll.Enabled = false;", self.source)
+
+    @unittest.skipUnless(os.name == "nt", "WinForms runtime regression requires Windows")
+    def test_many_buttons_can_scroll_last_row_into_view(self):
+        windows = Path(os.environ.get("WINDIR", r"C:\Windows"))
+        compiler = shutil.which("csc") or next((str(path) for path in (
+            windows / "Microsoft.NET/Framework64/v4.0.30319/csc.exe",
+            windows / "Microsoft.NET/Framework/v4.0.30319/csc.exe",
+        ) if path.exists()), None)
+        if not compiler:
+            self.skipTest("C# compiler is not installed")
+
+        start = self.source.index("private void UpdateContentScrolling()")
+        end = self.source.index("private void BuildResourceSearchChrome()", start)
+        method = self.source[start:end].strip().replace("private void UpdateContentScrolling()", "public void UpdateContentScrolling()", 1)
+        harness = r'''using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Windows.Forms;
+class ScrollHarness : Form {
+    public FlowLayoutPanel content;
+    bool audioVariant = false;
+    bool portalVariant = false, tunerVariant = false, studioVariant = false, vst76Variant = false, xingguiVariant = false;
+    List<object> currentSections = new List<object>();
+    string currentPage = "buttons";
+    Dictionary<string, object> config = new Dictionary<string, object>();
+    int contentResizeCount = 0;
+    public ScrollHarness() {
+        ClientSize = new Size(820, 300);
+        content = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = false,
+            FlowDirection = FlowDirection.LeftToRight, WrapContents = true,
+            Padding = new Padding(0, 28, 0, 0) };
+        content.Resize += delegate { contentResizeCount++; };
+        Controls.Add(content);
+        for (int i = 0; i < 28; i++) content.Controls.Add(new Button {
+            Text = "Button " + i, Width = 158, Height = 52,
+            Margin = new Padding(0, 0, 12, 12) });
+    }
+    static Dictionary<string, object> AsDict(object value) { return value as Dictionary<string, object> ?? new Dictionary<string, object>(); }
+    static object Get(Dictionary<string, object> value, string key) { object result; return value.TryGetValue(key, out result) ? result : null; }
+    void DisableHorizontalScrollbars(Control control) { }
+    __UPDATE_SCROLLING__
+    public void Verify() {
+        Show(); Application.DoEvents(); UpdateContentScrolling(); Application.DoEvents();
+        content.AutoScrollPosition = new Point(0, content.VerticalScroll.Maximum);
+        Application.DoEvents();
+        Control last = content.Controls[content.Controls.Count - 1];
+        if (!content.VerticalScroll.Visible || content.AutoScrollPosition.Y >= 0 || last.Bottom > content.ClientSize.Height)
+            throw new Exception("Last button is outside the scrollable viewport: bottom=" + last.Bottom + ", viewport=" + content.ClientSize.Height + ", scroll=" + content.AutoScrollPosition.Y);
+        bool lastButtonClicked = false;
+        last.Click += delegate { lastButtonClicked = true; };
+        ((Button)last).PerformClick();
+        if (!lastButtonClicked) throw new Exception("Last button is not clickable after scrolling");
+        int settledResizeCount = contentResizeCount;
+        for (int i = 0; i < 20; i++) UpdateContentScrolling();
+        Application.DoEvents();
+        if (contentResizeCount > settledResizeCount)
+            throw new Exception("Repeated scroll measurement kept resizing the content panel");
+        content.Controls.Clear();
+        for (int i = 0; i < 6; i++) content.Controls.Add(new Button {
+            Text = "Short " + i, Width = 158, Height = 52,
+            Margin = new Padding(0, 0, 12, 12) });
+        currentPage = "settings";
+        UpdateContentScrolling(); Application.DoEvents();
+        if (content.VerticalScroll.Visible || content.AutoScrollMinSize != Size.Empty)
+            throw new Exception("Short page retained the previous page's scroll extent");
+        currentPage = "buttons";
+        UpdateContentScrolling(); Application.DoEvents();
+        if (!content.VerticalScroll.Visible || content.AutoScrollMinSize.Height <= content.ClientSize.Height)
+            throw new Exception("Original button pages must keep a functional vertical scrollbar");
+    }
+    [STAThread] static void Main() { try { Application.EnableVisualStyles(); new ScrollHarness().Verify(); Console.WriteLine("last button reachable"); Console.Out.Flush(); Environment.Exit(0); } catch (Exception ex) { Console.Error.WriteLine(ex.Message); Console.Error.Flush(); Environment.Exit(1); } }
+}'''.replace("__UPDATE_SCROLLING__", method)
+
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "ScrollHarness.cs"
+            executable = Path(temp) / "ScrollHarness.exe"
+            source.write_text(harness, encoding="utf-8")
+            compile_result = subprocess.run([
+                compiler, "-nologo", "-target:exe", f"-out:{executable}",
+                "-r:System.dll", "-r:System.Core.dll", "-r:System.Windows.Forms.dll",
+                "-r:System.Drawing.dll", str(source),
+            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            self.assertEqual(0, compile_result.returncode, compile_result.stderr or compile_result.stdout)
+            run_result = subprocess.run([str(executable)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            self.assertIn("last button reachable", run_result.stdout)
+            self.assertIn(run_result.returncode, (0, 0xC000041D), run_result.stderr or run_result.stdout)
 
 
 if __name__ == "__main__":

@@ -10770,53 +10770,62 @@ ActionInfo = new ActionInfo { ItemId = GetText(item, "id", ""), Action = action,
         {
             if (content == null || content.IsDisposed || WindowState == FormWindowState.Minimized) return;
             Dictionary<string, object> pages = AsDict(Get(config, "pages"));
-            // Layout/scrollbar changes can synchronously invalidate the parent and
-            // cause a visible blank frame while a page is being rebuilt. Calculate
-            // the desired state first, then apply only actual changes as one batch.
-            content.SuspendLayout();
-            try
+            // Measure the current layout without toggling AutoScroll on every pass;
+            // doing so changes ClientSize and can repeatedly trigger resize handling.
+            content.PerformLayout();
+            int requiredBottom = content.Padding.Top;
+            foreach (Control child in content.Controls)
             {
+                if (!child.Visible) continue;
+                int logicalBottom = child.Bottom - content.AutoScrollPosition.Y;
+                requiredBottom = Math.Max(requiredBottom, logicalBottom + child.Margin.Bottom);
+            }
+            int bottomPadding = audioVariant
+                ? Math.Max(48, content.Padding.Bottom + 24)
+                : Math.Max(16, content.Padding.Bottom + 12);
+            int requiredScrollBottom = requiredBottom + bottomPadding;
+            bool originalVariant = !portalVariant && !tunerVariant && !studioVariant && !audioVariant && !vst76Variant && !xingguiVariant;
+            bool forceAudioSectionsScroll = audioVariant && currentSections != null && currentSections.Count > 0 &&
+                !currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase) &&
+                !currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase);
+            bool keepOriginalScrollContainer = originalVariant && content.Controls.Count > 0 &&
+                !currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase) &&
+                !currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase);
+            bool needsVerticalScroll = keepOriginalScrollContainer || forceAudioSectionsScroll ||
+                requiredScrollBottom > content.ClientSize.Height + 2;
+            if (needsVerticalScroll)
+            {
+                if (!content.AutoScroll) content.AutoScroll = true;
+                content.VerticalScroll.Enabled = true;
+                content.VerticalScroll.Visible = true;
+                if (forceAudioSectionsScroll || keepOriginalScrollContainer)
+                    requiredScrollBottom = Math.Max(requiredScrollBottom, content.ClientSize.Height + 1);
+                Size initialMinSize = new Size(0, requiredScrollBottom);
+                if (content.AutoScrollMinSize != initialMinSize) content.AutoScrollMinSize = initialMinSize;
                 content.PerformLayout();
-                int requiredBottom = content.Padding.Top;
-                int sequentialContentHeight = content.Padding.Vertical;
+                requiredBottom = content.Padding.Top;
                 foreach (Control child in content.Controls)
                 {
                     if (!child.Visible) continue;
-                    requiredBottom = Math.Max(requiredBottom, child.Bottom + child.Margin.Bottom);
-                    sequentialContentHeight += child.Height + child.Margin.Vertical;
+                    int logicalBottom = child.Bottom - content.AutoScrollPosition.Y;
+                    requiredBottom = Math.Max(requiredBottom, logicalBottom + child.Margin.Bottom);
                 }
-                int bottomPadding = audioVariant
-                    ? Math.Max(48, content.Padding.Bottom + 24)
-                    : Math.Max(16, content.Padding.Bottom + 12);
-                int requiredScrollBottom = Math.Max(requiredBottom, sequentialContentHeight) + bottomPadding + 8;
-                bool forceAudioSectionsScroll = audioVariant && currentSections != null && currentSections.Count > 0 &&
-                    !currentPage.Equals("downloads", StringComparison.OrdinalIgnoreCase) &&
-                    !currentPage.Equals("settings", StringComparison.OrdinalIgnoreCase);
-                bool needsVerticalScroll = forceAudioSectionsScroll || requiredScrollBottom > content.ClientSize.Height + 2;
-                if (content.AutoScroll != needsVerticalScroll) content.AutoScroll = needsVerticalScroll;
-                if (needsVerticalScroll)
-                {
-                    int minimumScrollableHeight = forceAudioSectionsScroll
-                        ? content.ClientSize.Height + 1
-                        : requiredScrollBottom;
-                    Size desiredMinSize = new Size(0, Math.Max(requiredScrollBottom, minimumScrollableHeight));
-                    if (content.AutoScrollMinSize != desiredMinSize) content.AutoScrollMinSize = desiredMinSize;
-                    content.VerticalScroll.Enabled = true;
-                    content.VerticalScroll.Visible = true;
-                }
-                else
-                {
-                    if (content.AutoScrollPosition != Point.Empty) content.AutoScrollPosition = Point.Empty;
-                    if (content.AutoScrollMinSize != Size.Empty) content.AutoScrollMinSize = Size.Empty;
-                    content.VerticalScroll.Visible = false;
-                }
-                content.HorizontalScroll.Enabled = false;
-                content.HorizontalScroll.Visible = false;
+                requiredScrollBottom = requiredBottom + bottomPadding;
+                if (forceAudioSectionsScroll || keepOriginalScrollContainer)
+                    requiredScrollBottom = Math.Max(requiredScrollBottom, content.ClientSize.Height + 1);
+                Size desiredMinSize = new Size(0, requiredScrollBottom);
+                if (content.AutoScrollMinSize != desiredMinSize) content.AutoScrollMinSize = desiredMinSize;
+                content.VerticalScroll.Visible = true;
             }
-            finally
+            else
             {
-                content.ResumeLayout(false);
+                if (content.AutoScrollPosition != Point.Empty) content.AutoScrollPosition = Point.Empty;
+                if (content.AutoScrollMinSize != Size.Empty) content.AutoScrollMinSize = Size.Empty;
+                content.VerticalScroll.Enabled = false;
+                content.VerticalScroll.Visible = false;
             }
+            content.HorizontalScroll.Enabled = false;
+            content.HorizontalScroll.Visible = false;
             DisableHorizontalScrollbars(content);
         }
 

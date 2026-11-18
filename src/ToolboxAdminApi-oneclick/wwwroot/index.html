@@ -7,19 +7,21 @@
   <meta name="author" content="少年科技工作室">
   <meta name="copyright" content="Copyright © 2026 少年科技工作室">
   <title>工具箱后台 | 少年科技工作室</title>
-  <link rel="stylesheet" href="/styles.css?v=2026111001">
+  <link rel="stylesheet" href="/styles.css?v=2026111801">
+  <link id="adminFavicon" rel="icon" href="/assets/toolbox-default-icon.png">
+  <link id="adminTabIcon" rel="shortcut icon" href="/assets/toolbox-default-icon.png">
 </head>
 <body class="theme-dark">
   <section class="login-screen" id="loginScreen">
     <div class="login-panel">
       <aside class="login-context" aria-label="工具箱后台信息">
         <div class="login-context-topline">
-          <div class="login-product-mark" aria-hidden="true">调</div>
+          <div class="login-product-mark" id="loginProductMark" aria-hidden="true">调</div>
           <button id="loginThemeToggle" class="login-theme-toggle" type="button" aria-pressed="false" title="切换主题"><svg class="theme-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg><span id="loginThemeToggleText">青绿</span></button>
         </div>
         <div class="login-context-copy"><p class="login-context-kicker">调音师工具箱</p><h2>把配置、资源与发布放在同一张工作台。</h2><p>登录后继续管理按钮、网盘资源、套餐与更新公告。</p></div>
         <div class="login-context-list" aria-label="后台工作范围"><div><strong>配置</strong><span>按钮与基础信息</span></div><div><strong>资源</strong><span>套餐、订单与网盘解析</span></div><div><strong>发布</strong><span>公告与客户端生成</span></div></div>
-        <p class="login-context-foot">工作台入口 · 仅限授权账号</p>
+        <p class="login-context-foot" id="loginBrandSubtitle">工作台入口 · 仅限授权账号</p>
       </aside>
       <div class="login-form-panel">
       <h1 id="loginTitle">工具箱后台登录</h1>
@@ -57,10 +59,10 @@
 
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">少</div>
+      <div class="brand-mark" id="brandMark">少</div>
       <div>
-        <strong>工具箱后台</strong>
-        <span>少年科技工作室 · 配置中心</span>
+        <strong id="brandName">工具箱后台</strong>
+        <span id="brandSubtitle">少年科技工作室 · 配置中心</span>
       </div>
     </div>
     <nav>
@@ -148,7 +150,15 @@
             <label for="appHomeBannerUrl">首页横幅链接</label><input id="appHomeBannerUrl" type="url" inputmode="url" placeholder="https://example.com/banner.webp">
             <div class="image-url-actions"><button type="button" data-image-preview="appHomeBannerUrl">预览</button><button type="button" class="secondary-btn" data-image-clear="appHomeBannerUrl">清除</button><img alt="首页横幅预览" hidden></div>
           </div>
-          <label>登录页提示<input id="loginHintInput"></label>
+          <label>品牌名称<input id="adminBrandName" maxlength="80"></label>
+          <label>品牌副标题<input id="adminBrandSubtitle" maxlength="120"></label>
+          <label>品牌图标<input id="adminBrandIcon" type="text" inputmode="url" placeholder="HTTPS 或 /uploads/...；留空显示品牌文字" maxlength="2048"></label>
+          <label>登录页标题<input id="loginTitleInput" maxlength="120"></label>
+          <label>登录页提示<input id="loginHintInput" maxlength="200"></label>
+          <label>浏览器标签标题<input id="adminTabTitle" maxlength="200"></label>
+          <label>浏览器标签图标<input id="adminTabIconUrl" type="text" inputmode="url" placeholder="HTTPS 或 /uploads/..." maxlength="2048"></label>
+          <label>默认品牌文字<input id="adminBrandMark" maxlength="8"></label>
+          <div id="adminBrandPreview" class="admin-brand-preview wide"><span id="adminBrandPreviewIcon" aria-hidden="true">少</span><div><strong id="adminBrandPreviewName">工具箱后台</strong><small id="adminBrandPreviewSubtitle">少年科技工作室 · 配置中心</small></div></div>
           <label>窗口宽度<input id="appWidth" type="number"></label>
           <label>窗口高度<input id="appHeight" type="number"></label>
           <label class="toggle-line">启用工具箱密码<span><input id="appPasswordEnabled" type="checkbox"> 启用</span></label>
@@ -504,27 +514,7 @@
         <p class="note">设置对接页中各款工具箱的名称、介绍与封面。封面可使用默认预览、上传到服务器或填写图床地址。</p>
         <div id="clientVariantSettings" class="variant-settings-grid"></div>
       </div>
-      <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1" id="esportsAudioModulePanel" hidden>
-        <div class="panel-head">
-          <h2>调音师工具箱电竞音频版</h2>
-          <button id="saveEsportsAudioModuleBtn" type="button">保存模块版本</button>
-        </div>
-        <p class="note">作为独立 Windows x64 安装器 EXE 分发，不进入 C# 客户端模板。客户端仅在有效账号配置同步后显示“电竞音频”入口；地址仅接受 HTTPS，并填写安装器 EXE 的 SHA256。</p>
-        <div class="form-grid compact">
-          <label class="toggle-line">版本状态<span><input id="esportsAudioEnabled" type="checkbox"> 启用并向已授权客户端显示</span></label>
-          <label>显示名称<input id="esportsAudioDisplayName" maxlength="80"></label>
-          <label>版本号<input id="esportsAudioVersion" maxlength="40" placeholder="例如：2.2.4"></label>
-          <label>Windows x64 安装器地址<input id="esportsAudioDownloadUrl" placeholder="https://.../调音师工具箱电竞音频版-2.2.4-windows-x64-installer.exe"></label>
-          <label>备用下载地址<input id="esportsAudioBackupUrl" placeholder="https://...备用 EXE 地址"></label>
-          <label>安装包文件名<input id="esportsAudioFileName" maxlength="160"></label>
-          <label class="wide">SHA256<input id="esportsAudioSha256" spellcheck="false" placeholder="64 位十六进制 SHA256"></label>
-          <label>最低系统要求<input id="esportsAudioMinimumSystem" maxlength="120"></label>
-          <label class="toggle-line">启动权限<span><input id="esportsAudioRequiresAdmin" type="checkbox"> 整体启动必须管理员（通常保持关闭）</span></label>
-          <label class="wide">权限提示<textarea id="esportsAudioAdminPrompt" rows="2" maxlength="500"></textarea></label>
-          <label class="wide">更新说明<textarea id="esportsAudioUpdateNotes" rows="3" maxlength="2000"></textarea></label>
-        </div>
-      </div>
-      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
+      <div class="panel collapsible-panel is-collapsed super-only" data-collapsible-panel data-default-collapsed="1">
         <div class="panel-head">
           <h2>邮箱设置</h2>
           <button id="saveMailBtn" type="button">保存</button>
@@ -553,42 +543,6 @@
           <label>系统管理菜单名称<input id="systemMenuName" placeholder="系统管理"></label>
           <label class="toggle-line">前台选中高亮<span><input id="systemFrontendGlow" type="checkbox"> 启用</span></label>
           <label class="toggle-line">前台分组数量<span><input id="systemFrontendGroupCount" type="checkbox"> 显示</span></label>
-        </div>
-      </div>
-      <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
-        <div class="panel-head">
-          <h2>隐藏入口弹窗</h2>
-          <button id="savePopupSettingsBtn" type="button">保存</button>
-        </div>
-        <div class="popup-settings">
-          <div class="form-grid compact">
-            <label class="toggle-line">启用隐藏入口<span><input id="popupEnabled" type="checkbox"> 启用</span></label>
-            <label>Logo 连续点击次数<input id="popupClickCount" type="number" min="1" max="20" step="1"></label>
-            <label>数据缓存分钟<input id="popupCacheMinutes" type="number" min="0" max="1440" step="1"></label>
-            <label>弹窗标题<input id="popupTitle" placeholder="联系我们 / 支持作者"></label>
-            <label class="wide">感谢文案<textarea id="popupThanksText" rows="3" placeholder="感谢你的支持，我们会持续维护和更新工具箱。"></textarea></label>
-          </div>
-          <div class="popup-admin-block">
-            <div class="popup-admin-head">
-              <h3>联系方式二维码</h3>
-              <button id="addPopupContactBtn" type="button">新增联系方式</button>
-            </div>
-            <div id="popupContactRows" class="popup-config-list"></div>
-          </div>
-          <div class="popup-admin-block">
-            <div class="popup-admin-head">
-              <h3>收款码</h3>
-              <button id="addPopupPaymentBtn" type="button">新增收款码</button>
-            </div>
-            <div id="popupPaymentRows" class="popup-config-list"></div>
-          </div>
-          <div class="popup-admin-block">
-            <div class="popup-admin-head">
-              <h3>相关链接</h3>
-              <button id="addPopupLinkBtn" type="button">新增链接</button>
-            </div>
-            <div id="popupLinkRows" class="popup-config-list"></div>
-          </div>
         </div>
       </div>
       <div class="panel collapsible-panel is-collapsed" data-collapsible-panel data-default-collapsed="1">
@@ -705,7 +659,7 @@
       window.history.replaceState(null, document.title, location.pathname + (clean ? '?' + clean : '') + location.hash);
     }());
   </script>
-  <script src="/admin.js?v=2026110902"></script>
+  <script src="/admin.js?v=2026111803"></script>
   <script src="/admin-desktop.js?v=2026062301"></script>
 </body>
 </html>

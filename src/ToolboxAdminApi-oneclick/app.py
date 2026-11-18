@@ -69,6 +69,11 @@ ICON_CACHE = DATA / "icon-cache"
 DEFAULT_APP_ICON = "/assets/toolbox-default-icon.png"
 DEFAULT_ADMIN_TITLE = "工具箱后台登录"
 DEFAULT_LOGIN_HINT = ""
+ADMIN_BRAND_DEFAULTS = {
+    "admin_brand_name": "工具箱后台", "admin_brand_subtitle": "少年科技工作室 · 配置中心",
+    "admin_brand_icon": "", "admin_brand_mark": "少",
+    "admin_tab_title": "工具箱后台 | 少年科技工作室", "admin_tab_icon": DEFAULT_APP_ICON,
+}
 PROJECT_PUBLISHER = "少年科技工作室"
 STUDIO_OVERVIEW_PAGE_ID = "system_overview"
 XINGGUI_HOME_PAGE_ID = "xinggui_home"
@@ -1099,6 +1104,7 @@ def audit_change_rows(before, after, field_labels, keys=None):
 IMAGE_URL_APP_FIELDS = ("logo_url", "icon_url", "exe_icon_url", "home_banner_url")
 
 APP_AUDIT_FIELDS = {
+    "admin_brand_name": "后台品牌名称", "admin_brand_subtitle": "后台品牌副标题", "admin_brand_icon": "后台品牌图标",
     "title": "工具箱名称", "subtitle": "副标题", "version": "版本号", "theme": "默认主题",
     "theme_count": "主题数量", "allow_client_theme": "允许客户端切换主题",
     "default_view_mode": "默认显示方式", "logo_text": "Logo 文字", "icon": "程序图标",
@@ -1580,6 +1586,9 @@ def default_config():
             "icon": DEFAULT_APP_ICON,
             "admin_title": DEFAULT_ADMIN_TITLE,
             "login_hint": "",
+            "admin_brand_name": "工具箱后台",
+            "admin_brand_subtitle": "少年科技工作室 · 配置中心",
+            "admin_brand_icon": "",
             "window_width": 1080,
             "window_height": 700,
             "password": "",
@@ -2025,6 +2034,10 @@ def ensure_config_defaults(config):
     if "admin_title" not in app:
         app["admin_title"] = DEFAULT_ADMIN_TITLE
         changed = True
+    for key, fallback in ADMIN_BRAND_DEFAULTS.items():
+        if key not in app:
+            app[key] = fallback
+            changed = True
     default_view_mode = normalize_view_mode(app.get("default_view_mode"), "grid")
     if app.get("default_view_mode") != default_view_mode:
         app["default_view_mode"] = default_view_mode
@@ -2874,6 +2887,10 @@ def public_brand_config():
         "hint": app.get("login_hint") or DEFAULT_LOGIN_HINT,
         "icon": app.get("icon") or DEFAULT_APP_ICON,
         "logoText": app.get("logo_text") or "Y",
+        "brandName": app.get("admin_brand_name") or "工具箱后台",
+        "brandSubtitle": app.get("admin_brand_subtitle") or "少年科技工作室 · 配置中心",
+        "brandIcon": app.get("admin_brand_icon") or "",
+        **{key: app.get(key) or fallback for key, fallback in ADMIN_BRAND_DEFAULTS.items()},
     }
 
 
@@ -2887,6 +2904,39 @@ def sync_public_brand_config(app_patch):
         if key in app_patch:
             app[key] = app_patch[key]
     write_config(cfg, "")
+
+
+def save_admin_brand(patch, actor, handler=None):
+    if not is_super(actor):
+        raise PermissionError("只有总管理员可以修改后台品牌。")
+    if not isinstance(patch, dict):
+        raise ValueError("品牌设置应为对象。")
+    allowed = dict(ADMIN_BRAND_DEFAULTS, admin_title=DEFAULT_ADMIN_TITLE, login_hint="")
+    cfg = read_config("")
+    before = json_clone(cfg.get("app") or {})
+    values = {}
+    for key, fallback in allowed.items():
+        if key not in patch:
+            continue
+        if not isinstance(patch[key], str):
+            raise ValueError("品牌设置应填写文字或图片地址。")
+        value = patch[key].strip()
+        limit = 2048 if key.endswith("icon") else (8 if key.endswith("mark") else 200)
+        if len(value) > limit or any(ord(char) < 32 for char in value):
+            raise ValueError("品牌设置内容过长或包含控制字符。")
+        if key.endswith("icon") and value:
+            # Match the existing image CSP: HTTPS or a same-origin absolute path.
+            parsed = urlparse(value)
+            if not ((value.startswith("/") and not value.startswith("//") and "\\" not in value)
+                    or (parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password)):
+                raise ValueError("图标请填写 HTTPS 地址或本站 /uploads/... 路径。")
+        values[key] = value or fallback
+    cfg.setdefault("app", {}).update(values)
+    write_config(cfg, "")
+    changes = audit_change_rows(before, cfg["app"], {key: key for key in allowed}, list(values))
+    if changes:
+        audit_event("admin_brand_update", actor, "global", handler, {"title": "修改后台品牌", "changes": changes})
+    return public_brand_config()
 
 
 def apply_app_patch(config, patch):
@@ -6663,6 +6713,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": str(exc)}, 500)
 
     def handle_super(self, path, method, auth):
+        if path == "/api/super/brand":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "只有总管理员可以修改后台品牌。"}, 403)
+            if method == "GET":
+                return self.send_json(public_brand_config())
+            if method == "PATCH":
+                try:
+                    return self.send_json(save_admin_brand(self.read_body(), auth["user"], self))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
         if not can_manage_users(auth["user"]):
             return self.send_json({"error": "无权限访问用户管理。"}, 403)
         store = read_users()
@@ -7367,6 +7427,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(read_config(user_id))
         if path == "/api/admin/app" and method == "PATCH":
             patch = self.read_body()
+            for key in ADMIN_BRAND_DEFAULTS:
+                patch.pop(key, None)
             if auth["user"].get("role") != "super":
                 for key in ("admin_title", "login_hint"):
                     patch.pop(key, None)
