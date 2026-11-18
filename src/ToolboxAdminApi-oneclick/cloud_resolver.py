@@ -2439,7 +2439,7 @@ def _resolve_button_download(handler, app, user):
             _save(app, store)
             return handler.send_json({"files": public_files})
         except Exception as exc:
-            failures.append(str(exc).split(":", 1)[0][:80])
+            failures.append({"provider": str(line.get("provider") or ""), "code": str(exc).split(":", 1)[0][:80]})
     _diag("button_resolve_failed", {"buttonId": body.get("buttonId"), "failureCount": len(failures), "errors": failures})
     return handler.send_json({"error": "所有解析线路均失败，请检查线路或稍后重试。", "code": "ALL_LINES_FAILED"}, 502)
 
