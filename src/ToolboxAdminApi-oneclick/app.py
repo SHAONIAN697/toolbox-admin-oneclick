@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 少年科技工作室. All rights reserved.
+import importlib.util
+import sqlite3
 import hashlib
 import hmac
 import base64
@@ -30,6 +32,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlencode
 
 ROOT = Path(__file__).resolve().parent
+_audit_spec = importlib.util.spec_from_file_location("toolbox_audit_store", ROOT / "audit_store.py")
+audit_store = importlib.util.module_from_spec(_audit_spec)
+_audit_spec.loader.exec_module(audit_store)
+REQUEST_CONTEXT = threading.local()
 WWW = ROOT / "wwwroot"
 DATA = ROOT / "data"
 CLOUD_RESOLVER_PATH = DATA / "cloud-resolver.json"
@@ -215,7 +221,6 @@ ADMIN_USERNAME = os.environ.get("TOOLBOX_ADMIN_USERNAME", "admin").strip() or "a
 SESSIONS = {}
 SECURITY_LOCK = threading.RLock()
 CLOUD_RESOLVER_DIAGNOSTIC_LOCK = threading.RLock()
-LOGIN_ATTEMPTS = {}
 SESSION_TTL_SECONDS = max(900, int(os.environ.get("TOOLBOX_SESSION_TTL_SECONDS", "43200")))
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 8
@@ -669,7 +674,22 @@ def stored_password(password):
     return f"pbkdf2_sha256${rounds}${salt.hex()}${digest.hex()}"
 
 
+def privileged_password(password):
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(str(password).encode("utf-8"), salt=salt, n=32768, r=8, p=1,
+                            dklen=32, maxmem=64 * 1024 * 1024)
+    return "scrypt$" + salt.hex() + "$" + digest.hex()
+
+
 def check_password(password, stored):
+    if str(stored or "").startswith("scrypt$"):
+        try:
+            _, salt, digest = stored.split("$", 2)
+            actual = hashlib.scrypt(str(password).encode("utf-8"), salt=bytes.fromhex(salt),
+                                    n=32768, r=8, p=1, dklen=32, maxmem=64 * 1024 * 1024)
+            return hmac.compare_digest(actual, bytes.fromhex(digest))
+        except (TypeError, ValueError):
+            return False
     if str(stored or "").startswith("pbkdf2_sha256$"):
         try:
             _, rounds, salt, digest = stored.split("$", 3)
@@ -684,16 +704,24 @@ def check_password(password, stored):
     return kind == "sha256" and sha256_hex(salt + password) == digest
 
 
-def client_ip(handler):
-    peer = str(handler.client_address[0] or "").strip()
+def trusted_proxy_peer(handler):
+    peer = handler.client_address[0]
+    networks = os.environ.get("TOOLBOX_TRUSTED_PROXIES", "127.0.0.1/32,::1/128")
     try:
-        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+        address = ipaddress.ip_address(peer)
+        return any(address in ipaddress.ip_network(net.strip()) for net in networks.split(",") if net.strip())
     except ValueError:
-        trusted_proxy = False
-    if trusted_proxy or os.environ.get("TOOLBOX_TRUST_PROXY", "").lower() in ("1", "true", "yes"):
-        forwarded = (handler.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        return False
+
+
+def client_ip(handler):
+    peer = str(getattr(handler, "client_address", ("", 0))[0] or "").strip()
+    if not peer:
+        return ""
+    if trusted_proxy_peer(handler):
+        forwarded = (handler.headers.get("X-Forwarded-For") or "").rsplit(",", 1)[-1].strip()
         real_ip = (handler.headers.get("X-Real-IP") or "").strip()
-        for candidate in (forwarded, real_ip):
+        for candidate in (real_ip, forwarded):
             try:
                 ipaddress.ip_address(candidate)
                 return candidate[:64]
@@ -841,58 +869,319 @@ def locate_ip(ip, bypass_cache=False):
     return address
 
 
-def read_audit_events(limit=5000):
-    if not AUDIT_LOG_PATH.exists(): return {"items": []}
-    rows = []
-    with AUDIT_LOG_PATH.open("r", encoding="utf-8") as stream:
-        for line in stream:
+AUDIT_LABELS = {
+    "login_success": "登录后台", "login_failed": "后台登录失败",
+    "login_blocked": "后台登录限流", "login_network_changed": "后台登录来源变化",
+    "logout": "退出后台", "register_success": "使用邀请码注册账号",
+    "register_failed": "邀请码注册失败", "invite_create": "生成邀请码",
+    "invite_update": "修改邀请码状态或额度", "invite_delete": "删除邀请码",
+    "user_create": "创建后台账号", "user_delete": "删除后台账号",
+    "user_role_changed": "修改用户权限", "user_disabled": "禁用用户",
+    "user_enabled": "恢复用户", "user_identity_changed": "修改用户身份资料",
+    "account_self_update": "修改本人账号资料", "account_admin_update": "修改用户账号资料",
+    "client_build_start": "提交工具箱生成任务", "client_build_completed": "生成工具箱",
+    "client_build_failed": "工具箱生成失败", "client_build_download": "下载工具箱",
+    "config_export": "导出工具箱配置", "config_share": "生成工具箱分享配置",
+    "audit_log_cleared": "清理操作日志", "audit_log_filtered_cleared": "清理筛选日志",
+    "audit_export": "导出审计日志", "user_export": "导出用户列表", "legacy": "历史日志",
+    "admin_brand_update": "修改后台品牌", "agent_account_update": "调整代理账号",
+    "agent_relationship_update": "调整代理上下级关系", "menu_icon_upload": "上传菜单图标",
+    "password_reset_requested": "申请密码重置", "password_reset_completed": "重置账号密码",
+    "password_reset_mail_unavailable": "密码重置邮件发送失败", "password_reset_blocked": "密码重置限流",
+    "default_admin_password_migrated": "更新默认管理员密码", "ip_location_test": "测试 IP 定位",
+    "cloud_resolver_diagnostics_cleared": "清理网盘诊断日志", "announcement_mail": "发送公告邮件",
+    "announcement_read": "阅读更新公告", "notice_read": "阅读通知",
+    "config_basic_update": "修改工具箱基本设置", "contact_settings_update": "修改联系信息",
+    "xinggui_home_update": "修改星轨首页", "button_create": "创建工具箱按钮",
+    "button_update": "修改工具箱按钮", "button_delete": "删除工具箱按钮",
+    "users_batch_delete": "批量删除后台账号", "users_batch_disable": "批量停用账号",
+    "users_batch_enable": "批量恢复账号", "users_batch_allow_json": "批量授予配置查看权限",
+    "users_batch_deny_json": "批量收回配置查看权限",
+}
+
+# Resource labels for successful writes without a more specific business event.
+AUDIT_RESOURCES = {
+    "invites": "邀请码", "users": "后台账号", "agents": "代理关系", "account": "账号资料",
+    "mail": "邮件配置", "system": "系统配置", "brand": "后台品牌", "template": "新用户模板",
+    "notices": "站内通知", "announcements": "更新公告", "buttons": "工具箱按钮",
+    "config": "工具箱配置", "contact": "联系信息", "popup": "弹窗配置",
+    "menu-icon": "菜单图标", "menu-icons": "菜单图标", "variant-cover": "工具箱封面",
+    "cloud-resolver": "网盘解析", "cloud-entitlement": "网盘使用权限", "builtin-functions": "内置功能",
+    "balance": "充值订单", "orders": "业务订单", "audit": "审计日志",
+}
+
+
+def bounded_strings(values, maximum, size):
+    if not isinstance(values, list) or len(values) > maximum or any(
+            not isinstance(value, str) or not value or len(value) > size for value in values):
+        raise ValueError("批量操作对象格式或数量无效。")
+    return set(values)
+
+
+def search_users(store, actor, query):
+    value = lambda field: str(query.get(field, [""])[0]).strip()[:256]
+    users = scoped_users(store, actor)
+    ledger = recover_identity_outbox()
+    q = value("q")
+    ids = (current_identity_matches(users, q) | ledger.user_matches(q)) if q else None
+    registration_filters = {key: value(key) for key in ("invite", "inviter", "registeredFrom", "registeredTo", "registerIp")}
+    if any(registration_filters.values()):
+        matched = ledger.registration_matches(registration_filters)
+        ids = matched if ids is None else ids & matched
+    snapshots = ledger.registration_names()
+    return [dict(public_user(user, store), registeredDisplayName=snapshots.get(user["id"], ""))
+            for user in users if ids is None or user["id"] in ids]
+
+
+def audit_account_changes(handler, actor, before, after, fallback, password_changed=False):
+    before = before or {}
+    diffs = {key: (before.get(key), after.get(key)) for key in audit_store.FIELDS
+             if before.get(key) != after.get(key)}
+    groups = (
+        ("user_identity_changed", {"displayName", "username", "email", "phone"}),
+        ("user_role_changed", {"role", "canViewJson", "parentAgentId", "agentLevelId"}),
+        ("user_enabled" if after.get("active") else "user_disabled", {"active"}),
+    )
+    for event, fields in groups:
+        changed = {key: value for key, value in diffs.items() if key in fields}
+        if changed:
+            summary = AUDIT_LABELS[event] + " " + str(after["id"])
+            if "displayName" in changed:
+                old, new = changed["displayName"]
+                summary += f"（昵称 {old or '—'} → {new or '—'}）"
+            if "role" in changed:
+                old, new = changed["role"]
+                summary += f"（{role_label(old)} → {role_label(new)}）"
+            audit_event(event, actor, after["id"], handler, {"targetName": after.get("displayName"),
+                        "summary": summary, "before": {key: value[0] for key, value in changed.items()},
+                        "after": {key: value[1] for key, value in changed.items()}})
+    if not diffs or password_changed:
+        audit_event(fallback, actor, after["id"], handler, {"targetName": after.get("displayName"),
+                    "credentialChanged": password_changed})
+
+
+def client_build_version(uid):
+    app = (read_config(uid).get("app") or {})
+    return assembly_version(app.get("exe_version") or app.get("version") or "1.0.0.0")
+
+
+def client_audit_detail(variant, version, **extra):
+    name = client_variant_info(variant).get("label") or variant
+    return dict(extra, variant=variant, variantLabel=name, version=version, count=1,
+                targetType="toolbox", targetName=name)
+
+
+def audit_db():
+    return audit_store.Store(AUDIT_LOG_PATH)
+
+
+def audit_category(action):
+    for prefixes, category in (
+        (("login", "logout", "password", "default_admin"), "认证"),
+        (("register",), "用户注册"), (("invite",), "邀请码"),
+        (("user_identity", "account"), "身份变更"), (("user_role", "agent"), "权限变更"),
+        (("client_build_download",), "工具箱下载"), (("client_build",), "工具箱生成"),
+        (("config_export", "config_share"), "配置生成"), (("audit_export", "user_export"), "数据导出"),
+        (("audit_",), "日志管理"), (("user_disabled", "user_enabled"), "用户封禁"),
+        (("menu_icon_upload",), "文件上传"), (("legacy",), "旧日志"),
+        (("security_",), "安全事件"),
+    ):
+        if action.startswith(prefixes):
+            return category
+    return "系统配置"
+
+
+def audit_source(headers):
+    try:
+        return (urlparse(headers.get("Origin") or headers.get("Referer") or "").hostname or "")[:253]
+    except ValueError:
+        return ""
+
+
+def audit_entry(action, actor=None, target="", handler=None, details=None, success=True):
+    actor = actor or {}
+    details = audit_store.scrub(details or {})
+    path = getattr(handler, "route", "") if handler else ""
+    headers = getattr(handler, "headers", {}) if handler else {}
+    request_id = getattr(handler, "request_id", "") if handler else ""
+    risk = details.get("risk") or ("high" if action.startswith((
+        "audit_log_", "user_role_", "user_delete", "login_blocked", "login_network", "security_",
+        "users_batch_delete", "invite_delete")) else ("medium" if not success else "low"))
+    label = details.get("title") or AUDIT_LABELS.get(action) or (
+        "敏感操作验证失败" if action.endswith("_reauth_failed") else action)
+    summary = details.get("summary") or label
+    if details.get("variantLabel") and details.get("version"):
+        summary += f"：{details['variantLabel']} · {details['version']} · {details.get('count', 1)} 件"
+    if action in ("invite_delete", "invite_update") and target:
+        summary += f"：{target}"
+    target = str(target or "")[:400]
+    if details.get("variant"):
+        details.setdefault("toolboxId", details["variant"])
+    return {
+        "time": now_iso(), "eventId": random_hex(16), "requestId": request_id, "action": action,
+        "eventType": action, "eventCategory": audit_category(action), "actionName": label,
+        "actionDetail": summary, "success": bool(success),
+        "resultStatus": "success" if success else "failure", "error": details.get("error") or "",
+        "riskLevel": risk, "actorType": actor.get("role") or ("anonymous" if handler else "system"),
+        "actorId": actor.get("id", ""), "actor": actor.get("username", ""),
+        "actorDisplayName": actor.get("displayName", ""), "actorEmail": actor.get("email", ""),
+        "target": target, "targetId": target, "targetName": details.get("targetName") or target,
+        "targetType": details.get("targetType") or ("user" if action.startswith(("user_", "account_", "register")) else ""),
+        "inviteCodeHash": details.get("inviteCodeHash", ""), "path": path[:400],
+        "method": getattr(handler, "command", "") if handler else "",
+        "ip": client_ip(handler) if handler else "",
+        "userAgent": audit_store.scrub(str(headers.get("User-Agent") or "")[:350]),
+        "source": audit_source(headers),
+        "before": details.get("before"), "after": details.get("after"), "details": details,
+    }
+
+
+def legacy_audit_rows():
+    if not AUDIT_LOG_PATH.exists():
+        return
+    with AUDIT_LOG_PATH.open(encoding="utf-8", errors="replace") as stream:
+        for index, line in enumerate(stream):
             try:
                 row = json.loads(line)
-                row["eventKey"] = hashlib.sha256(line.rstrip("\r\n").encode("utf-8")).hexdigest()
-                rows.append(row)
-            except Exception: continue
-    users = read_users().get("users", [])
-    users_by_id = {str(user.get("id") or ""): user for user in users}
-    users_by_name = {str(user.get("username") or ""): user for user in users}
+                if not isinstance(row, dict):
+                    raise ValueError()
+            except ValueError:
+                row = {"details": {"legacyRaw": line.strip()[:4000]}}
+            action = row.get("eventType") or row.get("action") or ""
+            known = action in AUDIT_LABELS or str(action).endswith("_reauth_failed")
+            entry = audit_entry(action if known else "legacy", target=audit_store.scrub(row.get("target") or ""),
+                                details=row.get("details") if isinstance(row.get("details"), dict) else {},
+                                success=row.get("success", True))
+            for field in ("actorId", "actor", "actorDisplayName", "actorEmail", "ip", "ipAddress"):
+                entry[field] = row.get(field) or ""
+            if not known:
+                entry["details"]["legacyAction"] = str(action)
+            entry["time"] = row.get("time") or ""
+            entry["eventId"] = row.get("eventId") or audit_store.digest(str(index) + ":" + line)
+            if row.get("eventType") and row.get("eventId"):
+                entry = row  # Structured records from an earlier version of this migration.
+            yield entry
+
+
+def recover_identity_outbox():
+    with INVITE_LOCK:
+        ledger = audit_db()
+        for job in read_json(USERS_PATH, {}).get("_identityOutbox", []):
+            ledger.apply(job)
+        return ledger
+
+
+def migrate_audit():
+    with INVITE_LOCK:
+        store = read_json(USERS_PATH, {})
+        ledger = init_audit()
+        for job in store.get("_identityOutbox", []):
+            ledger.apply(job)
+        ledger.apply(audit_store.projection({}, store))
+        return ledger
+
+
+def audit_filters(values):
+    filters = {}
+    for key in ("q", "user", "ip", "eventType", "risk", "target", "requestId", "eventId", "actorId", "userId",
+                "invite", "toolbox", "from", "to", "before"):
+        value = values.get(key)
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        if value is None or value == "":
+            continue
+        if not isinstance(value, (int, str)) or len(str(value)) > 256:
+            raise ValueError("筛选参数无效。")
+        filters[key] = str(value).strip()
+    for key in ("from", "to"):
+        if key in filters:
+            parsed = parse_iso_datetime(filters[key])
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            filters[key] = parsed.astimezone(timezone.utc).isoformat()
+    if "before" in filters:
+        filters["before"] = int(filters["before"])
+    return filters
+
+
+def init_audit():
+    with SECURITY_LOCK:
+        store = audit_db()
+        store.initialize(legacy_audit_rows)
+        return store
+
+
+def current_identity_matches(users, query):
+    needle = query.casefold()
+    return {str(user["id"]) for user in users if needle in " ".join(str(user.get(field) or "") for field in
+        ("id", "username", "displayName", "email", "phone", "createdAt")).casefold()}
+
+
+def read_audit_events(limit=100, filters=None, users=None):
+    filters = filters or {}
+    users = read_users()["users"] if users is None else users
+    recover_identity_outbox()
+    ledger = init_audit()
+    ids = {key: current_identity_matches(users, filters[key]) for key in ("q", "user") if filters.get(key)}
+    result = ledger.query(filters, limit, ids)
+    by_id = {str(user["id"]): user for user in users}
+    by_username = {user.get("username"): user for user in users}
     ip_cache = read_json(IP_CACHE_PATH, {})
-    for row in rows:
-        actor = users_by_id.get(str(row.get("actorId") or "")) or users_by_name.get(str(row.get("actor") or ""))
-        if actor:
-            row.setdefault("actorDisplayName", actor.get("displayName") or actor.get("username") or "")
-            row.setdefault("actorEmail", actor.get("email") or "")
+    for row in result["items"]:
+        actor_id = row.get("actorId")
+        current = by_id.get(actor_id)
+        if not actor_id and row.get("actor"):
+            current = by_username.get(row["actor"])
+            actor_id = current.get("id") if current else ""
+        identity_id = actor_id or (row.get("targetId") if row.get("targetType") == "user" else "")
+        identity = ledger.identity(identity_id)["registration"] if identity_id else None
+        row["actorId"] = actor_id or (identity_id if identity else "")
+        row["actorCurrentName"] = (current or {}).get("displayName") or row.get("actorDisplayName") or (identity or {}).get("display_name", "")
+        row["actorDisplayName"] = row["actorCurrentName"]
+        row["actorRegisteredName"] = (identity or {}).get("display_name") or ""
+        row["actorEmail"] = (current or {}).get("email") or row.get("actorEmail") or (identity or {}).get("email", "")
+        row["actor"] = row.get("actor") or (current or {}).get("username") or (identity or {}).get("username", "")
         cached_ip = ip_cache.get(str(row.get("ip") or ""))
         if isinstance(cached_ip, dict):
-            row.setdefault("ipAddress", str(cached_ip.get("address") or ""))
-    return {"items": list(reversed(rows[-limit:]))}
+            row["ipAddress"] = row.get("ipAddress") or str(cached_ip.get("address") or "")
+    return result
 
 
 def audit_event(action, actor=None, target="", handler=None, details=None, success=True):
-    ip = client_ip(handler) if handler else ""
-    entry = {
-        "time": now_iso(), "action": action, "success": bool(success),
-        "actorId": (actor or {}).get("id", ""), "actor": (actor or {}).get("username", ""),
-        "actorDisplayName": (actor or {}).get("displayName", ""),
-        "actorEmail": (actor or {}).get("email", ""),
-        "target": str(target or ""), "ip": ip,
-        "ipAddress": locate_ip(ip) if ip else "",
-        "details": details or {},
-    }
-    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    entry = audit_entry(action, actor, target, handler, details, success)
+    if handler:
+        handler.audit_written = True
     with SECURITY_LOCK:
-        with AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
-        if AUDIT_LOG_PATH.stat().st_size > AUDIT_LOG_MAX_BYTES:
-            lines = AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines()
-            kept = []
-            kept_bytes = 0
-            for line in reversed(lines[-AUDIT_LOG_KEEP_EVENTS:]):
-                line_bytes = len((line + "\n").encode("utf-8"))
-                if kept and kept_bytes + line_bytes > AUDIT_LOG_MAX_BYTES:
-                    break
-                kept.append(line)
-                kept_bytes += line_bytes
-            kept.reverse()
-            AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        ledger = audit_db()
+        try:
+            ledger.initialize(legacy_audit_rows)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            print("AUDIT INITIALIZATION ERROR: " + type(exc).__name__, file=sys.stderr, flush=True)
+        try:
+            ledger.write_event(entry)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            print("AUDIT STORAGE ERROR: " + type(exc).__name__, file=sys.stderr, flush=True)
+        try:
+            AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with AUDIT_LOG_PATH.open("a", encoding="utf-8") as stream:
+                stream.write(audit_store.encode(entry) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            if AUDIT_LOG_PATH.stat().st_size > AUDIT_LOG_MAX_BYTES and ledger.path.exists():
+                lines = AUDIT_LOG_PATH.read_bytes().splitlines(keepends=True)
+                kept = []
+                size = 0
+                for line in reversed(lines[-AUDIT_LOG_KEEP_EVENTS:]):
+                    if size + len(line) > AUDIT_LOG_MAX_BYTES:
+                        break
+                    kept.append(line)
+                    size += len(line)
+                swap = AUDIT_LOG_PATH.with_suffix(".rotate")
+                swap.write_bytes(b"".join(reversed(kept)))
+                os.replace(swap, AUDIT_LOG_PATH)
+        except OSError as exc:
+            print("AUDIT MIRROR ERROR: " + type(exc).__name__, file=sys.stderr, flush=True)
+    return entry
 
 
 _CLOUD_DIAGNOSTIC_SECRET_KEYS = {
@@ -1051,24 +1340,13 @@ def clear_cloud_resolver_diagnostics():
         CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.write_text("", encoding="utf-8")
 
 
-AUDIT_DETAILED_PATHS = {
-    "/api/admin/app", "/api/admin/popup", "/api/admin/buttons",
-    "/api/super/template/app", "/api/super/template/popup", "/api/super/template/buttons",
-}
-
-
 def should_write_generic_audit(path, method):
-    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+    """Use the response status for fallback write audits. Reads with dedicated events are excluded."""
+    if method not in ("POST", "PATCH", "PUT", "DELETE"):
         return False
-    if path in ("/api/super/ip-location/test", "/api/super/audit") or path in AUDIT_DETAILED_PATHS:
+    if path.startswith("/api/admin/announcements/") and path.endswith(("/read", "/read-all", "/read-batch", "/mail")):
         return False
-    if path in ("/api/admin/announcements/read-all", "/api/admin/announcements/read-batch"):
-        return False
-    if re.fullmatch(r"/api/admin/announcements/[^/]+/mail", path):
-        return False
-    if re.fullmatch(r"/api/admin/announcements/[^/]+/read", path):
-        return False
-    return True
+    return path != "/api/super/audit/preview"
 
 
 def audit_display_value(value, limit=180):
@@ -3040,7 +3318,6 @@ def read_users():
             if invite.get("chargedAmount") != normalized_charge:
                 invite["chargedAmount"] = normalized_charge
                 changed = True
-    cleanup_invites(store)
     if not store["users"]:
         if len(ADMIN_TOKEN) < 12 or ADMIN_TOKEN.lower() in ("dev-token", "password", "admin"):
             raise RuntimeError("首次启动必须通过 TOOLBOX_ADMIN_TOKEN 设置至少 12 位的管理员密码。")
@@ -3051,7 +3328,7 @@ def read_users():
             "role": "super",
             "active": True,
             "canViewJson": True,
-            "passwordHash": stored_password(ADMIN_TOKEN),
+            "passwordHash": privileged_password(ADMIN_TOKEN),
             "apiKey": random_hex(20),
             "createdAt": now_iso(),
         }
@@ -3067,8 +3344,31 @@ def write_users(store):
     store.setdefault("users", [])
     store.setdefault("inviteCodes", [])
     store.setdefault("settings", {})
-    cleanup_invites(store)
-    write_json(USERS_PATH, store)
+    with INVITE_LOCK:
+        prior = read_json(USERS_PATH, {})
+        context = getattr(REQUEST_CONTEXT, "value", None) or {}
+        registration = store.pop("_newRegistration", None)
+        event = store.pop("_newRegistrationEvent", None)
+        cleanup_invites(store)
+        pending = prior.get("_identityOutbox", [])
+        ledger = audit_db()
+        try:
+            for job in pending:
+                ledger.apply(job)
+            pending = []
+        except (sqlite3.Error, OSError) as exc:
+            print("IDENTITY OUTBOX RETRY: " + type(exc).__name__, file=sys.stderr, flush=True)
+        job = audit_store.projection(prior, store, context, registration)
+        if event:
+            job["events"].append(event)
+        store["_auditProjectionVersion"] = 1
+        store["_identityOutbox"] = pending + [job]
+        write_json(USERS_PATH, store)
+        try:
+            for item in store["_identityOutbox"]:
+                ledger.apply(item)
+        except (sqlite3.Error, OSError) as exc:
+            print("IDENTITY OUTBOX PENDING: " + type(exc).__name__, file=sys.stderr, flush=True)
     with API_KEY_CACHE_LOCK:
         API_KEY_CACHE["signature"] = None
         API_KEY_CACHE["users"] = {}
@@ -3096,27 +3396,65 @@ def is_login_api_path(path):
     return normalized in ("/api/login", "/desktop/login") or normalized.endswith("/api/login") or normalized.endswith("/desktop/login")
 
 
+def allow_security_attempt(kind, limits):
+    """Reserve quota before processing to avoid check-then-increment races."""
+    return audit_db().reserve(kind, limits, LOGIN_WINDOW_SECONDS)
+
+
+def open_session(user, handler):
+    token = random_hex(32)
+    replaced = 0
+    with SECURITY_LOCK:
+        previous = [key for key, row in SESSIONS.items() if row.get("userId") == user["id"]]
+        for key in previous:
+            SESSIONS.pop(key, None)
+        replaced = len(previous)
+        SESSIONS[audit_store.digest(token)] = {
+            "userId": user["id"], "createdAt": now_iso(), "lastSeenAt": now_iso(),
+            "ip": client_ip(handler),
+        }
+        save_sessions()
+    if replaced:
+        audit_event("session_replaced", actor=user, target=user["id"], handler=handler,
+                    details={"title": "新登录已替换该账号的旧会话", "replacedSessionCount": replaced})
+    return token
+
+
 def handle_desktop_login(handler):
     body = handler.read_body()
-    username = (body.get("username") or "").strip()
-    key = f"{client_ip(handler)}:{username.lower()}"
-    now = time.time()
-    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
-    if len(attempts) >= LOGIN_MAX_FAILURES:
-        audit_event("login_blocked", target=username, handler=handler, success=False)
-        return handler.send_json({"error": "登录尝试过多，请 15 分钟后重试。"}, 429)
-    user = find_user_by_username(username)
-    if not user or user.get("active", True) is False or not check_password(str(body.get("password") or ""), user.get("passwordHash", "")):
-        attempts.append(now)
-        LOGIN_ATTEMPTS[key] = attempts
-        audit_event("login_failed", target=username, handler=handler, success=False)
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    if len(username) > 120 or len(password) > 512:
         return handler.send_json({"error": "用户名或密码错误。"}, 401)
-    LOGIN_ATTEMPTS.pop(key, None)
-    token = random_hex(32)
-    user = mark_user_login(user["id"], handler)
-    SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso(), "lastSeenAt": now_iso()}
-    save_sessions()
-    audit_event("login_success", actor=user, handler=handler)
+    ip = client_ip(handler)
+    identity = audit_store.digest(username.casefold())
+    limits = (("account:" + identity, LOGIN_MAX_FAILURES), ("ip:" + ip, LOGIN_MAX_FAILURES * 4))
+    if not allow_security_attempt("login", limits):
+        audit_event("login_blocked", target=username, handler=handler,
+                    details={"error": "账号或 IP 超出登录次数"}, success=False)
+        return handler.send_json({"error": "登录尝试过多，请稍后重试。"}, 429)
+    with INVITE_LOCK:
+        user = find_user_by_username(username)
+        if not user or user.get("active", True) is False or not check_password(password, user.get("passwordHash", "")):
+            audit_event("login_failed", actor=user, target=username, handler=handler,
+                        details={"error": "凭证验证失败"}, success=False)
+            return handler.send_json({"error": "用户名或密码错误。"}, 401)
+        audit_db().reset_rate("login", "account:" + identity)
+        previous = (user.get("loginIpHistory") or [{}])[0].get("ip")
+        if user["role"] != "user" and not user["passwordHash"].startswith("scrypt$"):
+            store = read_users()
+            row = next(item for item in store["users"] if item["id"] == user["id"])
+            row["passwordHash"] = privileged_password(password)
+            write_users(store)
+        user = mark_user_login(user["id"], handler)
+        token = open_session(user, handler)
+        if user["role"] != "user" and previous and previous != ip:
+            audit_event("login_network_changed", user, user["id"], handler,
+                        {"before": {"ip": previous}, "after": {"ip": ip}})
+        if audit_db().observe_account(ip, user["id"], LOGIN_WINDOW_SECONDS) >= 4:
+            audit_event("security_multi_account_ip", user, user["id"], handler,
+                        {"title": "同一 IP 登录多个账号"})
+        audit_event("login_success", actor=user, handler=handler)
     return handler.send_json({"token": token, "user": public_user(user)})
 
 
@@ -4216,6 +4554,7 @@ def public_user(user, store=None):
         "id": user.get("id"),
         "username": user.get("username"),
         "email": user.get("email", ""),
+        "phone": user.get("phone", ""),
         "displayName": user.get("displayName"),
         "role": user.get("role"),
         "roleLabel": role_label(user.get("role")),
@@ -4382,35 +4721,40 @@ def normalize_role(role):
     return role if role in ("super", "agent", "user") else "user"
 
 
-def create_user(username, password, display_name="", role="user", template_user=None, email="", parent_agent_id="", balance=0, agent_level_id=""):
+def create_user(username, password, display_name="", role="user", template_user=None, email="", parent_agent_id="", balance=0, agent_level_id="", registration=None, phone=""):
     username = (username or "").strip()
     email = (email or "").strip().lower()
     password = password or ""
     display_name = (display_name or username).strip() or username
+    phone = str(phone or "").strip()
+    if len(username) > 100 or len(display_name) > 120 or len(email) > 254:
+        raise ValueError("账号资料长度超出限制。")
+    if phone and not re.fullmatch(r"\+?[0-9 -]{5,24}", phone):
+        raise ValueError("手机号格式无效。")
     role = normalize_role(role)
     settings = read_system_settings()
     level = resolve_agent_level(None, settings, agent_level_id, enabled_only=True) if role == "agent" else None
     if not username or not password:
         raise ValueError("用户名和密码不能为空。")
-    if len(password) < 10:
-        raise ValueError("密码至少 10 位。")
+    if not isinstance(password, str) or len(password) < 10 or len(password) > 512:
+        raise ValueError("密码长度应为 10 至 512 位。")
     if find_user_by_username(username):
         raise ValueError("用户名已存在。")
     if email and find_user_by_email(email):
         raise ValueError("邮箱已存在。")
     base = safe_id(username)
     user_id = base
-    while find_user_by_id(user_id):
-        user_id = f"{base}-{int(time.time() * 1000)}"
+    while find_user_by_id(user_id) or audit_db().identity(user_id)["registration"]:
+        user_id = f"{base}-{random_hex(6)}"
     user = {
         "id": user_id,
         "username": username,
-        "email": email,
+        "email": email, "phone": phone,
         "displayName": display_name,
         "role": role,
         "active": True,
         "canViewJson": role == "super",
-        "passwordHash": stored_password(password),
+        "passwordHash": privileged_password(password) if role != "user" else stored_password(password),
         "apiKey": random_hex(20),
         "createdAt": now_iso(),
         "parentAgentId": parent_agent_id if role == "user" else "",
@@ -4422,10 +4766,31 @@ def create_user(username, password, display_name="", role="user", template_user=
         user["agentLevelId"] = level.get("id")
         user["agentLevelName"] = level.get("name")
     store = read_users()
-    store["users"].append(user)
-    write_users(store)
+    if registration:
+        handler, code = registration
+        invite = next((item for item in store["inviteCodes"] if item.get("code") == code), None)
+        at = now_iso()
+        if not invite or invite.get("active") is False or (invite.get("expiresAt") and invite["expiresAt"] <= at):
+            raise ValueError("邀请码无效。")
+        used, maximum = int(invite.get("usedCount") or 0), int(invite.get("maxUses") or 1)
+        if maximum > 0 and used >= maximum:
+            raise ValueError("邀请码已被使用。")
+        user["parentAgentId"] = invite.get("ownerAgentId") or ""
+        hashed, display = audit_store.invitation(code)
+        ua = str(handler.headers.get("User-Agent") or "")[:350]
+        invite.setdefault("usedBy", []).append({"userId": user_id, "username": username, "usedAt": at})
+        invite["usedCount"] = used + 1
+        if maximum > 0 and invite["usedCount"] >= maximum:
+            invite["active"] = False
+        store["_newRegistration"] = [user_id, hashed, username, display_name, email, user.get("phone"),
+                                     client_ip(handler), audit_store.scrub(ua), user["createdAt"], at, "registration"]
+        store["_newRegistrationEvent"] = audit_entry(
+            "register_success", user, user_id, handler, {"inviteCodeHash": hashed, "inviteDisplay": display,
+                "summary": f"使用邀请码 {display} 注册用户 {display_name}（{user_id}）"})
     template_config = read_config(template_user["id"]) if template_user else read_user_template_config()
     write_config(template_config, user_id)
+    store["users"].append(user)
+    write_users(store)
     return user
 
 
@@ -4904,6 +5269,11 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
         security_backup(f"account-{user_id}", [USERS_PATH, SESSIONS_PATH, user_config_path(user_id)])
     user["username"] = username
     user["email"] = email
+    if "phone" in body:
+        phone = str(body.get("phone") or "").strip()
+        if phone and not re.fullmatch(r"\+?[0-9 -]{5,24}", phone):
+            raise ValueError("手机号格式无效。")
+        user["phone"] = phone
     if "displayName" in body:
         user["displayName"] = (body.get("displayName") or username).strip() or username
     old_role = user.get("role")
@@ -4936,15 +5306,17 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
     if super_edit and user.get("role") == "user" and "parentAgentId" in body:
         user["parentAgentId"] = validate_user_parent(body.get("parentAgentId"), store)
     if super_edit and "active" in body:
-        user["active"] = bool(body.get("active"))
+        if user_id == "admin" and body["active"] is False:
+            raise ValueError("默认总管理员须保持启用。")
+        user["active"] = body["active"]
     if super_edit and user.get("role") == "agent" and "parentAgentId" in body:
         user["parentAgentId"] = validate_agent_parent(user_id, body.get("parentAgentId"), store)
-    if user.get("role") == "agent" and "agentOpenMode" in body:
+    if super_edit and user.get("role") == "agent" and "agentOpenMode" in body:
         mode = str(body.get("agentOpenMode") or "online").strip()
         if mode not in ("online", "redeem_only"):
             raise ValueError("代理开通模式无效。")
         user["agentOpenMode"] = mode
-    if user.get("role") == "agent" and "downlineSharePercent" in body:
+    if super_edit and user.get("role") == "agent" and "downlineSharePercent" in body:
         try:
             pct = float(body.get("downlineSharePercent"))
         except (TypeError, ValueError):
@@ -4955,7 +5327,10 @@ def update_user_account(user_id, body, super_edit=False, actor=None):
     if super_edit and "canViewJson" in body:
         user["canViewJson"] = bool(body.get("canViewJson")) or user.get("role") == "super"
     if body.get("password"):
-        user["passwordHash"] = stored_password(body.get("password"))
+        password = str(body["password"])
+        if len(password) < 10 or len(password) > 512:
+            raise ValueError("密码长度应为 10 至 512 位。")
+        user["passwordHash"] = (privileged_password(password) if user["role"] != "user" else stored_password(password))
     if super_edit and "balance" in body and user.get("role") == "agent":
         try:
             balance = round(float(body.get("balance") or 0), 2)
@@ -5053,28 +5428,44 @@ def update_agent_status(user_id, action, body=None):
 
 def get_auth(handler):
     auth = handler.headers.get("Authorization", "")
-    token = ""
-    if auth.startswith("Bearer "):
-        token = auth[7:]
-    else:
-        token = handler.query.get("token", [""])[0]
-    session = SESSIONS.get(token)
-    if session:
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:]
+    if len(token) > 128:
+        return None
+    key = audit_store.digest(token)
+    with SECURITY_LOCK:
+        # Existing sessions may have been stored under the original token.
+        entry_key = key if key in SESSIONS else token
+        session = SESSIONS.get(entry_key)
+        if not session:
+            return None
         try:
-            last_seen = parse_iso_datetime(session.get("lastSeenAt") or session.get("createdAt") or "")
-            if last_seen.tzinfo is None:
-                last_seen = last_seen.replace(tzinfo=timezone.utc)
-            expired = (datetime.now(timezone.utc) - last_seen).total_seconds() > SESSION_TTL_SECONDS
+            def seconds_since(value):
+                parsed = parse_iso_datetime(value)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return (datetime.now(timezone.utc) - parsed).total_seconds()
+            age = seconds_since(session.get("createdAt") or "")
+            idle = seconds_since(session.get("lastSeenAt") or session.get("createdAt") or "")
+            expired = age > SESSION_TTL_SECONDS or idle > min(SESSION_TTL_SECONDS, 3600)
         except (TypeError, ValueError):
             expired = True
         if expired:
-            SESSIONS.pop(token, None)
+            SESSIONS.pop(entry_key, None)
             save_sessions()
             return None
-        user = find_user_by_id(session["userId"])
-        if user and user.get("active", True) is not False:
+    user = find_user_by_id(session["userId"])
+    if user and user.get("active", True) is not False:
+        with SECURITY_LOCK:
+            if SESSIONS.get(entry_key) is not session:
+                return None
             session["lastSeenAt"] = now_iso()
-            return {"token": token, "user": user}
+            if entry_key != key:
+                SESSIONS.pop(entry_key, None)
+                SESSIONS[key] = session
+                save_sessions()
+        return {"token": key, "user": user}
     return None
 
 
@@ -5197,9 +5588,13 @@ def generate_invites_for_actor(store, actor, body, price=0, charged_amount=0):
     max_uses = request["maxUses"]
     retention_days = request["retentionDays"]
     existing = {x.get("code") for x in store["inviteCodes"]}
+    previous_hashes = audit_db().invite_hashes()
     created = []
     for _ in range(count):
         code = make_invite_code(prefix, existing)
+        while audit_store.digest(code) in previous_hashes:
+            existing.add(code)
+            code = make_invite_code(prefix, existing)
         existing.add(code)
         invite = {"code": code, "active": True, "maxUses": max_uses,
                   "usedCount": 0, "usedBy": [], "retentionDays": retention_days,
@@ -5836,6 +6231,8 @@ def public_client_build_job(job_id):
         "id": job_id,
         "status": job.get("status", "missing"),
         "message": job.get("message", ""),
+        "userId": job.get("userId", ""),
+        "version": job.get("version", ""),
         "fileName": job.get("fileName", ""),
         "variant": job.get("variant", DEFAULT_CLIENT_VARIANT),
         "variantLabel": job.get("variantLabel", client_variant_info(job.get("variant", DEFAULT_CLIENT_VARIANT)).get("label")),
@@ -6101,7 +6498,7 @@ def verify_client_build_request(handler):
     write_client_integrity(data)
     return True, {"ok": True, "runtimeToken": token, "expiresIn": settings["tokenTtlSeconds"]}, 200
 
-def start_client_build_job(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
+def start_client_build_job(user, base_url, variant=DEFAULT_CLIENT_VARIANT, actor=None, handler=None):
     cleanup_client_build_artifacts()
     CLIENT_JOBS.mkdir(parents=True, exist_ok=True)
     job_id = random_hex(12)
@@ -6119,7 +6516,12 @@ def start_client_build_job(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
             "updatedAt": now,
         }
 
+    version = client_build_version(user["id"])
+    details = client_audit_detail(variant, version, jobId=job_id)
+    audit_event("client_build_start", actor or user, job_id, handler, details)
+
     def run():
+        success = False
         try:
             with CLIENT_BUILD_LOCK:
                 CLIENT_BUILD_JOBS[job_id]["status"] = "building"
@@ -6138,16 +6540,21 @@ def start_client_build_job(user, base_url, variant=DEFAULT_CLIENT_VARIANT):
                     "variant": variant,
                     "variantLabel": variant_label,
                     "path": str(exe_path),
-                    "bytes": len(data),
+                    "bytes": len(data), "version": version,
                     "updatedAt": time.time(),
                 })
-        except Exception as exc:
+            success = True
+        except Exception:
             with CLIENT_BUILD_LOCK:
                 CLIENT_BUILD_JOBS[job_id].update({
                     "status": "error",
-                    "message": str(exc),
+                    "message": "工具箱编译失败，请检查服务端编译器。",
                     "updatedAt": time.time(),
                 })
+        finally:
+            event = "client_build_completed" if success else "client_build_failed"
+            audit_event(event, actor or user, job_id, handler,
+                        dict(details, error="" if success else "编译器或输出校验失败"), success)
 
     threading.Thread(target=run, daemon=True).start()
     return public_client_build_job(job_id)
@@ -6343,9 +6750,12 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if not length:
             return {}
-        if length > 2 * 1024 * 1024:
+        if length < 0 or length > 2 * 1024 * 1024:
             raise ValueError("请求内容过大。")
         body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        if not isinstance(body, dict):
+            raise ValueError("请求内容须为 JSON 对象。")
+        self.audit_parameter_keys = sorted(str(key)[:48] for key in body if not audit_store.SECRET_FIELD.search(str(key)))[:50]
         route = str(getattr(self, "route", "") or "")
         if route.startswith(("/api/cloud-resolver/", "/api/admin/cloud-resolver/", "/api/agent/cloud-resolver/")):
             cloud_resolver_diagnostic_log("api_request", {
@@ -6459,12 +6869,62 @@ class Handler(BaseHTTPRequestHandler):
             PAYMENT_LOCK.release()
 
     def send_security_headers(self):
+        if getattr(self, "request_id", ""):
+            self.send_header("X-Request-ID", self.request_id)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
 
+    def log_request(self, code="-", size="-"):
+        self.log_message("%s %s %s", self.command, urlparse(self.path).path, code)
+
+    def audit_response(self, status):
+        route = getattr(self, "route", "")
+        if not route.startswith("/api/") or not getattr(self, "request_id", "") or getattr(self, "audit_written", False):
+            return
+        method = self.command.upper()
+        actor = getattr(self, "audit_actor", None)
+        if route == "/api/register" and status >= 400:
+            audit_event("register_failed", handler=self, details={
+                "inviteCodeHash": self.audit_target, "error": "注册请求被拒绝", "httpStatus": status}, success=False)
+            return
+        if not route.startswith(("/api/admin/", "/api/super/", "/api/agent/")):
+            return
+        if status < 400 and not (actor and should_write_generic_audit(route, method)):
+            return
+        if status >= 400 and method in ("GET", "HEAD") and status not in (401, 403, 429) and "/client/" not in route:
+            return
+        parts = route.strip("/").split("/")
+        resource = next((key for key in reversed(parts[2:]) if key in AUDIT_RESOURCES), "")
+        route_action = next((key for key in reversed(parts[2:]) if key in (
+            "publish", "read", "read-all", "read-batch", "export", "import", "upload", "status",
+            "issue", "revoke", "renew", "reset", "approve", "reject", "quote", "recharge", "test")), "")
+        verb = {"POST": "提交", "PATCH": "修改", "PUT": "保存", "DELETE": "删除", "GET": "读取"}.get(method, "访问")
+        verb = {"publish": "发布", "export": "导出", "import": "导入", "upload": "上传",
+                "approve": "批准", "reject": "驳回", "renew": "续期", "revoke": "撤销",
+                "quote": "预估", "recharge": "创建", "test": "测试"}.get(route_action, verb)
+        label = verb + AUDIT_RESOURCES.get(resource, "后台接口 " + route)
+        suffix = "" if status < 400 else "_failed"
+        if suffix:
+            label += "失败"
+        normalized_parts = [part for part in parts[1:] if part in AUDIT_RESOURCES or part in
+                            ("admin", "super", "agent", "app", "desktop", "client", "key", "file", "page")]
+        if route_action and route_action not in normalized_parts:
+            normalized_parts.append(route_action)
+        if len(normalized_parts) == 1:
+            normalized_parts.append("endpoint")
+        action = re.sub(r"[^a-z0-9_]", "_", "_".join(normalized_parts + [method.lower()]) + suffix)
+        if status in (401, 403, 429):
+            action = "security_" + action
+        audit_event(action, actor, getattr(self, "audit_target", ""), self, {
+            "title": label, "httpStatus": status, "parameterFields": getattr(self, "audit_parameter_keys", []),
+            "error": "" if status < 400 else {400: "参数验证失败", 401: "会话无效", 403: "权限或来源验证失败",
+                404: "对象或接口不存在", 429: "请求超过频率"}.get(status, "请求处理失败"),
+        }, status < 400)
+
     def send_json(self, value, status=200):
+        self.audit_response(status)
         route = str(getattr(self, "route", "") or "")
         is_resolver_api = route.startswith(("/api/cloud-resolver/", "/api/admin/cloud-resolver/", "/api/agent/cloud-resolver/"))
         is_diagnostic_management_api = route.startswith("/api/super/cloud-resolver-diagnostics")
@@ -6546,12 +7006,30 @@ class Handler(BaseHTTPRequestHandler):
         self.dispatch()
 
     def dispatch(self):
+        self.audit_written = False
+        self.request_id = random_hex(16)
+        self.audit_actor = None
+        self.audit_target = ""
+        self.audit_parameter_keys = []
+        try:
+            return self.dispatch_request()
+        finally:
+            REQUEST_CONTEXT.value = None
+
+    def dispatch_request(self):
         try:
             parsed = urlparse(self.path)
             self.route = unquote(parsed.path)
-            self.query = parse_qs(parsed.query)
+            self.query = parse_qs(parsed.query, max_num_fields=150)
             method = self.command.upper()
             path = self.route
+            if path.startswith("/api/") or is_login_api_path(path):
+                if not path.startswith("/api/payment/") and self.headers.get("Sec-Fetch-Site") == "cross-site":
+                    return self.send_json({"error": "来源验证失败。"}, 403)
+                if not path.startswith("/api/payment/") and method not in ("GET", "HEAD", "OPTIONS") and self.headers.get("Origin"):
+                    source = self.headers["Origin"].rstrip("/")
+                    if source != self.base_url().rstrip("/"):
+                        return self.send_json({"error": "来源验证失败。"}, 403)
             if path == "/api/payment/callback" and method in ("GET", "POST", "PUT"):
                 return self.handle_payment_callback()
             if path == "/api/payment/return" and method in ("GET", "POST", "PUT"):
@@ -6579,32 +7057,21 @@ class Handler(BaseHTTPRequestHandler):
                 return handle_desktop_login(self)
             if path == "/api/register" and method == "POST":
                 body = self.read_body()
-                email = (body.get("email") or "").strip().lower()
+                email = str(body.get("email") or "").strip().lower()
+                code = str(body.get("inviteCode") or "").strip()
+                invite_hash, _ = audit_store.invitation(code)
+                self.audit_target = invite_hash
+                if not allow_security_attempt("register", (("ip:" + client_ip(self), 20),)):
+                    audit_event("register_failed", handler=self, details={
+                        "inviteCodeHash": invite_hash, "risk": "high", "error": "注册请求过多"}, success=False)
+                    return self.send_json({"error": "注册尝试过多，请稍后重试。"}, 429)
                 if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
                     return self.send_json({"error": "请输入正确的邮箱地址。"}, 400)
-                code = (body.get("inviteCode") or "").strip()
-                store = read_users()
-                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
-                if not invite or invite.get("active") is False:
-                    raise ValueError("邀请码无效。")
-                used = int(invite.get("usedCount") or 0)
-                max_uses = int(invite.get("maxUses") or 1)
-                if max_uses > 0 and used >= max_uses:
-                    raise ValueError("邀请码已被使用。")
-                owner_agent_id = str(invite.get("ownerAgentId") or "").strip()
-                user = create_user(body.get("username"), body.get("password"), body.get("displayName"), "user", None, body.get("email"), parent_agent_id=owner_agent_id)
-                store = read_users()
-                invite = next((x for x in store["inviteCodes"] if x.get("code") == code), None)
-                invite.setdefault("usedBy", []).append({"userId": user["id"], "username": user["username"], "usedAt": now_iso()})
-                invite["usedCount"] = used + 1
-                if max_uses > 0 and invite["usedCount"] >= max_uses:
-                    invite["active"] = False
-                write_users(store)
-                token = random_hex(32)
-                user = mark_user_login(user["id"], self)
-                SESSIONS[token] = {"userId": user["id"], "createdAt": now_iso()}
-                save_sessions()
-                audit_event("register_success", actor=user, target=user.get("id"), handler=self, details={"title": "注册后台账号", "method": "POST", "path": "/api/register"})
+                with INVITE_LOCK:
+                    user = create_user(body.get("username"), body.get("password"), body.get("displayName"),
+                                       email=email, registration=(self, code), phone=body.get("phone", ""))
+                    self.audit_written = True
+                    token = open_session(user, self)
                 return self.send_json({"token": token, "user": public_user(user)})
             if path == "/api/password/forgot" and method == "POST":
                 body = self.read_body()
@@ -6629,28 +7096,8 @@ class Handler(BaseHTTPRequestHandler):
                 audit_event("password_reset_requested", target=user.get("id"), handler=self)
                 return self.send_json({"ok": True, "message": "验证码已发送，请查看邮箱。"})
             if path == "/api/password/reset" and method == "POST":
-                body = self.read_body()
-                email = (body.get("email") or "").strip().lower()
-                code = (body.get("code") or "").strip()
-                password = body.get("password") or ""
-                verify_key = f"{client_ip(self)}:{email}"
-                now = time.time()
-                attempts = [stamp for stamp in RESET_VERIFY_ATTEMPTS.get(verify_key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
-                if len(attempts) >= LOGIN_MAX_FAILURES:
-                    audit_event("password_reset_blocked", target=email, handler=self, success=False)
-                    return self.send_json({"error": "验证尝试过多，请 15 分钟后重试。"}, 429)
-                record = RESET_CODES.get(email)
-                if not record or record.get("code") != code or record.get("expires", 0) < time.time():
-                    attempts.append(now)
-                    RESET_VERIFY_ATTEMPTS[verify_key] = attempts
-                    return self.send_json({"error": "验证码无效或已过期。"}, 400)
-                if len(password) < 10:
-                    return self.send_json({"error": "密码至少 10 位。"}, 400)
-                update_user_account(record["userId"], {"password": password})
-                RESET_CODES.pop(email, None)
-                RESET_VERIFY_ATTEMPTS.pop(verify_key, None)
-                audit_event("password_reset_completed", target=record["userId"], handler=self)
-                return self.send_json({"ok": True})
+                with INVITE_LOCK:
+                    return self.reset_password()
             if path in ("/api/toolbox/config", "/api/config"):
                 user = find_user_by_api_key(self.query.get("key", [""])[0])
                 if not user:
@@ -6682,6 +7129,33 @@ class Handler(BaseHTTPRequestHandler):
                         auth = {"token": "", "user": client_user, "clientApiKey": client_key}
                 if not auth:
                     return self.send_json({"error": "请先登录。"}, 401)
+                self.audit_actor = auth["user"]
+                REQUEST_CONTEXT.value = {"actorId": auth["user"]["id"], "requestId": self.request_id}
+                if path == "/api/admin/logout" and method == "POST":
+                    with SECURITY_LOCK:
+                        SESSIONS.pop(auth["token"], None)
+                        save_sessions()
+                    audit_event("logout", auth["user"], handler=self)
+                    return self.send_json({"ok": True})
+                if method in ("POST", "PUT", "PATCH", "DELETE") and (
+                        path.startswith(("/api/super/", "/api/admin/cloud-resolver/", "/api/agent/cloud-resolver/"))
+                        or path in ("/api/admin/account", "/api/admin/client/build", "/api/admin/menu-icon/upload")):
+                    actor_limit = {"/api/admin/account": 30, "/api/admin/client/build": 15,
+                                   "/api/super/invites": 30, "/api/super/audit": 12}.get(path, 120)
+                    limits = (("actor:" + auth["user"]["id"] + ":" + path, actor_limit),
+                              ("ip:" + client_ip(self) + ":" + path, max(45, actor_limit * 3)))
+                    if not allow_security_attempt("sensitive", limits):
+                        audit_event("security_sensitive_rate_limited", auth["user"], handler=self,
+                                    details={"title": "敏感接口请求过多", "error": "超过调用频率"}, success=False)
+                        return self.send_json({"error": "请求过于频繁。"}, 429)
+                if method in ("POST", "PUT", "PATCH", "DELETE"):
+                    request_key = self.headers.get("Idempotency-Key", "")
+                    if request_key:
+                        if not re.fullmatch(r"[A-Za-z0-9_-]{16,100}", request_key):
+                            return self.send_json({"error": "请求操作标识无效。"}, 400)
+                        scope = audit_store.digest(auth["token"] + ":" + method + ":" + path + ":" + request_key)
+                        if not audit_db().reserve("idempotency", ((scope, 1),), 86400):
+                            return self.send_json({"error": "请求已提交，请查看操作结果。"}, 409)
                 cloud_resolver_path = (
                     path.startswith("/api/cloud-resolver/") or
                     path.startswith("/api/admin/cloud-resolver/") or
@@ -6700,17 +7174,54 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": str(exc)}, 403)
                     except ValueError as exc:
                         return self.send_json({"error": str(exc)}, 400)
-                if should_write_generic_audit(path, method):
-                    audit_event("backend_" + method.lower(), auth["user"], path, self,
-                                {"title": "后台操作", "method": method, "path": path})
-                if path.startswith("/api/super"):
+                if method not in ("GET", "HEAD", "OPTIONS") and (
+                        path.startswith(("/api/super/users", "/api/super/invites", "/api/super/agents",
+                                         "/api/super/balance")) or path == "/api/admin/account"):
+                    with INVITE_LOCK:
+                        current_auth = get_auth(self)
+                        if not current_auth:
+                            return self.send_json({"error": "会话已失效。"}, 401)
+                        return self.handle_super(path, method, current_auth) if path.startswith("/api/super/") else self.handle_admin(path, method, current_auth)
+                if path.startswith("/api/super/"):
                     return self.handle_super(path, method, auth)
-                if path.startswith("/api/admin"):
+                if path.startswith("/api/admin/"):
                     return self.handle_admin(path, method, auth)
                 return self.send_json({"error": "接口不存在。"}, 404)
             return self.serve_static(path)
+        except (ValueError, TypeError) as exc:
+            message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "请求参数格式无效。"
+            return self.send_json({"error": message}, 400)
+        except PermissionError:
+            return self.send_json({"error": "无权操作该对象。"}, 403)
+        except (BrokenPipeError, ConnectionResetError):
+            return None
         except Exception as exc:
-            return self.send_json({"error": str(exc)}, 500)
+            print("REQUEST ERROR " + self.request_id + ": " + type(exc).__name__, file=sys.stderr, flush=True)
+            return self.send_json({"error": "服务暂时异常。", "requestId": self.request_id}, 500)
+
+    def reset_password(self):
+        body = self.read_body()
+        email = (body.get("email") or "").strip().lower()
+        code = (body.get("code") or "").strip()
+        password = body.get("password") or ""
+        verify_key = f"{client_ip(self)}:{email}"
+        now = time.time()
+        attempts = [stamp for stamp in RESET_VERIFY_ATTEMPTS.get(verify_key, []) if now - stamp < LOGIN_WINDOW_SECONDS]
+        if len(attempts) >= LOGIN_MAX_FAILURES:
+            audit_event("password_reset_blocked", target=email, handler=self, success=False)
+            return self.send_json({"error": "验证尝试过多，请 15 分钟后重试。"}, 429)
+        record = RESET_CODES.get(email)
+        if not record or record.get("code") != code or record.get("expires", 0) < time.time():
+            attempts.append(now)
+            RESET_VERIFY_ATTEMPTS[verify_key] = attempts
+            return self.send_json({"error": "验证码无效或已过期。"}, 400)
+        if len(password) < 10:
+            return self.send_json({"error": "密码至少 10 位。"}, 400)
+        update_user_account(record["userId"], {"password": password})
+        RESET_CODES.pop(email, None)
+        RESET_VERIFY_ATTEMPTS.pop(verify_key, None)
+        audit_event("password_reset_completed", target=record["userId"], handler=self)
+        return self.send_json({"ok": True})
 
     def handle_super(self, path, method, auth):
         if path == "/api/super/brand":
@@ -6728,8 +7239,9 @@ class Handler(BaseHTTPRequestHandler):
         store = read_users()
         if path == "/api/super/agents" and method == "GET":
             rows = []
+            allowed_agents = None if is_super(auth["user"]) else agent_descendant_ids(auth["user"]["id"], store)
             for item in store.get("users", []):
-                if item.get("role") != "agent":
+                if item.get("role") != "agent" or (allowed_agents is not None and item["id"] not in allowed_agents):
                     continue
                 child_ids = [x.get("id") for x in store.get("users", []) if x.get("parentAgentId") == item.get("id")]
                 branch_ids = agent_descendant_ids(item.get("id"), store)
@@ -6754,11 +7266,57 @@ class Handler(BaseHTTPRequestHandler):
             write_users(store); audit_event("agent_relationship_update", auth["user"], target.get("id"), self, {"parentAgentId": target.get("parentAgentId")})
             return self.send_json(public_user(target, store))
         if path == "/api/super/agent-ledger" and method == "GET":
-            return self.send_json(read_agent_ledger())
-        if path == "/api/super/audit" and method == "GET":
             if not is_super(auth["user"]):
-                return self.send_json({"error": "无权查看操作日志。"}, 403)
-            return self.send_json(read_audit_events())
+                return self.send_json({"error": "无权查看全部代理账本。"}, 403)
+            return self.send_json(read_agent_ledger())
+        if path in ("/api/super/audit", "/api/super/audit/export", "/api/super/audit/preview", "/api/super/audit/integrity"):
+            actor = auth["user"]
+            if not is_super(actor):
+                return self.send_json({"error": "无权访问审计日志。"}, 403)
+            if method == "GET" and path.endswith("/integrity"):
+                return self.send_json(init_audit().verify())
+            if method == "GET" and path in ("/api/super/audit", "/api/super/audit/export"):
+                filters = audit_filters(self.query)
+                exporting = path.endswith("/export")
+                limit = 2000 if exporting else max(1, min(200, int(self.query.get("limit", ["100"])[0])))
+                result = read_audit_events(limit, filters, store["users"])
+                if exporting:
+                    audit_event("audit_export", actor, handler=self,
+                                details={"count": len(result["items"]), "truncated": bool(result["nextBefore"]),
+                                         "filterFields": sorted(filters)})
+                    return self.send_bytes(audit_store.encode(result).encode("utf-8"), "application/json",
+                                           filename="audit-export.json")
+                return self.send_json(result)
+            if (method, path) in (("POST", "/api/super/audit/preview"), ("DELETE", "/api/super/audit")):
+                body = self.read_body()
+                if not isinstance(body.get("filters", {}), dict):
+                    raise ValueError("清理筛选参数无效。")
+                filters = audit_filters(body.get("filters", {}))
+                filters.pop("before", None)
+                ids = {key: current_identity_matches(store["users"], filters[key]) for key in ("q", "user") if filters.get(key)}
+                ledger = init_audit()
+                if method == "POST":
+                    preview, _ = ledger.cleanup(filters, ids)
+                    proof = random_hex(24)
+                    ledger.create_preview(proof, auth["token"], filters, preview)
+                    return self.send_json(dict(preview, confirmation=proof))
+                reason = str(body.get("reason") or "").strip()
+                proof = str(body.get("confirmation") or "")
+                if not reason or len(reason) > 300 or len(proof) != 48:
+                    raise ValueError("请预览清理范围并填写清理原因。")
+                if not check_password(str(body.get("currentPassword") or "")[:513], actor["passwordHash"]):
+                    return self.send_json({"error": "清理日志前须验证管理员密码。"}, 403)
+                action = "audit_log_filtered_cleared" if filters else "audit_log_cleared"
+                record_filters = {key: value if key in {"from", "to", "ip", "risk", "eventType", "userId", "actorId"}
+                                  else audit_store.digest(str(value)) for key, value in filters.items()}
+                event = audit_entry(action, actor, handler=self, details={"reason": reason, "filters": record_filters})
+                with SECURITY_LOCK:
+                    scope, committed = ledger.cleanup(filters, ids, record=event, proof=proof, session=auth["token"])
+                if not committed:
+                    return self.send_json({"error": "日志范围已变化，请重新预览。", "preview": scope}, 409)
+                self.audit_written = True
+                return self.send_json({"ok": True, "cleared": scope["count"], "filtered": bool(filters)})
+            return self.send_json({"error": "请求方法不支持。"}, 405)
         if path in ("/api/super/cloud-resolver-diagnostics", "/api/super/cloud-resolver-diagnostics/export"):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以查看网盘解析诊断日志。"}, 403)
@@ -6780,33 +7338,15 @@ class Handler(BaseHTTPRequestHandler):
                     cloud_resolver_diagnostic_log("diagnostics_enabled", {"actor": auth["user"].get("username", "")})
                 return self.send_json({"enabled": settings.get("cloudResolverDiagnosticsEnabled") is True})
             if method == "DELETE":
-                body = self.read_body()
-                if not check_password(str(body.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
-                    return self.send_json({"error": "清空诊断日志前必须验证当前管理员密码。"}, 403)
+                # This endpoint is already restricted to an authenticated super
+                # administrator. Clearing diagnostics intentionally uses the
+                # existing session confirmation and does not prompt for a
+                # second password in the settings page.
+                self.read_body()
                 clear_cloud_resolver_diagnostics()
                 audit_event("cloud_resolver_diagnostics_cleared", actor=auth["user"], handler=self)
                 return self.send_json({"ok": True})
             return self.send_json({"error": "请求方法不支持。"}, 405)
-        if path == "/api/super/audit" and method == "DELETE":
-            if not is_super(auth["user"]):
-                return self.send_json({"error": "无权清空操作日志。"}, 403)
-            body = self.read_body()
-            event_keys = {str(value) for value in body.get("eventKeys", []) if str(value)}
-            filtered = body.get("filtered") is True
-            if filtered and not event_keys:
-                return self.send_json({"error": "筛选结果为空，未清理任何日志。"}, 400)
-            with SECURITY_LOCK:
-                AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                lines = AUDIT_LOG_PATH.read_text(encoding="utf-8").splitlines() if AUDIT_LOG_PATH.exists() else []
-                if event_keys:
-                    kept = [line for line in lines if hashlib.sha256(line.encode("utf-8")).hexdigest() not in event_keys]
-                else:
-                    kept = []
-                AUDIT_LOG_PATH.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
-            cleared = len(lines) - len(kept)
-            action = "audit_log_filtered_cleared" if filtered else "audit_log_cleared"
-            audit_event(action, auth["user"], handler=self, details={"cleared": cleared})
-            return self.send_json({"ok": True, "cleared": cleared, "filtered": filtered})
         if path == "/api/super/ip-location/test" and method == "POST":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "无权测试定位接口。"}, 403)
@@ -6898,8 +7438,10 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以批量管理账号。"}, 403)
             b = self.read_body()
-            ids = set(b.get("ids") or [])
+            ids = bounded_strings(b.get("ids"), 200, 100)
             action = b.get("action")
+            existing = {u["id"] for u in store["users"]}
+            missing = sorted(ids - existing)
             if action == "delete" and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                 audit_event("users_batch_delete_reauth_failed", auth["user"], ",".join(sorted(ids)), self, success=False)
                 return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
@@ -6928,35 +7470,72 @@ class Handler(BaseHTTPRequestHandler):
                 for user_id in ids:
                     revoke_user_sessions(user_id)
             audit_event(f"users_batch_{action}", auth["user"], ",".join(sorted(ids)), self,
-                        {"changed": changed})
-            return self.send_json({"ok": True, "changed": changed})
+                        {"requested": len(ids), "succeeded": changed, "failed": len(missing), "failedObjects": missing})
+            return self.send_json({"ok": True, "changed": changed, "failed": len(missing), "failedObjects": missing})
+        if path == "/api/super/users/identity" and method == "GET":
+            uid = self.query.get("id", [""])[0]
+            if not uid:
+                raise ValueError("用户 ID 为空。")
+            if not is_super(auth["user"]):
+                assert_user_scope(auth["user"], uid)
+            user = next((u for u in store["users"] if u["id"] == uid), None)
+            identity = recover_identity_outbox().identity(uid)
+            if not user and not identity["registration"]:
+                return self.send_json({"error": "用户不存在。"}, 404)
+            identity["user"] = public_user(user, store)
+            if identity["user"]:
+                identity["user"].pop("apiKey", None)
+            return self.send_json(identity)
+        if path == "/api/super/users/export" and method == "GET":
+            if not is_super(auth["user"]):
+                return self.send_json({"error": "无权导出用户。"}, 403)
+            rows = search_users(store, auth["user"], self.query)
+            for row in rows:
+                row.pop("apiKey", None)
+            audit_event("user_export", auth["user"], handler=self, details={"count": len(rows),
+                        "filterFields": sorted(set(self.query) & {"q", "invite", "inviter", "registeredFrom", "registeredTo", "registerIp"})})
+            return self.send_bytes(audit_store.encode({"users": rows}).encode("utf-8"), "application/json",
+                                   filename="users-export.json")
         if path == "/api/super/users":
             if method == "GET":
-                return self.send_json({"users": [public_user(u, store) for u in scoped_users(store, auth["user"])]})
+                return self.send_json({"users": search_users(store, auth["user"], self.query)})
             if method == "POST":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "只有总管理员可以创建账号。"}, 403)
                 b = self.read_body()
                 if str(b.get("role") or "user").strip() == "super":
                     return self.send_json({"error": "不能新增总管理员账号。"}, 400)
-                return self.send_json(public_user(create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"), auth["user"], b.get("email"), balance=b.get("balance", 0), agent_level_id=b.get("agentLevelId", ""))))
+                user = create_user(b.get("username"), b.get("password"), b.get("displayName"), b.get("role"),
+                                   auth["user"], b.get("email"), balance=b.get("balance", 0),
+                                   agent_level_id=b.get("agentLevelId", ""), phone=b.get("phone", ""))
+                audit_event("user_create", auth["user"], user["id"], self,
+                            {"targetName": user["username"], "after": {"role": user["role"]}})
+                return self.send_json(public_user(user))
             if method == "PATCH":
                 b = self.read_body()
+                if "active" in b and not isinstance(b["active"], bool):
+                    raise ValueError("账号状态须为布尔值。")
+                if "canViewJson" in b and not isinstance(b["canViewJson"], bool):
+                    raise ValueError("查看权限须为布尔值。")
+                if "role" in b and b["role"] not in ("user", "agent", "super"):
+                    raise ValueError("角色无效。")
                 if not is_super(auth["user"]):
                     assert_user_scope(auth["user"], b.get("id"))
-                    allowed = {"id": b.get("id")}
-                    if "active" in b:
-                        allowed["active"] = bool(b.get("active"))
-                    b = allowed
+                    if set(b) - {"id", "active"}:
+                        return self.send_json({"error": "代理仅可修改下属用户的启用状态。"}, 403)
                 target = next((u for u in store["users"] if u.get("id") == b.get("id")), None)
+                self.audit_target = b.get("id") or ""
                 sensitive = bool(b.get("password") or b.get("resetApiKey"))
+                sensitive = sensitive or bool(target and is_super(auth["user"]) and any(
+                    key in b and b[key] != target.get(key, False if key == "canViewJson" else "")
+                    for key in ("role", "canViewJson", "parentAgentId", "agentLevelId", "phone")))
                 sensitive = sensitive or (target and "email" in b and (b.get("email") or "").strip().lower() != (target.get("email") or "").strip().lower())
                 if sensitive and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                     audit_event("account_admin_reauth_failed", auth["user"], b.get("id"), self, success=False)
                     return self.send_json({"error": "修改敏感账号资料前必须验证当前管理员密码。"}, 403)
                 user = update_user_account(b.get("id"), b, True, auth["user"])
-                audit_event("account_admin_update", auth["user"], user.get("id"), self,
-                            {"fields": sorted(k for k in b if k not in ("password", "currentPassword"))})
+                audit_account_changes(self, auth["user"], target, user, "account_admin_update",
+                                      password_changed=bool(b.get("password") or b.get("resetApiKey")))
                 return self.send_json(public_user(user))
             if method == "DELETE":
                 if not is_super(auth["user"]):
@@ -6964,6 +7543,8 @@ class Handler(BaseHTTPRequestHandler):
                 b = self.read_body()
                 if b.get("id") == "admin":
                     raise ValueError("不能删除默认总管理员。")
+                if not any(u["id"] == b.get("id") for u in store["users"]):
+                    return self.send_json({"error": "用户不存在。"}, 404)
                 if not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                     audit_event("user_delete_reauth_failed", auth["user"], b.get("id"), self, success=False)
                     return self.send_json({"error": "删除用户前必须验证当前管理员密码。"}, 403)
@@ -6977,8 +7558,9 @@ class Handler(BaseHTTPRequestHandler):
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以管理代理身份和余额。"}, 403)
             body = self.read_body()
+            before = next((u for u in store["users"] if u["id"] == body.get("id")), None)
             user = update_agent_status(body.get("id"), body.get("action"), body)
-            audit_event("agent_account_update", auth["user"], user.get("id"), self, {"action": body.get("action")})
+            audit_account_changes(self, auth["user"], before, user, "agent_account_update")
             return self.send_json({"ok": True, "user": public_user(user, store)})
         if path == "/api/super/invites/quote" and method == "POST":
             return self.send_json(invite_quote_for_actor(store, auth["user"], self.read_body()))
@@ -7009,6 +7591,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = create_invites_for_actor(store, auth["user"], b, self.base_url())
                 if result.get("created"):
                     write_users(store)
+                    invites = result.get("invites") or []
+                    audit_event("invite_create", auth["user"], handler=self, details={
+                        "count": len(invites), "risk": "high" if len(invites) >= 20 else "low",
+                        "summary": f"生成 {len(invites)} 个邀请码",
+                        "inviteIds": [audit_store.invitation(row.get("code"))[1] for row in invites]})
                 return self.send_json(result)
             if method == "PATCH":
                 b = self.read_body()
@@ -7021,7 +7608,10 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": "邀请码不存在或无权操作。"}, 404)
                     if not is_super(auth["user"]) and any(key not in ("code", "active") for key in b):
                         return self.send_json({"error": "代理只能启用或停用自己的未使用邀请码。"}, 403)
+                    before = {key: invite.get(key) for key in ("active", "maxUses", "retentionDays")}
                     if "active" in b:
+                        if not isinstance(b["active"], bool):
+                            raise ValueError("邀请码状态须为布尔值。")
                         if invite_is_used(invite):
                             return self.send_json({"error": "邀请码使用后不能再启用或停用。"}, 400)
                         requested_active = bool(b.get("active"))
@@ -7041,14 +7631,15 @@ class Handler(BaseHTTPRequestHandler):
                     if "retentionDays" in b:
                         invite["retentionDays"] = max(0, int(b.get("retentionDays") or 0))
                     write_users(store)
+                    hashed, display = audit_store.invitation(code)
+                    audit_event("invite_update", auth["user"], display, self, {"inviteCodeHash": hashed,
+                        "targetType": "invite", "before": before, "after": {key: invite.get(key) for key in before}})
                     return self.send_json(public_invite(invite, auth["user"]))
             if method == "DELETE":
                 if not is_super(auth["user"]):
                     return self.send_json({"error": "代理生成的邀请码不能删除，请由总管理员操作。"}, 403)
                 b = self.read_body()
-                codes = set(b.get("codes") or [])
-                if not codes and b.get("code"):
-                    codes.add(b.get("code"))
+                codes = bounded_strings(b.get("codes") or ([b["code"]] if b.get("code") else []), 200, 128)
                 if not codes:
                     return self.send_json({"error": "请选择要删除的邀请码。"}, 400)
                 with INVITE_LOCK:
@@ -7056,9 +7647,19 @@ class Handler(BaseHTTPRequestHandler):
                     found = {str(x.get("code")) for x in store.get("inviteCodes", []) if x.get("code") in codes}
                     if not found:
                         return self.send_json({"error": "邀请码不存在。"}, 404)
+                    status = {x["code"]: audit_store.invite_row(x, now_iso())[-2] for x in store["inviteCodes"] if x.get("code") in found}
                     store["inviteCodes"] = [x for x in store["inviteCodes"] if x.get("code") not in found]
+                    context = getattr(REQUEST_CONTEXT, "value", None) or {}
+                    context["deletedInviteCodes"] = found
+                    REQUEST_CONTEXT.value = context
                     write_users(store)
-                return self.send_json({"ok": True, "deleted": len(found)})
+                    for code in sorted(found):
+                        hashed, display = audit_store.invitation(code)
+                        audit_event("invite_delete", auth["user"], display, self, {"inviteCodeHash": hashed,
+                            "targetType": "invite", "before": {"status": status[code]}, "after": {"status": "deleted"},
+                            "requested": len(codes), "succeeded": len(found), "failed": len(codes - found),
+                            "failedObjects": [audit_store.invitation(value)[1] for value in sorted(codes - found)]})
+                return self.send_json({"ok": True, "deleted": len(found), "failed": len(codes - found)})
         if path == "/api/super/mail":
             if not is_super(auth["user"]):
                 return self.send_json({"error": "只有总管理员可以操作。"}, 403)
@@ -7237,6 +7838,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_admin(self, path, method, auth):
         user_id = target_user_id(auth, self)
+        self.audit_target = user_id
         if path.startswith("/api/admin/announcements"):
             return self.handle_admin_announcements(path, method, auth)
         if path == "/api/admin/me" and method == "GET":
@@ -7336,11 +7938,11 @@ class Handler(BaseHTTPRequestHandler):
             b = self.read_body()
             old_email = (auth["user"].get("email") or "").strip().lower()
             new_email = (b.get("email") or old_email).strip().lower()
-            if (b.get("password") or new_email != old_email) and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
+            if (b.get("password") or "phone" in b or ("username" in b and b["username"] != auth["user"]["username"]) or new_email != old_email) and not check_password(str(b.get("currentPassword") or ""), auth["user"].get("passwordHash", "")):
                 return self.send_json({"error": "当前密码不正确。"}, 400)
             user = update_user_account(auth["user"]["id"], b, False)
-            audit_event("account_self_update", auth["user"], auth["user"]["id"], self,
-                        {"emailChanged": new_email != old_email, "passwordChanged": bool(b.get("password"))})
+            audit_account_changes(self, auth["user"], auth["user"], user, "account_self_update",
+                                  password_changed=bool(b.get("password")))
             return self.send_json({"user": public_user(user)})
         if path == "/api/admin/desktop/download" and method == "GET":
             if not is_super(auth["user"]):
@@ -7363,19 +7965,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "EXE 生成结果无效，请清理缓存后重试。"}, 500)
             if not is_super(auth["user"]):
                 record_client_download(variant)
+            details = client_audit_detail(variant, client_build_version(user_id), fileName=name)
+            audit_event("client_build_completed", auth["user"], variant, self, details)
+            audit_event("client_build_download", auth["user"], variant, self, details)
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=name)
         if path == "/api/admin/client/build" and method == "POST":
             body = self.read_body()
             user = find_user_by_id(user_id)
             if not user:
                 return self.send_json({"error": "目标用户不存在。"}, 404)
-            variant = request_client_variant(self, body); result = start_client_build_job(user, self.base_url(), variant)
-            audit_event("client_build_start", auth["user"], user_id, self, {"variant": variant, "variantLabel": client_variant_info(variant).get("label")})
+            variant = request_client_variant(self, body)
+            result = start_client_build_job(user, self.base_url(), variant, auth["user"], self)
+            self.audit_written = True
             return self.send_json(result)
         if path == "/api/admin/client/build/status" and method == "GET":
             job_id = self.query.get("id", [""])[0]
             job = public_client_build_job(job_id)
-            if not job:
+            if not job or (job.get("userId") != auth["user"]["id"] and not is_super(auth["user"])):
                 return self.send_json({"error": "生成任务不存在。"}, 404)
             return self.send_json(job)
         if path == "/api/admin/client/build/file" and method == "GET":
@@ -7383,24 +7989,28 @@ class Handler(BaseHTTPRequestHandler):
             job_id = self.query.get("id", [""])[0]
             with CLIENT_BUILD_LOCK:
                 job = dict(CLIENT_BUILD_JOBS.get(job_id) or {})
-            if not job:
+            if not job or (job.get("userId") != auth["user"]["id"] and not is_super(auth["user"])):
                 return self.send_json({"error": "生成任务不存在。"}, 404)
             if job.get("status") != "done":
                 return self.send_json({"error": "生成任务还未完成。"}, 409)
-            file_path = Path(job.get("path") or "")
-            if not file_path.exists():
+            file_path = Path(job.get("path") or "").resolve()
+            if CLIENT_JOBS.resolve() not in file_path.parents or not file_path.is_file():
                 return self.send_json({"error": "生成文件不存在。"}, 404)
             data = file_path.read_bytes()
             if not is_windows_exe(data):
                 return self.send_json({"error": "生成文件不是有效 EXE，请重新生成。"}, 500)
             record_client_build_download(job_id, auth["user"])
-            audit_event("client_build_download", auth["user"], user_id, self, {"jobId": job_id, "variant": job.get("variant"), "variantLabel": job.get("variantLabel"), "fileName": job.get("fileName")})
+            audit_event("client_build_download", auth["user"], job_id, self,
+                        client_audit_detail(job["variant"], job.get("version") or "", jobId=job_id, fileName=job.get("fileName")))
             return self.send_bytes(data, "application/vnd.microsoft.portable-executable", filename=job.get("fileName") or "toolbox.exe")
         if path == "/api/admin/config/export" and method == "GET":
+            if not is_super(auth["user"]) and auth["user"].get("canViewJson") is not True:
+                return self.send_json({"error": "该账号尚未获得配置导出权限。"}, 403)
             user = find_user_by_id(user_id) or auth["user"]
             package = config_export_package(read_config(user_id), user, self.base_url())
             data = json.dumps(package, ensure_ascii=False, indent=2).encode("utf-8")
             filename = f"toolbox-config-{ascii_file_name_part(user_display_name(user) or user_id, 'user')}-{int(time.time())}.json"
+            audit_event("config_export", auth["user"], user_id, self, {"bytes": len(data), "fileName": filename})
             return self.send_bytes(data, "application/json; charset=utf-8", filename=filename)
         if path == "/api/admin/config/share" and method == "POST":
             if is_super(auth["user"]) and user_id != auth["user"].get("id"):
@@ -7408,6 +8018,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not target:
                     return self.send_json({"error": "目标用户不存在。"}, 404)
             share = create_config_share(read_config(user_id), find_user_by_id(user_id) or auth["user"], self.base_url())
+            audit_event("config_share", auth["user"], user_id, self)
             return self.send_json(share)
         if path == "/api/admin/config/import" and method == "POST":
             body = self.read_body()
@@ -7670,18 +8281,21 @@ class Handler(BaseHTTPRequestHandler):
         configured = os.environ.get("TOOLBOX_PUBLIC_URL", "").strip()
         if configured:
             return normalize_public_base_url(configured)
-        proto = self.headers.get("X-Forwarded-Proto") or self.headers.get("X-Forwarded-Scheme") or "http"
+        proxy = trusted_proxy_peer(self)
+        proto = (self.headers.get("X-Forwarded-Proto") if proxy else "") or "http"
         if "," in proto:
             proto = proto.split(",", 1)[0].strip()
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost:5088"
+        host = (self.headers.get("X-Forwarded-Host") if proxy else "") or self.headers.get("Host") or "localhost:5088"
         if "," in host:
             host = host.split(",", 1)[0].strip()
+        if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,255}", host):
+            raise ValueError("请求主机无效。")
         return normalize_public_base_url(f"{proto}://{host}")
 
     def serve_static(self, path):
         rel = path.strip("/") or "index.html"
         file_path = (WWW / rel).resolve()
-        if not str(file_path).startswith(str(WWW.resolve())) or not file_path.exists() or not file_path.is_file():
+        if WWW.resolve() not in file_path.parents or not file_path.exists() or not file_path.is_file():
             return self.send_json({"error": "接口不存在"}, 404)
         ctype = "image/x-icon" if file_path.suffix.lower() == ".ico" else (mimetypes.guess_type(str(file_path))[0] or "application/octet-stream")
         if ctype.startswith("text/") or file_path.suffix in (".js", ".json"):
@@ -7694,6 +8308,7 @@ if __name__ == "__main__":
         print(f"WARNING: cloud resolver module unavailable: {CLOUD_RESOLVER_IMPORT_ERROR or 'cloud_resolver.py not found'}", flush=True)
     ensure_admin_announcement_files()
     read_users()
+    migrate_audit()
     migrated_pages = migrate_all_user_configs()
     print(f"Xinggui home page migration complete: {migrated_pages} user configs updated.", flush=True)
     threading.Thread(target=run_client_build_cleanup_loop, daemon=True).start()

@@ -238,7 +238,8 @@ class CloudResolverTests(unittest.TestCase):
     def test_cloud_resolver_diagnostics_default_off_and_redact_credentials(self):
         self.assertFalse(APP.cloud_resolver_diagnostic_enabled())
         self.assertFalse(APP.cloud_resolver_diagnostic_log("must_not_write", {"value": "ignored"}))
-        self.assertFalse(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.exists())
+        self.assertTrue(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.exists())
+        self.assertEqual(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8"), "")
 
         APP.write_system_settings({"cloudResolverDiagnosticsEnabled": True})
         self.assertTrue(APP.cloud_resolver_diagnostic_log("redaction_test", {
@@ -356,18 +357,18 @@ class CloudResolverTests(unittest.TestCase):
         self.assertEqual(handler.responses[-1][0], 200)
         self.assertTrue(handler.responses[-1][1]["enabled"])
 
-    def test_cloud_diagnostic_toggle_and_clear_require_super_admin_and_password(self):
+    def test_cloud_diagnostic_toggle_and_clear_require_super_admin_session(self):
         handler = FakeHandler({"enabled": True})
         APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "PATCH", self.auth("admin"))
         self.assertEqual(handler.responses[-1], (200, {"enabled": True}))
         self.assertTrue(APP.cloud_resolver_diagnostic_enabled())
 
-        APP.cloud_resolver_diagnostic_log("preserve_on_bad_password", {"result": "example"})
-        before = APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8")
-        handler = FakeHandler({"currentPassword": "wrong-password"})
+        APP.cloud_resolver_diagnostic_log("clear_without_password", {"result": "example"})
+        handler = FakeHandler({})
         APP.Handler.handle_super(handler, "/api/super/cloud-resolver-diagnostics", "DELETE", self.auth("admin"))
-        self.assertEqual(handler.responses[-1][0], 403)
-        self.assertEqual(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8"), before)
+        self.assertEqual(handler.responses[-1], (200, {"ok": True}))
+        self.assertTrue(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.exists())
+        self.assertEqual(APP.CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH.read_text(encoding="utf-8"), "")
 
         APP.write_system_settings({"cloudResolverDiagnosticsEnabled": False})
         self.assertFalse(APP.cloud_resolver_diagnostic_enabled())

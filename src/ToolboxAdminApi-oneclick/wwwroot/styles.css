@@ -5201,3 +5201,24 @@ body.theme-dayblue #invitePaymentOverlay .payment-confirm {
   .cloud-line-row [data-cloud-url] { grid-column: auto; }
   .cloud-line-row button { width: 100%; }
 }
+
+/* Audit filters, pagination and accessible identity history. */
+.audit-pagination { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 0; }
+.audit-pagination span { padding: 0 8px; font-variant-numeric: tabular-nums; }
+.audit-timeline { margin: 0 0 10px; padding: 8px 12px; border-inline-start: 2px solid currentColor; overflow-wrap: anywhere; }
+.audit-log-row td { overflow-wrap: anywhere; }
+.audit-detail-body pre { max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-native-dialog { box-sizing: border-box; width: min(36rem, calc(100% - 24px)); max-height: calc(100dvh - 32px); padding: 20px; border: 1px solid #c9ced4; border-radius: 10px; color: #171b20; background: #fff; overflow: auto; }
+.audit-native-dialog::backdrop { background: rgb(20 26 32 / 48%); }
+.audit-native-dialog form { display: grid; gap: 12px; }
+.audit-native-dialog label { display: grid; gap: 6px; }
+.audit-native-dialog dt { font-size: .82rem; color: #4d5865; margin-top: 8px; }
+.audit-native-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.audit-native-dialog li { padding: 4px 0; overflow-wrap: anywhere; }
+.user-identity-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; }
+@media (max-width: 650px) {
+  .audit-panel .audit-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .audit-panel .audit-filters input { min-width: 0; }
+  .audit-panel .panel-head { align-items: flex-start; flex-wrap: wrap; }
+  .audit-panel .audit-head-actions { flex-wrap: wrap; }
+}

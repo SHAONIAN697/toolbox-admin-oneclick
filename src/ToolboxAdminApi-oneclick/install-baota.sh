@@ -199,7 +199,7 @@ copy_source() {
   fi
 
   yellow "正在复制程序文件到：$app_dir"
-  cp -a "$src_dir/app.py" "$app_dir/"
+  cp -a "$src_dir/app.py" "$src_dir/audit_store.py" "$src_dir/audit_migrate.py" "$app_dir/"
   cp -a "$src_dir/cloud_resolver.py" "$app_dir/"
   cp -a "$src_dir/assets" "$app_dir/"
   cp -a "$src_dir/client-template" "$app_dir/"
@@ -244,6 +244,9 @@ Environment=TOOLBOX_HOST=127.0.0.1
 Environment=TOOLBOX_PORT=${port}
 Environment=TOOLBOX_ADMIN_TOKEN=${password}
 Environment=TOOLBOX_ADMIN_USERNAME=${username}
+# Keep this key stable across restarts and upgrades.  When omitted, audit_store
+# creates a local key in security.sqlite3; operators may override it from a
+# protected systemd drop-in for cross-host verification.
 ExecStart=/usr/bin/python3 ${app_dir}/app.py
 Restart=on-failure
 RestartSec=10
@@ -296,7 +299,7 @@ block = f"""
         proxy_set_header Host $host;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
@@ -311,7 +314,7 @@ block = f"""
         proxy_set_header Host $host;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }}
     {end}

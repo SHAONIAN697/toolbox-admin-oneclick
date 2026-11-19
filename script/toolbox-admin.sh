@@ -81,6 +81,7 @@ source_matches_installed(){
   local src="$1" dir="$2" path relative
   [ -f "$dir/app.py" ] && cmp -s "$src/app.py" "$dir/app.py" || return 1
   [ -f "$src/cloud_resolver.py" ] && [ -f "$dir/cloud_resolver.py" ] && cmp -s "$src/cloud_resolver.py" "$dir/cloud_resolver.py" || return 1
+  [ -f "$dir/audit_store.py" ] && cmp -s "$src/audit_store.py" "$dir/audit_store.py" || return 1
   for path in assets client-template wwwroot admin-desktop-template deploy; do
     [ -d "$src/$path" ] || continue
     while IFS= read -r -d '' relative; do
