@@ -404,18 +404,33 @@ class Store:
             conditions.append("(" + condition + ")")
         return " AND ".join(conditions), params
 
-    def query(self, filters, limit, user_ids=()):
+    def query(self, filters, limit, user_ids=(), *, page=None, snapshot=None):
+        pagination = {}
         with self.connect() as db:
+            if page is not None:
+                db.execute("BEGIN")
+                if snapshot is None:
+                    snapshot = db.execute("SELECT coalesce(max(log_id), 0) FROM audit_events").fetchone()[0]
             where, params = self.scope(db, filters, user_ids)
+            offset = 0
+            if page is not None:
+                where += " AND e.log_id<=:snapshot"
+                params["snapshot"] = snapshot
+                total = db.execute("SELECT count(*) FROM audit_events e WHERE " + where, params).fetchone()[0]
+                pages = max(1, (total + limit - 1) // limit)
+                page = min(page, pages)
+                offset = (page - 1) * limit
+                pagination = {"page": page, "totalPages": pages, "total": total, "snapshot": str(snapshot)}
             params["limit"] = limit + 1
+            params["offset"] = offset
             rows = db.execute("SELECT e.* FROM audit_events e WHERE " + where +
-                              " ORDER BY log_id DESC LIMIT :limit", params).fetchall()
+                              " ORDER BY log_id DESC LIMIT :limit OFFSET :offset", params).fetchall()
         items = []
         for row in rows[:limit]:
             item = json.loads(row["payload"])
             item.update(logId=row["log_id"], eventKey=item["eventId"])
             items.append(item)
-        return {"items": items, "nextBefore": items[-1]["logId"] if len(rows) > limit else None}
+        return {"items": items, "nextBefore": items[-1]["logId"] if len(rows) > limit else None, **pagination}
 
     def invite_hashes(self):
         with self.connect() as db:

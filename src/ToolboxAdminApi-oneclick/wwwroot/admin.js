@@ -2775,8 +2775,17 @@ function ensureAuditView() {
       <button id="resetAuditFiltersBtn" type="button" class="secondary">清除筛选</button>
     </div>
     <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>用户</th><th>操作日志</th><th>时间</th><th>IP 地址</th><th>风险评估</th></tr></thead><tbody id="auditLogRows"><tr><td colspan="5">正在读取日志...</td></tr></tbody></table></div>
-    <nav class="audit-pagination" aria-label="日志分页"><button id="auditPrev" type="button" disabled>上一页</button>
-      <span id="auditPageLabel" aria-live="polite">第 1 页</span><button id="auditNext" type="button" disabled>下一页</button></nav>
+    <nav class="audit-pagination audit-pager" aria-label="日志分页">
+      <button id="auditPrev" type="button" disabled>‹ 上一页</button>
+      <div id="auditPageNumbers" class="audit-page-numbers"></div>
+      <button id="auditNext" type="button" disabled>下一页 ›</button>
+      <button id="auditJump" type="button" aria-expanded="false" aria-controls="auditJumpForm" disabled>跳转 »</button>
+      <form id="auditJumpForm" class="audit-jump-form" hidden>
+        <input id="auditJumpPage" type="number" min="1" step="1" inputmode="numeric" required aria-label="跳转页码">
+        <button type="submit">前往</button>
+      </form>
+      <span id="auditPageLabel" class="audit-page-label" aria-live="polite"></span>
+    </nav>
   </div>`;
   document.querySelector('main').appendChild(view);
   const announcementCreate = $('announcementCreateBtn');
@@ -2788,8 +2797,30 @@ function ensureAuditView() {
   $('clearFilteredAuditBtn').onclick = () => clearFilteredAuditLog().catch(error => setStatus(error.message, true));
   const report = error => setStatus(error.message, true);
   $('exportAuditBtn').onclick = () => downloadAdminJson('/api/super/audit/export', auditFilters(), 'audit-export.json').catch(report);
-  $('auditNext').onclick = () => loadAuditLog([...state.auditCursors, state.auditNextBefore]).catch(report);
-  $('auditPrev').onclick = () => loadAuditLog(state.auditCursors.slice(0, -1)).catch(report);
+  const goToPage = (page) => loadAuditLog(page, { navigate: true }).catch(report);
+  $('auditNext').onclick = () => goToPage(state.auditPage + 1);
+  $('auditPrev').onclick = () => goToPage(state.auditPage - 1);
+  $('auditPageNumbers').onclick = (event) => {
+    const button = event.target.closest('button[data-audit-page]');
+    if (button && Number(button.dataset.auditPage) !== state.auditPage) {
+      goToPage(Number(button.dataset.auditPage));
+    }
+  };
+  $('auditJump').onclick = () => {
+    const form = $('auditJumpForm');
+    form.hidden = !form.hidden;
+    $('auditJump').setAttribute('aria-expanded', String(!form.hidden));
+    if (!form.hidden) $('auditJumpPage').focus();
+  };
+  $('auditJumpForm').onsubmit = (event) => {
+    event.preventDefault();
+    const input = $('auditJumpPage');
+    if (!input.reportValidity()) return;
+    goToPage(input.valueAsNumber);
+    $('auditJumpForm').hidden = true;
+    $('auditJump').setAttribute('aria-expanded', 'false');
+    $('auditJump').focus();
+  };
   let timer;
   for (const id of AUDIT_FILTER_IDS) {
     $(id).addEventListener('input', () => {
@@ -2866,26 +2897,36 @@ async function clearFilteredAuditLog() {
   await clearAuditLog(filters);
 }
 
-async function loadAuditLog(cursors = [null]) {
+async function loadAuditLog(page = 1, { navigate = false } = {}) {
   ensureAuditView();
   const generation = (state.auditGeneration || 0) + 1;
   state.auditGeneration = generation;
   const filters = auditFilters();
-  const before = cursors.at(-1);
-  if (before) filters.before = before;
+  const filterKey = JSON.stringify(filters);
+  const useSnapshot = navigate && filterKey === state.auditFilterKey;
+  filters.page = useSnapshot ? page : 1;
+  if (useSnapshot && state.auditSnapshot != null) filters.snapshot = state.auditSnapshot;
   $('auditResultCount').textContent = '正在查询日志…';
+  state.auditLoading = true;
   try {
     const data = await api('/api/super/audit?' + new URLSearchParams(filters));
     if (generation !== state.auditGeneration) return;
-    state.auditCursors = cursors;
-    state.auditNextBefore = data.nextBefore;
+    const pageChanged = state.auditPage !== data.page || state.auditFilterKey !== filterKey;
+    state.auditPage = data.page;
+    state.auditTotalPages = data.totalPages;
+    state.auditTotal = data.total;
+    state.auditSnapshot = data.snapshot;
+    state.auditFilterKey = filterKey;
     state.auditItems = data.items || [];
     updateAuditUserOptions();
     renderAuditLog();
+    if (pageChanged) $('auditLogRows').closest('.audit-table-wrap').scrollTop = 0;
   } catch (error) {
     if (generation !== state.auditGeneration) return;
     $('auditResultCount').textContent = '日志读取失败';
     throw error;
+  } finally {
+    if (generation === state.auditGeneration) state.auditLoading = false;
   }
 }
 
@@ -3037,13 +3078,56 @@ function describeAuditEntry(item) {
   return `${methods[method] || '执行'}${target}${item.success === false ? '失败' : '成功'}`;
 }
 
+function renderAuditPagination() {
+  const current = state.auditPage;
+  const total = state.auditTotalPages;
+  const start = Math.max(1, Math.min(current - 1, total - 2));
+  const end = Math.min(total, start + 2);
+  const pages = new Set([1]);
+  for (let page = start; page <= end; page++) pages.add(page);
+  pages.add(total);
+  const numbers = $('auditPageNumbers');
+  const focused = numbers.contains(document.activeElement);
+  const signature = current + '/' + total;
+  if (numbers.dataset.signature !== signature) {
+    let previous = 0;
+    numbers.replaceChildren();
+    for (const page of pages) {
+      if (page > previous + 1) {
+        const gap = document.createElement('span');
+        gap.className = 'audit-page-gap';
+        gap.setAttribute('aria-hidden', 'true');
+        gap.textContent = '…';
+        numbers.append(gap);
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.auditPage = page;
+      button.setAttribute('aria-label', '第 ' + page + ' 页');
+      if (page === current) button.setAttribute('aria-current', 'page');
+      button.textContent = page;
+      numbers.append(button);
+      previous = page;
+      if (focused && page === current) button.focus();
+    }
+    numbers.dataset.signature = signature;
+  }
+  $('auditPageLabel').textContent = '第 ' + current + ' 页，共 ' + total + ' 页';
+  $('auditPrev').disabled = current <= 1;
+  $('auditNext').disabled = current >= total;
+  $('auditJump').disabled = total <= 1;
+  $('auditJumpPage').max = total;
+  if (total <= 1) {
+    $('auditJumpForm').hidden = true;
+    $('auditJump').setAttribute('aria-expanded', 'false');
+  }
+}
+
 function renderAuditLog() {
   const visible = state.auditItems || [];
   const labels = {high: '高风险', medium: '需关注', low: '低风险'};
-  $('auditResultCount').textContent = '本页 ' + visible.length + ' 条' + (state.auditNextBefore ? '，还有更早记录' : '');
-  $('auditPageLabel').textContent = '第 ' + state.auditCursors.length + ' 页';
-  $('auditPrev').disabled = state.auditCursors.length <= 1;
-  $('auditNext').disabled = !state.auditNextBefore;
+  $('auditResultCount').textContent = '共 ' + state.auditTotal + ' 条 · 本页 ' + visible.length + ' 条';
+  renderAuditPagination();
   const rows = $('auditLogRows');
   const signature = JSON.stringify(visible);
   let chain = $('auditTimeline');
@@ -3087,7 +3171,8 @@ function renderAuditLog() {
 function syncAuditAutoRefresh(view) {
   if (state.auditRefreshTimer) { clearInterval(state.auditRefreshTimer); state.auditRefreshTimer = null; }
   if (view !== 'audit' || !isSuper()) return;
-  state.auditRefreshTimer = setInterval(() => { if (state.activeView === 'audit' && document.visibilityState === 'visible' && (state.auditCursors?.length || 1) === 1
+  state.auditRefreshTimer = setInterval(() => { if (state.activeView === 'audit' && document.visibilityState === 'visible' && (state.auditPage || 1) === 1
+      && !state.auditLoading && $('auditJumpForm')?.hidden
       && !$('auditDetailOverlay')?.matches(':not([hidden])') && !document.querySelector('.audit-native-dialog[open]'))
       loadAuditLog().catch(() => {});
   }, 15000);

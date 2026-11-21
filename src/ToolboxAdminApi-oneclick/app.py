@@ -1181,13 +1181,13 @@ def current_identity_matches(users, query):
         ("id", "username", "displayName", "email", "phone", "createdAt")).casefold()}
 
 
-def read_audit_events(limit=100, filters=None, users=None):
+def read_audit_events(limit=100, filters=None, users=None, *, page=None, snapshot=None):
     filters = filters or {}
     users = read_users()["users"] if users is None else users
     recover_identity_outbox()
     ledger = init_audit()
     ids = {key: current_identity_matches(users, filters[key]) for key in ("q", "user") if filters.get(key)}
-    result = ledger.query(filters, limit, ids)
+    result = ledger.query(filters, limit, ids, page=page, snapshot=snapshot)
     by_id = {str(user["id"]): user for user in users}
     by_username = {user.get("username"): user for user in users}
     ip_cache = read_json(IP_CACHE_PATH, {})
@@ -7354,7 +7354,16 @@ class Handler(BaseHTTPRequestHandler):
                 filters = audit_filters(self.query)
                 exporting = path.endswith("/export")
                 limit = 2000 if exporting else max(1, min(200, int(self.query.get("limit", ["100"])[0])))
-                result = read_audit_events(limit, filters, store["users"])
+                page = None
+                snapshot = None
+                if not exporting and "page" in self.query:
+                    page = int(self.query["page"][0])
+                    raw_snapshot = self.query.get("snapshot", [None])[0]
+                    if raw_snapshot is not None:
+                        snapshot = int(raw_snapshot)
+                    if page < 1 or "before" in filters or (snapshot is not None and not 0 <= snapshot < 2**63):
+                        raise ValueError("日志分页参数无效。")
+                result = read_audit_events(limit, filters, store["users"], page=page, snapshot=snapshot)
                 if exporting:
                     audit_event("audit_export", actor, handler=self,
                                 details={"count": len(result["items"]), "truncated": bool(result["nextBefore"]),

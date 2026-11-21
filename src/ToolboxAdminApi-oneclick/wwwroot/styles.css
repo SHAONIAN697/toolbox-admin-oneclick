@@ -5205,6 +5205,28 @@ body.theme-dayblue #invitePaymentOverlay .payment-confirm {
 /* Audit filters, pagination and accessible identity history. */
 .audit-pagination { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 0; }
 .audit-pagination span { padding: 0 8px; font-variant-numeric: tabular-nums; }
+#view-audit, .audit-panel { min-width: 0; }
+.audit-panel .audit-table-wrap { max-width: 100%; }
+.audit-panel .audit-pager { display: flex; overflow: visible; justify-content: center; gap: 6px; padding: 12px 0 2px; }
+.audit-page-numbers, .audit-jump-form { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.audit-jump-form[hidden] { display: none; }
+.audit-pager button { min-height: 34px; padding: 4px 9px; white-space: nowrap; }
+.audit-page-numbers button { min-width: 34px; font-variant-numeric: tabular-nums; }
+.audit-pager .audit-page-gap { padding: 0 3px; color: var(--muted); }
+.audit-jump-form input { width: 76px; min-height: 34px; }
+body .audit-pager button[aria-current="page"] {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 700;
+}
+.audit-pager .audit-page-label {
+  position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .audit-pager button { min-height: 44px; }
+  .audit-page-numbers { order: -1; flex: 0 0 100%; justify-content: center; }
+}
 .audit-timeline { margin: 0 0 10px; padding: 8px 12px; border-inline-start: 2px solid currentColor; overflow-wrap: anywhere; }
 .audit-log-row td { overflow-wrap: anywhere; }
 .audit-detail-body pre { max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

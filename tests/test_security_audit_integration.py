@@ -155,6 +155,17 @@ class SecurityAuditIntegration(unittest.TestCase):
         page = self.rows("/api/super/audit", admin, limit=1)
         older = self.rows("/api/super/audit", admin, limit=1, before=page["nextBefore"])
         self.assertLess(older["items"][0]["logId"], page["items"][0]["logId"])
+        first = self.rows("/api/super/audit", admin, limit=1, page=1)
+        self.assertEqual(first["total"], first["totalPages"])
+        self.assertEqual(self.request("/api/super/audit?page=0", token=admin)[0], 400)
+        APP.audit_event("pagination_fixture")
+        latest = self.rows("/api/super/audit", admin, limit=1, page=1)
+        second = self.rows("/api/super/audit", admin, limit=1, page=2, snapshot=first["snapshot"])
+        self.assertEqual(latest["total"], first["total"] + 1)
+        self.assertEqual(second["items"][0]["logId"], older["items"][0]["logId"])
+        last = self.rows("/api/super/audit", admin, limit=1, page=9999, snapshot=first["snapshot"])
+        self.assertEqual(last["page"], first["totalPages"])
+        self.assertIsNone(last["nextBefore"])
         self.assertFalse(self.rows("/api/super/audit", admin, q="sample%'_literal")["items"])
         self.assertTrue(self.rows("/api/super/audit/export", admin, eventType="invite_create")["items"])
         filters = {"eventType": "invite_create"}
@@ -164,7 +175,8 @@ class SecurityAuditIntegration(unittest.TestCase):
                         "currentPassword": PASSWORD}
         self.assertEqual(self.request("/api/super/audit", "DELETE", confirmation, admin)[0], 200)
         self.assertEqual(self.request("/api/super/audit", "DELETE", confirmation, admin)[0], 409)
-        self.assertFalse(self.rows("/api/super/audit", admin, **filters)["items"])
+        empty = self.rows("/api/super/audit", admin, page=2, **filters)
+        self.assertEqual((empty["items"], empty["page"], empty["total"]), ([], 1, 0))
         cleanup = self.rows("/api/super/audit", admin, eventType="audit_log_filtered_cleared")["items"][0]
         self.assertEqual(cleanup["details"]["cleared"], 1)
         self.assertTrue(self.rows("/api/super/audit/integrity", admin)["ok"])
