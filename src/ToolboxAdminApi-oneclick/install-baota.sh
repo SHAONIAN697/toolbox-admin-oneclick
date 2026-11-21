@@ -276,8 +276,18 @@ patch_nginx() {
   local backup="${conf}.bak.$(date +%Y%m%d%H%M%S)"
   cp -a "$conf" "$backup"
 
-  python3 - "$conf" "$port" "$marker_begin" "$marker_end" <<'PY'
+  local safeline_peer="${TOOLBOX_SAFELINE_PEER:-}" safeline_default=""
+  if [ -z "$safeline_peer" ] && command -v docker >/dev/null 2>&1; then
+    local safeline_mode
+    safeline_mode="$(docker inspect --format '{{.State.Running}} {{.HostConfig.NetworkMode}} {{.Config.Image}}' safeline-tengine 2>/dev/null || true)"
+    case "$safeline_mode" in
+      "true host "*"/safeline-tengine"*) safeline_default="127.0.0.1" ;;
+    esac
+  fi
+
+  if ! python3 - "$conf" "$port" "$marker_begin" "$marker_end" "$safeline_peer" "$safeline_default" <<'PY'
 from pathlib import Path
+import ipaddress
 import re
 import sys
 
@@ -285,13 +295,35 @@ path = Path(sys.argv[1])
 port = sys.argv[2]
 begin = sys.argv[3]
 end = sys.argv[4]
+peer = sys.argv[5]
 text = path.read_text(encoding="utf-8", errors="ignore")
+
+managed = re.compile(r"(?ms)^[ \t]*" + re.escape(begin) + r"[ \t]*\n(.*?)^[ \t]*" + re.escape(end) + r"[ \t]*(?:\n|$)")
+previous = managed.search(text)
+if not peer and previous:
+    source = re.search(r"(?m)^[ \t]*# toolbox-safeline-peer: ([0-9a-fA-F:.]+)[ \t]*$", previous[1])
+    if source:
+        peer = source[1]
+peer = peer or sys.argv[6]
+text = managed.sub("", text)
+# Keep repeated installer runs byte-stable around the managed block.
+text = re.sub(r"\n{3,}", "\n\n", text)
+real_ip = ""
+if peer:
+    address = ipaddress.ip_address(peer)
+    if address.is_unspecified or address.is_multicast or "%" in peer:
+        raise SystemExit("TOOLBOX_SAFELINE_PEER 必须是雷池回源的单个 IP 地址")
+    if not re.search(r"(?m)^[ \t]*(?:set_real_ip_from|real_ip_header|real_ip_recursive)\b", text):
+        real_ip = (
+            f"    # toolbox-safeline-peer: {address}\n"
+            f"    set_real_ip_from {address}/{address.max_prefixlen};\n"
+            "    real_ip_header X-Forwarded-For;\n"
+            "    real_ip_recursive off;\n"
+        )
 
 block = f"""
     {begin}
-    # Behind SafeLine, configure the trusted WAF source at server scope,
-    # outside this managed block, as described in the BaoTa deployment guide.
-    location = /api {{
+{real_ip}    location = /api {{
         return 308 /api/;
     }}
 
@@ -321,8 +353,6 @@ block = f"""
     }}
     {end}
 """
-
-text = re.sub(r"\n\s*# toolbox-admin one-click begin.*?# toolbox-admin one-click end\s*\n", "\n", text, flags=re.S)
 
 def remove_location_blocks(src):
     out = []
@@ -356,9 +386,13 @@ text = remove_location_blocks(text)
 idx = text.rfind("\n}")
 if idx == -1:
     raise SystemExit("无法定位 Nginx server 结束位置")
-text = text[:idx] + "\n" + block + text[idx:]
+text = text[:idx].rstrip() + "\n" + block.strip("\n") + text[idx:]
 path.write_text(text, encoding="utf-8")
 PY
+  then
+    red "生成 Nginx 反代配置失败，已保留原配置。"
+    return 1
+  fi
 
   if nginx -t; then
     systemctl reload nginx || service nginx reload

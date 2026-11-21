@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +88,36 @@ class IpLocationConsensusTests(unittest.TestCase):
 
             self.assertTrue(address)
             self.assertTrue(any(url.startswith("https://ipchk.cn/v1/location/") for url in responses))
+
+    def test_forwarded_audit_ip_resolves_through_existing_provider(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data = Path(temp_dir)
+            ip = "116.112.108.254"
+            handler = SimpleNamespace(client_address=("127.0.0.1", 12345), headers={
+                "X-Real-IP": ip, "X-Forwarded-For": ip,
+            })
+            with patch.object(self.app, "IP_CACHE_PATH", data / "ip-cache.json"), \
+                    patch.object(self.app, "AUDIT_LOG_PATH", data / "audit.jsonl"), \
+                    patch.object(self.app, "USERS_PATH", data / "users.json"), \
+                    patch.object(self.app, "read_system_settings", return_value={
+                        "ipLocation": {"mode": "system"}
+                    }), patch.object(self.app, "fetch_json_url", return_value={
+                        "region": "内蒙古自治区", "city": "巴彦淖尔市",
+                    }) as fetch:
+                self.app.audit_event("login_failed", handler=handler, success=False)
+                self.app.AUDIT_IP_LOOKUPS.join()
+                item = self.app.read_audit_events(users=[])["items"][0]
+                self.assertEqual(ip, item["ip"])
+                self.assertEqual("内蒙古自治区巴彦淖尔市", item["ipAddress"])
+                self.assertEqual("本机/内网", self.app.locate_ip("192.168.1.4"))
+                fetch.assert_called_once()
+
+    def test_forwarding_headers_are_ignored_from_direct_public_peer(self):
+        handler = SimpleNamespace(client_address=("8.8.4.4", 12345), headers={
+            "X-Real-IP": "8.8.8.8", "X-Forwarded-For": "8.8.8.8",
+        })
+        with patch.dict(self.app.os.environ, {"TOOLBOX_TRUSTED_PROXIES": "127.0.0.1/32"}):
+            self.assertEqual("8.8.4.4", self.app.client_ip(handler))
 
 
 if __name__ == "__main__":

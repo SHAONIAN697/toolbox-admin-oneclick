@@ -24,6 +24,7 @@ import time
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -65,6 +66,11 @@ CLOUD_RESOLVER_DIAGNOSTIC_LOG_PATH = DATA / "cloud-resolver-diagnostics.jsonl"
 CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_BYTES = 32 * 1024 * 1024
 CLOUD_RESOLVER_DIAGNOSTIC_LOG_MAX_EVENTS = 10000
 IP_CACHE_PATH = DATA / "ip-location-cache.json"
+IP_LOCATION_CACHE_LOCK = threading.Lock()
+AUDIT_IP_LOOKUPS = Queue(maxsize=128)
+AUDIT_IP_LOOKUP_LOCK = threading.Lock()
+AUDIT_IP_PENDING = set()
+AUDIT_IP_WORKER = None
 BACKUP_DIR = DATA / "security-backups"
 VARIANT_COVER_DIR = WWW / "uploads" / "variant-covers"
 MENU_ICON_DIR = WWW / "uploads" / "menu-icons"
@@ -794,16 +800,29 @@ def select_ip_location(results, cfg):
     ))["address"]
 
 
+def location_ip_address(ip):
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped
+    return address
+
+
 def locate_ip(ip, bypass_cache=False):
-    if not ip or ip in ("127.0.0.1", "::1"):
+    ip_address = location_ip_address(ip)
+    if not ip_address or not ip_address.is_global or ip_address.is_multicast:
         return "本机/内网"
+    ip = str(ip_address)
     cache = read_json(IP_CACHE_PATH, {})
-    cfg = read_system_settings().get("ipLocation") or {}
     cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
-    if not bypass_cache and time.time() - cached.get("time", 0) < 86400 * 30:
+    if not bypass_cache:
         cached_address = str(cached.get("address") or "")
-        if not cfg.get("unifiedChinese", True) or re.search(r"[\u3400-\u9fff]", cached_address):
+        ttl = 86400 * 30 if cached_address else 300
+        if cached and time.time() - cached.get("time", 0) < ttl:
             return cached_address
+    cfg = read_system_settings().get("ipLocation") or {}
     providers = cfg.get("providers") or ["system"]
     if cfg.get("mode") == "system": providers = ["system"]
     results = []
@@ -864,9 +883,40 @@ def locate_ip(ip, bypass_cache=False):
         if re.search(r"[\u3400-\u9fff]", address):
             address = re.sub(r"[A-Za-z][A-Za-z ._-]*", "", address).strip()
         address = re.sub(r"^(中国|China)", "", address, flags=re.I).strip()
-    cache[ip] = {"address": address, "time": time.time()}
-    write_json(IP_CACHE_PATH, cache)
+    with IP_LOCATION_CACHE_LOCK:
+        cache = read_json(IP_CACHE_PATH, {})
+        cache[ip] = {"address": address, "time": time.time()}
+        write_json(IP_CACHE_PATH, cache)
     return address
+
+
+def audit_ip_lookup_worker():
+    while True:
+        ip = AUDIT_IP_LOOKUPS.get()
+        try:
+            locate_ip(ip)
+        except (OSError, ValueError) as exc:
+            print(f"审计 IP 定位失败：{type(exc).__name__}", file=sys.stderr)
+        finally:
+            with AUDIT_IP_LOOKUP_LOCK:
+                AUDIT_IP_PENDING.discard(ip)
+            AUDIT_IP_LOOKUPS.task_done()
+
+
+def queue_audit_ip_lookup(ip):
+    global AUDIT_IP_WORKER
+    address = location_ip_address(ip)
+    if not address or not address.is_global or address.is_multicast:
+        return
+    ip = str(address)
+    with AUDIT_IP_LOOKUP_LOCK:
+        if ip in AUDIT_IP_PENDING or AUDIT_IP_LOOKUPS.full():
+            return
+        if AUDIT_IP_WORKER is None:
+            AUDIT_IP_WORKER = threading.Thread(target=audit_ip_lookup_worker, daemon=True)
+            AUDIT_IP_WORKER.start()
+        AUDIT_IP_PENDING.add(ip)
+        AUDIT_IP_LOOKUPS.put_nowait(ip)
 
 
 AUDIT_LABELS = {
@@ -1017,6 +1067,9 @@ def audit_entry(action, actor=None, target="", handler=None, details=None, succe
     target = str(target or "")[:400]
     if details.get("variant"):
         details.setdefault("toolboxId", details["variant"])
+    ip = client_ip(handler) if handler else ""
+    if ip:
+        queue_audit_ip_lookup(ip)
     return {
         "time": now_iso(), "eventId": random_hex(16), "requestId": request_id, "action": action,
         "eventType": action, "eventCategory": audit_category(action), "actionName": label,
@@ -1029,7 +1082,7 @@ def audit_entry(action, actor=None, target="", handler=None, details=None, succe
         "targetType": details.get("targetType") or ("user" if action.startswith(("user_", "account_", "register")) else ""),
         "inviteCodeHash": details.get("inviteCodeHash", ""), "path": path[:400],
         "method": getattr(handler, "command", "") if handler else "",
-        "ip": client_ip(handler) if handler else "",
+        "ip": ip,
         "userAgent": audit_store.scrub(str(headers.get("User-Agent") or "")[:350]),
         "source": audit_source(headers),
         "before": details.get("before"), "after": details.get("after"), "details": details,
@@ -1141,9 +1194,16 @@ def read_audit_events(limit=100, filters=None, users=None):
         row["actorRegisteredName"] = (identity or {}).get("display_name") or ""
         row["actorEmail"] = (current or {}).get("email") or row.get("actorEmail") or (identity or {}).get("email", "")
         row["actor"] = row.get("actor") or (current or {}).get("username") or (identity or {}).get("username", "")
-        cached_ip = ip_cache.get(str(row.get("ip") or ""))
-        if isinstance(cached_ip, dict):
-            row["ipAddress"] = row.get("ipAddress") or str(cached_ip.get("address") or "")
+        ip = str(row.get("ip") or "")
+        address = location_ip_address(ip)
+        cached_ip = ip_cache.get(ip) or ip_cache.get(str(address))
+        if not row.get("ipAddress") and isinstance(cached_ip, dict):
+            row["ipAddress"] = str(cached_ip.get("address") or "")
+        if ip and not row.get("ipAddress"):
+            if address and (not address.is_global or address.is_multicast):
+                row["ipAddress"] = "本机/内网"
+            elif not cached_ip or time.time() - cached_ip.get("time", 0) >= 300:
+                queue_audit_ip_lookup(ip)
     return result
 
 
