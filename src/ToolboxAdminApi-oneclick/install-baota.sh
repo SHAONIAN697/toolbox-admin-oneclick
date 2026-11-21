@@ -289,6 +289,8 @@ text = path.read_text(encoding="utf-8", errors="ignore")
 
 block = f"""
     {begin}
+    # Behind SafeLine, configure the trusted WAF source at server scope,
+    # outside this managed block, as described in the BaoTa deployment guide.
     location = /api {{
         return 308 /api/;
     }}
