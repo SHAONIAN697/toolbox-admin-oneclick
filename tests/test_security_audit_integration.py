@@ -131,6 +131,23 @@ class SecurityAuditIntegration(unittest.TestCase):
         rows = self.rows("/api/super/audit", second, eventType="session_replaced")["items"]
         self.assertTrue(rows)
 
+    def test_login_records_ip_while_location_lookup_is_pending(self):
+        ip = "8.8.4.4"
+        with patch.object(APP, "locate_ip", side_effect=AssertionError("login must not resolve IP synchronously")), \
+                patch.object(APP, "queue_audit_ip_lookup") as enqueue:
+            status, result = self.request(
+                "/api/login", "POST", {"username": APP.ADMIN_USERNAME, "password": PASSWORD},
+                **{"X-Real-IP": ip},
+            )
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["user"]["lastLoginIp"]["ip"], ip)
+            enqueue.assert_called_with(ip)
+            APP.write_json(APP.IP_CACHE_PATH, {ip: {"address": "测试地区"}})
+            me = self.rows("/api/admin/me", result["token"])
+            self.assertEqual(me["user"]["lastLoginIp"]["address"], "测试地区")
+            events = self.rows("/api/super/audit", result["token"], eventType="login_success")
+            self.assertEqual(events["items"][0]["ip"], ip)
+
     def test_paging_export_and_cleanup_confirmation(self):
         admin = self.login()
         result = self.request("/api/super/invites", "POST", {"count": 2}, admin)

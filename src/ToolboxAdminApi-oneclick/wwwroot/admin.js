@@ -754,66 +754,131 @@ function setLoginMessage(message, type = 'error') {
   $('loginError').textContent = message || '';
   if (message) showToast(message, type);
 }
-async function loadAll() {
-  if (!state.token) {
-    await loadPublicBrand();
+let adminLoadController;
+
+function setAdminViewsPending(pending) {
+  $('targetUserSelect').disabled = pending || isTemplateMode();
+  $('noticeBellBtn').disabled = pending;
+  $('openNoticeComposerBtn').disabled = pending;
+  if (pending) $('noticeDropdown').hidden = true;
+  document.querySelectorAll('main .view').forEach((panel) => {
+    if (['view-overview', 'view-account', 'view-audit'].includes(panel.id)) return;
+    panel.inert = pending;
+    panel.style.visibility = pending ? 'hidden' : '';
+  });
+  const loading = $('adminViewLoading');
+  if (loading) loading.hidden = !pending || ['overview', 'account', 'audit'].includes(state.activeView);
+}
+
+async function loadAll(loginUser = null) {
+  adminLoadController?.abort();
+  const controller = new AbortController();
+  adminLoadController = controller;
+  const token = state.token;
+  const active = () => !controller.signal.aborted && token === state.token;
+  const request = async (path, options = {}) => {
+    if (!active()) throw new DOMException('已取消读取', 'AbortError');
+    const result = await api(path, { ...options, signal: controller.signal });
+    if (!active()) throw new DOMException('已取消读取', 'AbortError');
+    return result;
+  };
+
+  if (!token) {
     showLogin();
+    await loadPublicBrand(request);
     return;
   }
 
-    const viewToRestore = state.activeView || document.querySelector('.view.show')?.id?.replace(/^view-/, '') || 'overview';
-  let me;
+  const viewToRestore = state.activeView;
+  $('adminViewLoading').textContent = '正在读取此页面的数据…';
+  const main = document.querySelector('main');
+  main.inert = true;
+  setAdminViewsPending(true);
   try {
-    me = await api('/api/admin/me');
-  } catch (error) {
-    handleLoadFailure(error, isAuthFailure(error));
-    return;
-  }
-  state.currentUser = me.user;
-  state.targetUser = me.targetUser;
-  if (!isSuper()) state.templateMode = false;
-
-  try {
-    if (isManager()) {
-      await loadUsers();
-      if (isSuper()) {
-        await loadMailSettings();
-        await loadSystemSettings();
-      }
-      if (!state.targetUserId) {
-        state.targetUserId = state.currentUser.id;
+    // Fresh sign-in already returns the authenticated account. Config still uses
+    // its existing authenticated endpoint, including normal target permission checks.
+    const me = loginUser ? {user: loginUser, targetUser: loginUser} : await request('/api/admin/me');
+    state.currentUser = me.user;
+    if (!isSuper()) state.templateMode = false;
+    state.targetUserId = (isSuper() && state.targetUserId) || me.user.id;
+    localStorage.setItem('toolbox_target_user', state.targetUserId);
+    if (me.targetUser?.id !== state.targetUserId) {
+      let selected;
+      try {
+        selected = await request('/api/admin/me');
+      } catch (error) {
+        if (!active() || error.message !== '目标用户不存在。') throw error;
+        state.targetUserId = me.user.id;
         localStorage.setItem('toolbox_target_user', state.targetUserId);
+        selected = me;
       }
+      state.targetUser = selected.targetUser;
     } else {
-      state.targetUserId = state.currentUser.id;
-      state.users = [];
+      state.targetUser = me.targetUser;
     }
-    await loadNotices();
-    await loadAdminAnnouncementsSafe();
-    await loadBuiltinFunctions();
-    await loadClientVariants();
-    state.config = await api(configApiPath());
-    await loadPublicBrand();
-    state.buttons = await api(buttonsApiPath());
-    await loadCloudResolver();
-    renderAll();
-    if (viewToRestore) switchView(viewToRestore);
-    const paymentReturn = await handlePaymentReturnStatus();
-    if (!paymentReturn) {
-      showUnreadNoticePopup();
-      showAdminAnnouncementPopup();
-    }
+    state.config = await request(configApiPath());
+    renderApp();
+    renderPopupSettings();
+    renderPageAccessControls();
+    renderAccount();
+    renderUserContext({ pending: true });
+    showApp();
+    switchView(viewToRestore);
+    main.inert = false;
     showToast('配置读取成功。', 'success');
-    loadMenuIcons().then(() => {
-      renderMenuIcons();
-      if (state.activeView === 'buttons') renderManagedSections();
-    }).catch((error) => {
+  } catch (error) {
+    if (active()) {
+      if ($('loginScreen').classList.contains('hidden')) {
+        handleLoadFailure(error, isAuthFailure(error));
+      } else {
+        if (isAuthFailure(error)) handleLoadFailure(error, true);
+        setLoginMessage(error.message || '配置读取失败，请刷新后重试。');
+      }
+    }
+    return;
+  }
+
+  // Give the browser a paint opportunity before starting secondary work.
+  requestAnimationFrame(() => setTimeout(() => {
+    if (!active()) return;
+    loadAdminSupportingData(request, active)
+      .catch((error) => {
+        if (!active()) return;
+        if (isAuthFailure(error)) handleLoadFailure(error, true);
+        else {
+          $('adminViewLoading').textContent = '部分后台数据读取失败，请刷新重试。';
+          setStatus(error.message, true);
+        }
+      });
+  }, 0));
+}
+
+async function loadAdminSupportingData(request, active) {
+  const users = isManager() ? loadUsers(request) : Promise.resolve();
+  const system = isSuper() ? loadSystemSettings(request) : Promise.resolve();
+  const buttons = request(buttonsApiPath()).then((rows) => { if (active()) state.buttons = rows; });
+  const cloud = users.then(() => loadCloudResolver(request, active));
+  await Promise.all([
+    users, buttons, cloud, loadPublicBrand(request), loadNotices(request),
+    loadAdminAnnouncementsSafe(request, active), loadBuiltinFunctions(request),
+    system.then(() => loadClientVariants(request)), system.then(() => loadMenuIcons(request)).catch((error) => {
+      if (!active()) return;
       state.menuIcons = [];
       state.menuIconLibraryError = error.message || '图标库读取失败。';
-      renderMenuIcons();
-    });
-  } catch (error) {
-    handleLoadFailure(error, isAuthFailure(error));
+    }),
+    ...(isSuper() ? [loadMailSettings(request)] : [])
+  ]);
+  if (!active()) return;
+  renderBrandSettings(state.adminBrand || {});
+  renderAll({ preservePrimary: true });
+  renderMenuIcons();
+  setAdminViewsPending(false);
+  if (state.activeView === 'agents' && isSuper()) loadAgents().catch(error => setStatus(error.message, true));
+  if (state.activeView === 'announcements') switchView('announcements');
+  const paymentReturn = await handlePaymentReturnStatus();
+  if (active() && !paymentReturn) {
+    showUnreadNoticePopup();
+    showAdminAnnouncementPopup();
   }
 }
 
@@ -826,6 +891,7 @@ function handleLoadFailure(error, silent = false) {
   }
   const status = $('status');
   if (status) status.textContent = '';
+  adminLoadController?.abort();
   state.token = '';
   state.currentUser = null;
   state.targetUser = null;
@@ -841,7 +907,6 @@ function handleLoadFailure(error, silent = false) {
   localStorage.removeItem('toolbox_target_user');
   localStorage.removeItem('toolbox_active_view');
   showLogin();
-  if (!silent) showToast(`读取配置失败：${error.message}`, 'error');
 }
 
 function showLogin() {
@@ -854,16 +919,17 @@ function showApp() {
   document.querySelectorAll('aside, main').forEach((el) => el.style.visibility = '');
 }
 
-async function loadPublicBrand() {
+async function loadPublicBrand(request = api) {
   try {
-    const brand = await api('/api/public/brand');
+    const brand = await request('/api/public/brand');
     state.adminBrand = brand;
     $('loginTitle').textContent = brand.title || '工具箱后台登录';
     applyAdminBrand(brand);
     const hint = (brand.hint || '').trim();
     $('loginHint').textContent = hint;
     $('loginHint').hidden = !hint;
-  } catch {
+  } catch (error) {
+    if (error.name === 'AbortError') return;
     $('loginTitle').textContent = '工具箱后台登录';
     $('loginHint').textContent = '';
     $('loginHint').hidden = true;
@@ -871,9 +937,12 @@ async function loadPublicBrand() {
 }
 
 async function login() {
+  const button = $('loginBtn');
+  if (button.disabled) return;
   const username = $('loginUsername').value.trim();
   const password = $('loginPassword').value;
   setLoginMessage('');
+  button.disabled = true;
 
   try {
     const result = await api('/api/login', {
@@ -886,10 +955,11 @@ async function login() {
     state.targetUserId = result.user.id;
     localStorage.setItem('toolbox_session_token', state.token);
     localStorage.setItem('toolbox_target_user', state.targetUserId);
-    showApp();
-    await loadAll();
+    await loadAll(result.user);
   } catch (error) {
     setLoginMessage('登录失败：账号或密码不正确。');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -933,8 +1003,7 @@ async function register() {
     state.targetUserId = result.user.id;
     localStorage.setItem('toolbox_session_token', state.token);
     localStorage.setItem('toolbox_target_user', state.targetUserId);
-    showApp();
-    await loadAll();
+    await loadAll(result.user);
   } catch (error) {
     setLoginMessage(`注册失败：${error.message || '邀请码无效或账号已存在。'}`);
   }
@@ -986,6 +1055,7 @@ async function resetPassword() {
 
 function logout() {
   if (state.token) fetch('/api/admin/logout', {method: 'POST', headers: authHeaders(), keepalive: true}).catch(() => {});
+  adminLoadController?.abort();
   state.token = '';
   state.currentUser = null;
   state.targetUser = null;
@@ -1183,39 +1253,42 @@ function renderAgentPlanCards(plans) {
   host.scrollTop = previous;
 }
 
-async function loadCloudResolver() {
-  const feature = state.cloudResolver;
+async function loadCloudResolver(request = api, active = () => true) {
+  const feature = request === api ? state.cloudResolver : {};
+  const superUser = isSuper();
+  const agent = isAgent();
   feature.error = '';
-  try { feature.config = await api('/api/cloud-resolver/config'); } catch (error) { feature.error = cloudErrorMessage(error); }
-  try { feature.entitlement = await api('/api/cloud-resolver/entitlement'); } catch (error) { feature.error = cloudErrorMessage(error); }
-  try { feature.plans = (await api('/api/cloud-resolver/plans')).plans || []; } catch (error) { feature.plans = []; feature.error = feature.error || cloudErrorMessage(error); }
-  try { feature.paymentChannels = (await api('/api/cloud-resolver/payment-channels')).channels || []; } catch { feature.paymentChannels = []; }
+  try { feature.config = await request('/api/cloud-resolver/config'); } catch (error) { feature.error = cloudErrorMessage(error); }
+  try { feature.entitlement = await request('/api/cloud-resolver/entitlement'); } catch (error) { feature.error = cloudErrorMessage(error); }
+  try { feature.plans = (await request('/api/cloud-resolver/plans')).plans || []; } catch (error) { feature.plans = []; feature.error = feature.error || cloudErrorMessage(error); }
+  try { feature.paymentChannels = (await request('/api/cloud-resolver/payment-channels')).channels || []; } catch { feature.paymentChannels = []; }
   try {
-    feature.orders = (await api(isSuper() ? '/api/super/orders?scope=cloud_resolver' : '/api/cloud-resolver/orders')).orders || [];
+    feature.orders = (await request(superUser ? '/api/super/orders?scope=cloud_resolver' : '/api/cloud-resolver/orders')).orders || [];
   } catch { feature.orders = []; }
   if (feature.entitlement?.allowed) {
     try {
-      const resources = await api('/api/cloud-resolver/resources');
+      const resources = await request('/api/cloud-resolver/resources');
       feature.resources = resources.resources || [];
       feature.sources = resources.sources || [];
-      const tasks = await api('/api/cloud-resolver/parse-tasks');
+      const tasks = await request('/api/cloud-resolver/parse-tasks');
       feature.tasks = tasks.tasks || [];
     } catch (error) { feature.error = cloudErrorMessage(error); }
   } else {
     feature.tasks = []; feature.resources = []; feature.sources = [];
   }
-  if (isSuper()) {
-    try { feature.admin = await api('/api/admin/cloud-resolver/settings'); } catch { feature.admin = null; }
-    try { feature.adminPlans = (await api('/api/admin/cloud-resolver/plans')).plans || []; } catch { feature.adminPlans = []; }
-    try { feature.codes = (await api('/api/admin/cloud-resolver/codes')).codes || []; } catch { feature.codes = []; }
-    await loadUserCloudEntitlements();
+  if (superUser && active()) {
+    try { feature.admin = await request('/api/admin/cloud-resolver/settings'); } catch { feature.admin = null; }
+    try { feature.adminPlans = (await request('/api/admin/cloud-resolver/plans')).plans || []; } catch { feature.adminPlans = []; }
+    try { feature.codes = (await request('/api/admin/cloud-resolver/codes')).codes || []; } catch { feature.codes = []; }
+    await loadUserCloudEntitlements(request, active);
   }
-  if (isAgent()) {
-    try { feature.agentMembers = (await api('/api/agent/cloud-resolver/members')).members || []; } catch { feature.agentMembers = []; }
-    try { feature.agentCodes = (await api('/api/agent/cloud-resolver/code-inventory')).codes || []; } catch { feature.agentCodes = []; }
-    try { feature.agentSales = (await api('/api/agent/cloud-resolver/sales')).sales || []; } catch { feature.agentSales = []; }
-    try { feature.agentCodeOrders = (await api('/api/agent/cloud-resolver/code-orders')).orders || []; } catch { feature.agentCodeOrders = []; }
+  if (agent && active()) {
+    try { feature.agentMembers = (await request('/api/agent/cloud-resolver/members')).members || []; } catch { feature.agentMembers = []; }
+    try { feature.agentCodes = (await request('/api/agent/cloud-resolver/code-inventory')).codes || []; } catch { feature.agentCodes = []; }
+    try { feature.agentSales = (await request('/api/agent/cloud-resolver/sales')).sales || []; } catch { feature.agentSales = []; }
+    try { feature.agentCodeOrders = (await request('/api/agent/cloud-resolver/code-orders')).orders || []; } catch { feature.agentCodeOrders = []; }
   }
+  if (active()) Object.assign(state.cloudResolver, feature);
 }
 
 function cloudOrderStatus(status) {
@@ -1301,13 +1374,13 @@ function renderCloudOrders() {
   updateSelectionControls();
 }
 
-async function loadUserCloudEntitlements() {
+async function loadUserCloudEntitlements(request = api, active = () => true) {
   if (!isSuper()) return;
   const rows = await Promise.all((state.users || []).map(async (user) => {
-    try { return [user.id, await api(`/api/admin/users/${encodeURIComponent(user.id)}/cloud-entitlement`)]; }
+    try { return [user.id, await request(`/api/admin/users/${encodeURIComponent(user.id)}/cloud-entitlement`)]; }
     catch { return [user.id, { allowed: false, entitlement: null }]; }
   }));
-  state.cloudUserEntitlements = Object.fromEntries(rows);
+  if (active()) state.cloudUserEntitlements = Object.fromEntries(rows);
 }
 
 function entitlementSummary(entitlement) {
@@ -1967,14 +2040,16 @@ async function startCloudDownload(sourceId) {
 async function refreshCloudSource(sourceId) { await api('/api/cloud-resolver/sources/' + encodeURIComponent(sourceId) + '/refresh', { method: 'POST', body: '{}' }); await loadAndRenderCloudResolver(); }
 async function deleteCloudSource(sourceId) { if (!window.confirm('删除这条备用线路吗？')) return; await api('/api/cloud-resolver/sources/' + encodeURIComponent(sourceId), { method: 'DELETE' }); await loadAndRenderCloudResolver(); }
 
-function renderAll() {
+function renderAll({ preservePrimary = false } = {}) {
   showApp();
   document.body.classList.toggle('is-template-mode', isTemplateMode());
   syncInviteAutoRefresh();
   renderUserContext();
-  renderApp();
-  renderPopupSettings();
-  renderAccount();
+  if (!preservePrimary) {
+    renderApp();
+    renderPopupSettings();
+    renderAccount();
+  }
   renderMailSettings();
   renderSystemSettings();
   renderTemplateControls();
@@ -1983,7 +2058,7 @@ function renderAll() {
   ensureButtonsPagePanels();
   renderStats();
   renderManageControls();
-  renderPageAccessControls();
+  if (!preservePrimary) renderPageAccessControls();
   renderSelectors();
   renderButtons();
   renderClientVariants();
@@ -2005,16 +2080,16 @@ function renderAll() {
   }
 }
 
-async function loadUsers() {
+async function loadUsers(request = api) {
   if (!isManager()) return;
-  const result = await api('/api/super/users');
+  const result = await request('/api/super/users');
   state.users = result.users || [];
   if (state.targetUserId && !state.users.some((user) => user.id === state.targetUserId)) {
     state.targetUserId = state.currentUser.id;
     localStorage.setItem('toolbox_target_user', state.targetUserId);
   }
   state.targetUser = state.users.find((user) => user.id === state.targetUserId) || state.currentUser;
-  await loadInvites();
+  await loadInvites(request);
 }
 
 function inviteSnapshot(invites) {
@@ -2035,9 +2110,9 @@ function inviteSnapshot(invites) {
   })));
 }
 
-async function loadInvites() {
+async function loadInvites(request = api) {
   if (!isManager()) return false;
-  const result = await api('/api/super/invites');
+  const result = await request('/api/super/invites');
   const nextInvites = result.invites || [];
   const nextSnapshot = inviteSnapshot(nextInvites);
   const changed = nextSnapshot !== state.inviteSnapshot;
@@ -2085,15 +2160,17 @@ async function refreshInvitesSilently() {
   }
 }
 
-async function loadMailSettings() {
+async function loadMailSettings(request = api) {
   if (!isSuper()) return;
-  state.mail = await api('/api/super/mail');
+  state.mail = await request('/api/super/mail');
 }
 
-async function loadSystemSettings() {
+async function loadSystemSettings(request = api) {
   if (!isSuper()) return;
-  state.system = await api('/api/super/system');
-  const result = await api('/api/super/orders?scope=cloud_resolver');
+  const [settings, result] = await Promise.all([
+    request('/api/super/system'), request('/api/super/orders?scope=cloud_resolver')
+  ]);
+  state.system = settings;
   state.orders = result.orders || [];
 }
 
@@ -2188,13 +2265,13 @@ async function handlePaymentReturnStatus() {
   return true;
 }
 
-async function loadNotices() {
+async function loadNotices(request = api) {
   if (!state.currentUser) return;
-  const result = await api('/api/admin/notices');
+  const result = await request('/api/admin/notices');
   state.notices = result.notices || [];
 }
 
-function renderUserContext() {
+function renderUserContext({ pending = false } = {}) {
   const superMode = isSuper();
   const managerMode = isManager();
   document.querySelectorAll('.super-only').forEach((el) => {
@@ -2226,7 +2303,14 @@ function renderUserContext() {
   if (rechargeButton) rechargeButton.hidden = !isAgent();
 
   const selector = $('targetUserSelect');
-  if (superMode && selector) {
+  if (superMode && selector && pending) {
+    const current = state.targetUser || state.currentUser;
+    const option = document.createElement('option');
+    option.value = current.id;
+    option.textContent = displayNameOf(current, current.username);
+    selector.replaceChildren(option);
+  }
+  if (superMode && selector && !pending) {
     const previous = state.targetUserId || state.currentUser.id;
     selector.innerHTML = '';
     state.users.forEach((user) => {
@@ -2242,9 +2326,11 @@ function renderUserContext() {
     selector.disabled = isTemplateMode();
   }
 
-  renderUsers();
-  renderInvites();
-  renderNewUserAgentLevel();
+  if (!pending) {
+    renderUsers();
+    renderInvites();
+    renderNewUserAgentLevel();
+  }
   const addUserPanel = $('addUserBtn')?.closest('.panel');
   if (addUserPanel) addUserPanel.hidden = !superMode;
 }
@@ -2271,8 +2357,10 @@ function switchView(view) {
   if (nav) nav.classList.add('active');
   if (panel) panel.classList.add('show');
   if (view === 'audit' && isSuper()) loadAuditLog().catch(error => setStatus(error.message, true));
-  if (view === 'cloud-resolver') loadAndRenderCloudResolver().catch(error => setStatus(cloudErrorMessage(error), true));
-  if (view === 'agents') loadAgents().catch(error => setStatus(error.message, true));
+  const loading = $('adminViewLoading');
+  if (loading) loading.hidden = !(panel?.inert || (view === 'announcements' && !panel));
+  if (view === 'cloud-resolver' && !panel?.inert) loadAndRenderCloudResolver().catch(error => setStatus(cloudErrorMessage(error), true));
+  if (view === 'agents' && !panel?.inert) loadAgents().catch(error => setStatus(error.message, true));
   syncAuditAutoRefresh(view);
   const title = VIEW_TITLES[view] || VIEW_TITLES.overview;
   if ($('pageTitle')) $('pageTitle').textContent = title[0];
@@ -2429,12 +2517,7 @@ function renderApp() {
   refreshImageUrlPreviews();
   ensureExeIconField();
   $('appExeIcon').value = app.exe_icon || app.exe_icon_url || '';
-  const brand = state.adminBrand || {};
-  $('loginTitleInput').value = brand.title || '工具箱后台登录';
-  $('loginHintInput').value = brand.hint || '';
-  Object.entries(ADMIN_BRAND_INPUTS).forEach(([id, key]) => { if ($(id)) $(id).value = brand[key] || ''; });
-  applyAdminBrand(brand);
-  renderAdminBrandPreview();
+  renderBrandSettings(state.adminBrand || {});
   const loginPanel = $('appLoginPanel');
   const isSuper = state.currentUser?.role === 'super';
   document.body.classList.toggle('is-super-admin', isSuper);
@@ -2465,6 +2548,14 @@ function renderApp() {
   $('appExeCompany').value = cleanExeMetadata(app.exe_company);
   $('appExeCopyright').value = cleanExeMetadata(app.exe_copyright);
   $('appExeVersion').value = app.exe_version || app.version || '1.0.0.0';
+}
+
+function renderBrandSettings(brand) {
+  $('loginTitleInput').value = brand.title || '工具箱后台登录';
+  $('loginHintInput').value = brand.hint || '';
+  Object.entries(ADMIN_BRAND_INPUTS).forEach(([id, key]) => { if ($(id)) $(id).value = brand[key] || ''; });
+  applyAdminBrand(brand);
+  renderAdminBrandPreview();
 }
 
 function normalizeAdminTheme(value) {
@@ -3829,8 +3920,8 @@ function renderSystemSettings() {
   renderMenuIcons();
 }
 
-async function loadMenuIcons() {
-  const result = await api('/api/admin/menu-icons');
+async function loadMenuIcons(request = api) {
+  const result = await request('/api/admin/menu-icons');
   state.menuIcons = result.icons || [];
   state.menuIconLibraryError = result.libraryError || '';
   if (!state.system) state.system = {};
@@ -4041,13 +4132,13 @@ async function saveBuiltinFunctions() {
   setStatus('全局内置功能已保存。');
 }
 
-async function loadBuiltinFunctions() {
-  const result = await api('/api/admin/builtin-functions');
+async function loadBuiltinFunctions(request = api) {
+  const result = await request('/api/admin/builtin-functions');
   state.builtinFunctions = result.functions || [];
 }
 
-async function loadClientVariants() {
-  const result = await api('/api/admin/client/variants');
+async function loadClientVariants(request = api) {
+  const result = await request('/api/admin/client/variants');
   const clientVariants = {};
   (result.variants || []).forEach((variant) => {
     if (variant?.id) clientVariants[variant.id] = variant;
@@ -8250,11 +8341,11 @@ async function reloadConfigAndButtons(message) {
   setStatus(message);
 }
 
-async function loadAdminAnnouncementsSafe() {
+async function loadAdminAnnouncementsSafe(request = api, active = () => true) {
   try {
     const [list, popup] = await Promise.all([
-      api('/api/admin/announcements'),
-      api('/api/admin/announcements/unread')
+      request('/api/admin/announcements'),
+      request('/api/admin/announcements/unread')
     ]);
     state.announcements = Array.isArray(list?.announcements) ? list.announcements : [];
     state.announcementUnreadCount = Number(list?.unreadCount || 0);
@@ -8264,6 +8355,7 @@ async function loadAdminAnnouncementsSafe() {
       : [];
     state.announcementPopupMarking = false;
   } catch (error) {
+    if (!active()) return;
     console.warn('更新公告读取失败：', error);
     state.announcements = [];
     state.announcementUnreadCount = 0;

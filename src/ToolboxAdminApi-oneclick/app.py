@@ -810,6 +810,17 @@ def location_ip_address(ip):
     return address
 
 
+def cached_login_location(ip):
+    address = location_ip_address(ip)
+    if not address or not address.is_global or address.is_multicast:
+        return "本机/内网"
+    try:
+        cached = read_json(IP_CACHE_PATH, {}).get(str(address)) or {}
+        return str(cached.get("address") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def locate_ip(ip, bypass_cache=False):
     ip_address = location_ip_address(ip)
     if not ip_address or not ip_address.is_global or ip_address.is_multicast:
@@ -819,7 +830,7 @@ def locate_ip(ip, bypass_cache=False):
     cached = cache.get(ip) if isinstance(cache.get(ip), dict) else {}
     if not bypass_cache:
         cached_address = str(cached.get("address") or "")
-        ttl = 86400 * 30 if cached_address else 300
+        ttl = 86400 * 30 if cached_address not in ("", "未知位置") else 300
         if cached and time.time() - cached.get("time", 0) < ttl:
             return cached_address
     cfg = read_system_settings().get("ipLocation") or {}
@@ -4610,6 +4621,10 @@ def write_mail_settings(body):
 def public_user(user, store=None):
     if not user:
         return None
+    login_history = [dict(item) for item in (user.get("loginIpHistory") or [])[:3] if isinstance(item, dict)]
+    for item in login_history:
+        if item.get("ip") and not item.get("address"):
+            item["address"] = cached_login_location(item["ip"])
     data = {
         "id": user.get("id"),
         "username": user.get("username"),
@@ -4631,8 +4646,8 @@ def public_user(user, store=None):
         "apiKey": user.get("apiKey"),
         "createdAt": user.get("createdAt", ""),
         "lastLoginAt": user.get("lastLoginAt", ""),
-        "lastLoginIp": (user.get("loginIpHistory") or [{}])[0],
-        "loginIpHistory": (user.get("loginIpHistory") or [])[:3],
+        "lastLoginIp": login_history[0] if login_history else {},
+        "loginIpHistory": login_history,
     }
     return data
 
@@ -4746,7 +4761,7 @@ def mark_user_login(user_id, handler=None):
             if handler:
                 ip = client_ip(handler)
                 history = [x for x in row.get("loginIpHistory", []) if isinstance(x, dict)]
-                history.insert(0, {"ip": ip, "address": locate_ip(ip), "time": login_at})
+                history.insert(0, {"ip": ip, "address": "", "time": login_at})
                 row["loginIpHistory"] = history[:3]
             write_users(store)
             return row

@@ -102,9 +102,10 @@ class MenuIconLibraryTests(unittest.TestCase):
             self.assertNotIn('id="uploadScopeIconBtn"', markup)
             self.assertIn("function renderScopeIconPicker", script)
             self.assertNotIn("function uploadPositionIcon", script)
-            config_load = script.index("state.config = await api(configApiPath())")
-            deferred_icons = script.index("loadMenuIcons().then", config_load)
-            self.assertGreater(deferred_icons, config_load)
+            startup = script.split("async function loadAll(", 1)[1].split("async function loadAdminSupportingData(", 1)[0]
+            self.assertLess(startup.index("state.config = await request(configApiPath())"), startup.index("showApp()"))
+            self.assertLess(startup.index("showApp()"), startup.index("loadAdminSupportingData(request, active)"))
+            self.assertIn("loadMenuIcons(request)", script.split("async function loadAdminSupportingData(", 1)[1].split("function handleLoadFailure", 1)[0])
             save_body = script.split("async function saveMenuIcons()", 1)[1].split("function renderBuiltinFunctions", 1)[0]
             self.assertNotIn("await loadMenuIcons()", save_body)
             self.assertIn("项目图标库已保存", save_body)
